@@ -1,0 +1,4 @@
+export type Ref={file_id:string;sheet:string;cell:string;raw_value:string;kind:string};
+export type Requirement={id:string;name:string;business_no:string;account_id:string;post_id:string;post_url:string;objective:string|null;budget:string|null;budget_mode:string|null;currency:string;start_at:string|null;end_at:string|null;timezone:string;audience:string;language:string;identity_id:string;cta:string;landing_url:string;sources:Record<string,Ref>;classification:string;history:{campaign_id:string;name:string;language:string}[];issues:{code:string;field:string;message:string;blocking:boolean}[]};
+export type Draft={id:string;project_id:string;version:number;status:string;requirements:Requirement[];summary:Record<string,unknown>};
+export type Project={id:string;name:string;tenant_id:string;account_id:string;role:string;policy:Record<string,unknown>|null;reserved:string};
