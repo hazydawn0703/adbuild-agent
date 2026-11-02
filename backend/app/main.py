@@ -1,0 +1,274 @@
+import json
+from uuid import uuid4
+from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
+from .settings import settings
+from .auth import authenticate, Actor, project_access
+from .db import transaction, json_value
+from .models import SheetMapping, BuildDraft, DraftPatch, ProjectPolicy
+from .excel import inspect_workbook, parse_export, parse_requirements
+from .rules import evaluate
+from .service import history_for, edit_draft, enqueue_if_authorized
+from . import storage
+from .agent import propose_mapping, conversation_graph
+import asyncio
+import os
+from .tiktok import EncryptedStorage, connect
+
+oauth_tasks = set()
+
+app = FastAPI(title="Adbuild API",version="0.1.0")
+app.add_middleware(CORSMiddleware,allow_origins=[os.getenv('APP_ORIGIN','http://localhost:3000'),"http://127.0.0.1:3000"],allow_methods=["*"],allow_headers=["Authorization","Content-Type"])
+
+
+@app.get('/projects/{project_id}/connection')
+def connection_status(project_id:str,actor:Actor=Depends(authenticate)):
+    with transaction() as c:
+        p=project_access(c,project_id,actor)
+        row=c.execute("select state,verified,tools from connections where tenant_id=%s",(p['tenant_id'],)).fetchone()
+    if not row: return {'status':'disconnected','verified':False}
+    return {'status':row['state'].get('status','disconnected'),'verified':row['verified'],
+        'authorization_url':row['state'].get('authorization_url') if p['role']=='admin' else None,
+        'tool_count':len(row['tools'])}
+
+
+@app.post('/projects/{project_id}/connection')
+async def start_connection(project_id:str,actor:Actor=Depends(authenticate)):
+    with transaction() as c:
+        p=project_access(c,project_id,actor,admin=True)
+    store=EncryptedStorage(str(p['tenant_id']))
+    store.update(status='starting',code=None,authorization_url=None)
+    task=asyncio.create_task(connect(str(p['tenant_id'])))
+    oauth_tasks.add(task)
+    task.add_done_callback(oauth_tasks.discard)
+    return {'status':'starting'}
+
+
+@app.get('/oauth/tiktok/callback')
+def oauth_callback(code:str,state:str):
+    with transaction() as c:
+        row=c.execute("select tenant_id from connections where state->>'oauth_state'=%s and state->>'status'='authorizing'",(state,)).fetchone()
+        if not row: raise HTTPException(400,'授权状态无效或已过期')
+    EncryptedStorage(str(row['tenant_id'])).update(code=code)
+    return RedirectResponse(settings().app_origin)
+
+
+@app.exception_handler(ValueError)
+async def invalid(_,exc):
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=422,content={"detail":str(exc)})
+
+
+@app.get('/health')
+def health():
+    return {"status":"ok","version":"0.1.0"}
+
+
+@app.get('/projects')
+def projects(actor:Actor=Depends(authenticate)):
+    with transaction() as c:
+        return c.execute("select p.*,m.role,t.name tenant_name from projects p join memberships m on m.tenant_id=p.tenant_id join tenants t on t.id=p.tenant_id where m.user_id=%s order by p.created_at",(actor.user_id,)).fetchall()
+
+
+class NewProject(BaseModel):
+    tenant_id: str
+    name: str
+    account_id: str
+
+
+@app.post('/projects')
+def new_project(body:NewProject,actor:Actor=Depends(authenticate)):
+    with transaction() as c:
+        member=c.execute("select role from memberships where tenant_id=%s and user_id=%s",(body.tenant_id,actor.user_id)).fetchone()
+        if not member or member['role']!='admin':
+            raise HTTPException(403,"只有管理员可以创建项目")
+        return c.execute("insert into projects(tenant_id,name,account_id) values(%s,%s,%s) returning *",(body.tenant_id,body.name,body.account_id)).fetchone()
+
+
+@app.get('/projects/{project_id}/workspace')
+def workspace(project_id:str,actor:Actor=Depends(authenticate)):
+    with transaction() as c:
+        project=project_access(c,project_id,actor)
+        return {"project":project,"files":c.execute("select id,name,kind,inspection,mapping from files where project_id=%s order by created_at desc",(project_id,)).fetchall(),
+            "drafts":[r['data'] for r in c.execute("select data from drafts where project_id=%s order by created_at desc",(project_id,))],
+            "runs":c.execute("select id,status,error,created_at from runs where project_id=%s order by created_at desc",(project_id,)).fetchall(),
+            "messages":c.execute("select role,content from messages where project_id=%s order by created_at",(project_id,)).fetchall()}
+
+
+@app.post('/projects/{project_id}/files')
+async def upload_file(project_id:str,kind:str,file:UploadFile=File(),actor:Actor=Depends(authenticate)):
+    if kind not in ('requirements','export') or not file.filename or not file.filename.lower().endswith('.xlsx'):
+        raise HTTPException(422,"请选择 .xlsx 需求文件或 ExportAds")
+    with transaction() as c:
+        project=project_access(c,project_id,actor,write=True)
+    data=await file.read(20*1024*1024+1)
+    inspection=inspect_workbook(data)
+    file_id=str(uuid4())
+    path=f"{project['tenant_id']}/{project_id}/{file_id}.xlsx"
+    records=parse_export(data) if kind=='export' else []
+    await storage.upload(path,data)
+    with transaction() as c:
+        project_access(c,project_id,actor,write=True)
+        c.execute("insert into files(id,tenant_id,project_id,name,kind,sha256,storage_path,inspection) values(%s,%s,%s,%s,%s,%s,%s,%s)",(file_id,project['tenant_id'],project_id,file.filename,kind,inspection['sha256'],path,json_value(inspection)))
+        for r in records:
+            c.execute("insert into history(tenant_id,project_id,account_id,ad_id,data) values(%s,%s,%s,%s,%s) on conflict(project_id,ad_id) do update set data=excluded.data,account_id=excluded.account_id",(project['tenant_id'],project_id,project['account_id'],r['ad_id'],json_value(r)))
+    return {"id":file_id,"inspection":inspection,"imported_ads":len(records),"campaigns":len({r['campaign_id'] for r in records})}
+
+
+@app.post('/files/{file_id}/mapping/propose')
+async def mapping_proposal(file_id:str,actor:Actor=Depends(authenticate)):
+    with transaction() as c:
+        row=c.execute("select * from files where id=%s",(file_id,)).fetchone()
+        if not row: raise HTTPException(404,"文件不存在")
+        project_access(c,row['project_id'],actor,write=True)
+        templates=c.execute("select data from mapping_templates where project_id=%s and signature=%s",(row['project_id'],signature(row['inspection']))).fetchone()
+    if templates:
+        return {"mappings":templates['data'],"explanation":"结构匹配项目已确认映射，请检查本次数据范围。"}
+    return await propose_mapping(row['inspection'])
+
+
+def signature(inspection):
+    import hashlib
+    headers=[{'sheet':s['sheet'],'cols':s['cols'],'sample':s['sample'][:2]} for s in inspection['sheets']]
+    return hashlib.sha256(json.dumps(headers,sort_keys=True).encode()).hexdigest()
+
+
+class MappingConfirmation(BaseModel):
+    mappings:list[SheetMapping]
+
+
+@app.post('/files/{file_id}/mapping/confirm')
+async def confirm_mapping(file_id:str,body:MappingConfirmation,actor:Actor=Depends(authenticate)):
+    with transaction() as c:
+        row=c.execute("select * from files where id=%s",(file_id,)).fetchone()
+        if not row or row['kind']!='requirements': raise HTTPException(404,"需求文件不存在")
+        project=project_access(c,row['project_id'],actor,write=True)
+        history=history_for(c,project)
+    data=await storage.download(row['storage_path'])
+    requirements=[evaluate(r,history) for r in parse_requirements(data,file_id,body.mappings)]
+    draft=BuildDraft(id=str(uuid4()),project_id=str(project['id']),requirements=requirements,summary={"source_file":file_id,"count":len(requirements)})
+    with transaction() as c:
+        project_access(c,row['project_id'],actor,write=True)
+        c.execute("insert into drafts(id,tenant_id,project_id,version,data) values(%s,%s,%s,%s,%s)",(draft.id,project['tenant_id'],project['id'],draft.version,json_value(draft)))
+        maps=[m.model_dump() for m in body.mappings]
+        c.execute("update files set mapping=%s where id=%s",(json_value(maps),file_id))
+        c.execute("insert into mapping_templates(tenant_id,project_id,signature,data) values(%s,%s,%s,%s) on conflict(project_id,signature) do update set data=excluded.data",(project['tenant_id'],project['id'],signature(row['inspection']),json_value(maps)))
+        enqueue_if_authorized(c,draft,project)
+    return draft
+
+
+@app.patch('/drafts/{draft_id}')
+def patch_draft(draft_id:str,body:DraftPatch,actor:Actor=Depends(authenticate)):
+    with transaction() as c:
+        draft=edit_draft(c,draft_id,actor,body.expected_version,[body.model_dump()])
+        project=project_access(c,draft.project_id,actor,write=True)
+        enqueue_if_authorized(c,draft,project)
+        return draft
+
+
+@app.put('/projects/{project_id}/policy')
+def put_policy(project_id:str,body:ProjectPolicy,actor:Actor=Depends(authenticate)):
+    with transaction() as c:
+        project=project_access(c,project_id,actor,admin=True)
+        row=c.execute("select * from projects where id=%s for update",(project_id,)).fetchone()
+        if body.version != row['policy_version']+1:
+            raise HTTPException(409,"授权版本已变化")
+        if body.cumulative_limit < row['reserved']:
+            raise HTTPException(422,"额度不能小于已预占金额")
+        c.execute("update projects set policy=%s,policy_version=%s where id=%s",(json_value(body),body.version,project_id))
+        c.execute("insert into audit(tenant_id,project_id,event,data) values(%s,%s,'policy_updated',%s)",(project['tenant_id'],project_id,json_value({"version":body.version,"actor":actor.user_id})))
+    return body
+
+
+@app.get('/runs/{run_id}')
+def get_run(run_id:str,actor:Actor=Depends(authenticate)):
+    with transaction() as c:
+        row=c.execute("select * from runs where id=%s",(run_id,)).fetchone()
+        if not row: raise HTTPException(404,"任务不存在")
+        project_access(c,row['project_id'],actor)
+        return {**row,"deployments":c.execute("select status,steps,requirement from deployments where run_id=%s",(run_id,)).fetchall()}
+
+
+@app.post('/runs/{run_id}/{action}')
+def run_action(run_id:str,action:str,actor:Actor=Depends(authenticate)):
+    if action not in ('cancel','resume','pause'): raise HTTPException(404)
+    with transaction() as c:
+        row=c.execute("select * from runs where id=%s for update",(run_id,)).fetchone()
+        if not row: raise HTTPException(404)
+        project_access(c,row['project_id'],actor,write=True)
+        if action=='cancel':
+            c.execute("update runs set cancelled=true where id=%s",(run_id,))
+        else:
+            c.execute("select pgmq.send('adbuild',%s)",(json_value({"run_id":run_id,"action":action}),))
+    return {"accepted":True}
+
+
+class ChatBody(BaseModel):
+    draft_id:str
+    expected_version:int
+    message:str=""
+    confirm:bool|None=None
+
+
+@app.post('/projects/{project_id}/chat')
+async def chat(project_id:str,body:ChatBody,actor:Actor=Depends(authenticate)):
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    from langgraph.types import Command
+    with transaction() as c:
+        project=project_access(c,project_id,actor,write=True)
+        row=c.execute("select data from drafts where id=%s and project_id=%s",(body.draft_id,project_id)).fetchone()
+        if not row: raise HTTPException(404,"请先生成草稿")
+        if row['data']['version']!=body.expected_version: raise HTTPException(409,"草稿已变化")
+        messages=c.execute("select role,content from messages where project_id=%s order by created_at",(project_id,)).fetchall()
+        if body.message:
+            c.execute("insert into messages(tenant_id,project_id,role,content) values(%s,%s,'user',%s)",(project['tenant_id'],project_id,body.message))
+    thread=f"{project['tenant_id']}:{body.draft_id}:{body.expected_version}"
+    async with AsyncPostgresSaver.from_conn_string(settings().database_url) as saver:
+        graph=conversation_graph(saver)
+        input_value=Command(resume=body.confirm) if body.confirm is not None else {"messages":[*messages,{"role":"user","content":body.message}],"draft":row['data']}
+        out=await graph.ainvoke(input_value,{"configurable":{"thread_id":thread}})
+    if out.get('__interrupt__'):
+        return {"answer":out['decision']['answer'],"proposal":out['decision']['edits'],"pending":True}
+    with transaction() as c:
+        if out.get('edits'):
+            draft=edit_draft(c,body.draft_id,actor,body.expected_version,out['edits'])
+            enqueue_if_authorized(c,draft,project)
+        answer=out.get('decision',{}).get('answer','已更新草稿')
+        c.execute("insert into messages(tenant_id,project_id,role,content) values(%s,%s,'assistant',%s)",(project['tenant_id'],project_id,answer))
+    return {"answer":answer,"pending":False}
+
+
+@app.post('/projects/{project_id}/agent')
+async def agent_stream(project_id:str,request:Request,actor:Actor=Depends(authenticate)):
+    from ag_ui.core import RunAgentInput
+    from ag_ui.encoder import EventEncoder
+    from ag_ui_langgraph import LangGraphAgent
+    from langgraph.graph import StateGraph, MessagesState, START, END
+    from langchain_core.messages import AIMessage
+    from fastapi.responses import StreamingResponse
+    # Never accept tenant identity, authoritative draft or a reusable graph thread from the browser.
+    input_data=RunAgentInput.model_validate(await request.json())
+    props=input_data.forwarded_props or {}
+    body=ChatBody.model_validate(props)
+    with transaction() as c:
+        p=project_access(c,project_id,actor,write=True)
+    class TransportState(MessagesState):
+        response:dict
+        draft:dict
+    async def process(_):
+        result=await chat(project_id,body,actor)
+        with transaction() as c:
+            current=c.execute('select data from drafts where id=%s and project_id=%s',(body.draft_id,project_id)).fetchone()
+        return {'messages':[AIMessage(content=result['answer'])],'response':result,'draft':current['data']}
+    builder=StateGraph(TransportState)
+    builder.add_node('process',process);builder.add_edge(START,'process');builder.add_edge('process',END)
+    transport=LangGraphAgent(name='adbuild',graph=builder.compile())
+    input_data.thread_id=f"{p['tenant_id']}:{body.draft_id}"
+    input_data.state={}
+    encoder=EventEncoder(accept=request.headers.get('accept'))
+    async def events():
+        async for event in transport.run(input_data):
+            yield encoder.encode(event)
+    return StreamingResponse(events(),media_type=encoder.get_content_type())

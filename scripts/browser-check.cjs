@@ -1,0 +1,22 @@
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const fs=require('node:fs');
+(async()=>{
+ const browser=await chromium.launch({headless:true});
+ const page=await browser.newPage({viewport:{width:1440,height:1000}});
+ const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.goto(process.env.PREVIEW_URL || 'http://127.0.0.1:3000');await page.waitForLoadState('networkidle');
+ await page.getByRole('heading',{name:'广告搭建工作台',exact:true}).waitFor();
+ if(await page.locator('body').evaluate(e=>e.scrollWidth>window.innerWidth))throw new Error('Desktop overflows');
+ await page.getByRole('button',{name:/登录工作空间/}).click();
+ await page.getByRole('heading',{name:'登录工作空间',exact:true}).waitFor();
+ await page.getByRole('button',{name:'关闭窗口'}).click();
+ await page.getByRole('textbox',{name:'搜索广告需求'}).fill('sample');
+ fs.mkdirSync('artifacts',{recursive:true});
+ await page.screenshot({path:'artifacts/workspace.png',fullPage:true});
+ await page.setViewportSize({width:390,height:844});
+ await page.screenshot({path:'artifacts/mobile.png',fullPage:true});
+ if(await page.locator('body').evaluate(e=>e.scrollWidth>window.innerWidth))throw new Error('Mobile overflows');
+ if(errors.length)throw new Error(errors.join('\n'));
+ console.log('Browser checks passed: desktop, mobile, login modal, search, zero page errors');
+ await browser.close();
+})().catch(e=>{console.error(e);process.exit(1)});
