@@ -1,0 +1,24 @@
+[Unit]
+Description=Adbuild Agent web workspace
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=admin
+Group=admin
+WorkingDirectory=/opt/adbuild-agent/current/frontend/.next/standalone
+Environment=NODE_ENV=production
+Environment=HOSTNAME=127.0.0.1
+Environment=PORT=18790
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/adbuild-agent
+
+[Install]
+WantedBy=multi-user.target

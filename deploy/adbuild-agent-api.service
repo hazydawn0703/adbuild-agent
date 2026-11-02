@@ -1,0 +1,22 @@
+[Unit]
+Description=Adbuild Agent API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=admin
+Group=admin
+WorkingDirectory=/opt/adbuild-agent/current/backend
+EnvironmentFile=/etc/adbuild-agent/runtime.env
+ExecStart=/opt/adbuild-agent/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 18791 --no-access-log
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/adbuild-agent
+
+[Install]
+WantedBy=multi-user.target

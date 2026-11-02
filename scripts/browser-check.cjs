@@ -4,7 +4,7 @@ const fs=require('node:fs');
  const browser=await chromium.launch({headless:true});
  const page=await browser.newPage({viewport:{width:1440,height:1000}});
  const errors=[];page.on('pageerror',e=>errors.push(e.message));
- await page.goto(process.env.PREVIEW_URL || 'http://127.0.0.1:3000');await page.waitForLoadState('networkidle');
+ await page.goto(process.env.PREVIEW_URL || 'http://127.0.0.1:3000/apps/adbuild-agent');await page.waitForLoadState('networkidle');
  await page.getByRole('heading',{name:'广告搭建工作台',exact:true}).waitFor();
  if(await page.locator('body').evaluate(e=>e.scrollWidth>window.innerWidth))throw new Error('Desktop overflows');
  await page.getByRole('button',{name:/登录工作空间/}).click();

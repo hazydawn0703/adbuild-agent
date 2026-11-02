@@ -1,4 +1,4 @@
-export const origin = process.env.NEXT_PUBLIC_API_ORIGIN || 'http://localhost:8000';
+export const origin = '/apps/adbuild-agent/api';
 export async function api(path:string,token:string,init:RequestInit={}) {
   const headers = new Headers(init.headers);
   headers.set('Authorization',`Bearer ${token}`);

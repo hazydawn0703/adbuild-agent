@@ -1,0 +1,23 @@
+[Unit]
+Description=Adbuild Agent execution worker
+After=network-online.target adbuild-agent-api.service
+Wants=network-online.target
+ConditionPathExists=/etc/adbuild-agent/worker-enabled
+
+[Service]
+Type=simple
+User=admin
+Group=admin
+WorkingDirectory=/opt/adbuild-agent/current/backend
+EnvironmentFile=/etc/adbuild-agent/runtime.env
+ExecStart=/opt/adbuild-agent/venv/bin/python -m app.worker
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/adbuild-agent
+
+[Install]
+WantedBy=multi-user.target

@@ -9,9 +9,10 @@ from .settings import settings
 
 def llm(schema):
     cfg = settings()
-    if not cfg.openai_api_key:
-        raise ValueError("尚未配置平台模型 OPENAI_API_KEY")
-    return ChatOpenAI(model=cfg.openai_model,api_key=cfg.openai_api_key,use_responses_api=True).with_structured_output(schema,method="json_schema")
+    if not cfg.llm_api_key:
+        raise ValueError("尚未配置平台模型 LLM_API_KEY")
+    return ChatOpenAI(model=cfg.llm_model,api_key=cfg.llm_api_key,base_url=cfg.llm_base_url,
+                      use_responses_api=False).with_structured_output(schema,method="function_calling")
 
 
 async def propose_mapping(inspection):

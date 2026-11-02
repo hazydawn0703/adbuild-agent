@@ -15,12 +15,28 @@ from . import storage
 from .agent import propose_mapping, conversation_graph
 import asyncio
 import os
+from urllib.parse import urlsplit
+from pydantic import ValidationError
 from .tiktok import EncryptedStorage, connect
 
 oauth_tasks = set()
 
-app = FastAPI(title="Adbuild API",version="0.1.0")
-app.add_middleware(CORSMiddleware,allow_origins=[os.getenv('APP_ORIGIN','http://localhost:3000'),"http://127.0.0.1:3000"],allow_methods=["*"],allow_headers=["Authorization","Content-Type"])
+app = FastAPI(title="Adbuild API",version="0.1.0",root_path=os.getenv('ROOT_PATH',''))
+web=urlsplit(os.getenv('APP_ORIGIN','http://localhost:3000'))
+app.add_middleware(CORSMiddleware,allow_origins=[f'{web.scheme}://{web.netloc}',"http://127.0.0.1:3000"],allow_methods=["*"],allow_headers=["Authorization","Content-Type"])
+
+
+@app.get('/config')
+def public_config():
+    try:
+        cfg=settings()
+    except ValidationError as error:
+        return {'configured':False,'missing':[str(e['loc'][0]) for e in error.errors()],
+                'supabase_url':'','supabase_anon_key':''}
+    # Only public Supabase client settings cross this boundary.
+    return {'configured':True,'missing':[],'supabase_url':cfg.supabase_url,
+            'supabase_anon_key':cfg.supabase_anon_key,'model_configured':bool(cfg.llm_api_key),
+            'model':cfg.llm_model}
 
 
 @app.get('/projects/{project_id}/connection')
