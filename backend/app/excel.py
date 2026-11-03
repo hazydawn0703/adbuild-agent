@@ -331,6 +331,27 @@ def validate_mapping(mapping,wb):
     for rule in mapping.filters:
         if not re.fullmatch(r'[A-Z]{1,3}',rule.column) or column_index_from_string(rule.column)>300 or rule.operator not in ('eq','in','nonempty'): raise ValueError('行筛选无效')
         if rule.operator=='eq' and len(rule.values)!=1 or rule.operator=='in' and not rule.values: raise ValueError('行筛选缺少明确候选值')
+    for field,binding in mapping.bindings.items():
+        if binding.transform=='value':continue
+        source=wb[binding.sheet or mapping.sheet]
+        if binding.kind in ('cell','header'):
+            cell=_anchor(source,source[binding.cell])
+            try:
+                if cell.value is None or not clean(cell.value) or cell.data_type=='e':raise ValueError('固定来源为空或为 Excel 错误值')
+                _transform(cell.value,binding.transform)
+            except ValueError as error:
+                raise ValueError(f'{field} 的固定来源 {source.title}!{cell.coordinate} 不支持 {binding.transform}：{error}') from None
+        else:
+            supported=False
+            for index in range(mapping.first_row,mapping.last_row+1):
+                if not _row_selected(source,index,mapping.filters):continue
+                cell=_anchor(source,source.cell(index,column_index_from_string(binding.column)))
+                if cell.value is None or not clean(cell.value) or cell.data_type=='e':continue
+                try:_transform(cell.value,binding.transform)
+                except ValueError:continue
+                supported=True;break
+            if not supported:
+                raise ValueError(f'{field} 的实际选区没有非空来源支持 {binding.transform}，请更正来源或变换')
 
 
 def _row_selected(sheet,index,filters):

@@ -209,6 +209,7 @@ async def mapping_proposal(file_id:str,actor:Actor=Depends(authenticate)):
     if len(unique)==1:
         maps=next(iter(unique.values()))
         return {'mappings':[m.model_dump() for m in maps],'explanation':'已按确认过的表头语义复用列，并重新检测数据范围。','reused':True,'expected_task_version':task_version}
+    template_review_required=bool(templates)
     from datetime import datetime,timezone,timedelta
     from .intake import save
     lease_id=str(uuid4())
@@ -223,10 +224,13 @@ async def mapping_proposal(file_id:str,actor:Actor=Depends(authenticate)):
         with transaction() as c:
             current,_=access(c,task.id,actor,write=True)
             if current.version!=task_version or not current.lease or current.lease['request_id']!=lease_id: raise HTTPException(409,'分析期间任务已变化')
-            current.analysis['mapping']={'file_id':file_id,'proposal':proposal.model_dump(mode='json'),'base_version':task_version}
+            current.analysis['mapping']={'file_id':file_id,'proposal':proposal.model_dump(mode='json'),'base_version':task_version,
+                                         'template_review_required':template_review_required}
             save(c,current)
     try:
         proposal=await asyncio.wait_for(propose_mapping(row['inspection'],data,task=task,on_progress=persist_progress),180)
+        if template_review_required:
+            proposal.explanation='已确认模板无法通过本次来源、变换或唯一性校验，以下为重新提议的映射，请审核。'+proposal.explanation
         persist_progress(proposal)
     except BaseException as error:
         public_error=ModelServiceError('analysis_timeout',retryable=True) if isinstance(error,TimeoutError) else error if isinstance(error,ModelServiceError) else None
@@ -243,7 +247,7 @@ async def mapping_proposal(file_id:str,actor:Actor=Depends(authenticate)):
         current,_=access(c,task.id,actor,write=True)
         if current.version!=task_version or not current.lease or current.lease['request_id']!=lease_id: raise HTTPException(409,'分析期间任务已变化')
         current.lease=None;current.stage='mapping';current.analysis.pop('mapping_error',None);save(c,current)
-    return {**proposal.model_dump(mode='json'),'expected_task_version':task_version}
+    return {**proposal.model_dump(mode='json'),'expected_task_version':task_version,'template_review_required':template_review_required}
 
 
 def signature(inspection):

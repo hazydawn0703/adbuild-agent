@@ -82,8 +82,8 @@ def test_wrong_fixed_source_and_overlapping_field_mapping_rejected():
 
 def test_ambiguous_header_currency_does_not_choose_a_code():
     w,m=example();w['Schedule']['D1']='Budget USD / EUR'
-    row=parse_requirements(binary(w),'f',[m])[0]
-    assert row.currency=='' and any(i.code=='invalid_transform' for i in row.issues)
+    with pytest.raises(ValueError,match='固定来源.*不支持 currency_code'):
+        parse_requirements(binary(w),'f',[m])
 
 
 def test_paged_read_has_complete_coverage_without_expanding_single_read_budget():
