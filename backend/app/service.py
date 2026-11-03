@@ -27,7 +27,20 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
         if not req or set(edit["values"]) - EDITABLE:
             raise HTTPException(422,"需求或编辑字段无效")
         values = req.model_dump()
-        values.update(edit["values"])
+        patch=dict(edit["values"])
+        from .excel import objective, date_value
+        if 'objective' in patch:
+            normalized=objective(patch['objective'])
+            if patch['objective'] and not normalized: raise HTTPException(422,'无法识别广告目标')
+            patch['objective']=normalized
+        if 'budget_mode' in patch:
+            patch['budget_mode']={'总预算':'lifetime','日预算':'daily'}.get(patch['budget_mode'],patch['budget_mode'])
+        if 'language' in patch:
+            from .rules import normalized_language
+            patch['language']=normalized_language(patch['language'])
+        for field in ('start_at','end_at'):
+            if field in patch: patch[field]=date_value(patch[field],patch.get('timezone',req.timezone))
+        values.update(patch)
         req = Requirement.model_validate(values)
         for field,value in edit["values"].items():
             req.sources[field] = SourceRef(file_id="",sheet="",cell="",raw_value=str(value),kind="confirmed")

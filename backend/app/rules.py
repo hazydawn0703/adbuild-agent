@@ -87,7 +87,7 @@ def evaluate(req: Requirement, history: list[dict], now=None):
                 req.issues.append(Issue(code='history_review',field='start_at',message=f"历史广告 {h.get('ad_id','')} 的排期相近但并非已核实的同一排期，需核对账户时区与实际投放批次，不能直接当作新增"))
         except (ValueError, KeyError):
             pass
-        if h['same_objective'] and req.language and h["language"] and normalized_language(req.language) != normalized_language(h["language"]) and "language" not in req.confirmed_fields:
+        if h['same_objective'] and req.language and h["language"] and normalized_language(req.language) != normalized_language(h["language"]) and "language" not in req.confirmed_fields and req.sources.get('language') and req.sources['language'].kind == 'history':
             req.issues.append(Issue(code="language_conflict",field="language",message=f"本次语言 {req.language} 与历史 {h['language']} 不一致，请确认"))
     if exact:
         changed = any(any(d['field'] in ('budget','budget_mode','language') for d in h['differences']) for h in exact)
