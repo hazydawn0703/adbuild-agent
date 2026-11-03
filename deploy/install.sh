@@ -18,6 +18,8 @@ if [ ! -f /etc/adbuild-agent/runtime.env ]; then
   echo 'Configure MySQL DATABASE_URL, SESSION_SECRET, TOKEN_ENCRYPTION_KEY and DeepSeek settings in /etc/adbuild-agent/runtime.env before deployment' >&2
   exit 1
 fi
+/opt/adbuild-agent/venv/bin/python "$release/deploy/check-release.py"
+sudo systemctl disable --now adbuild-agent-worker
 
 for service in web api worker; do
   sudo install -o root -g root -m 644 "$release/deploy/adbuild-agent-$service.service" /etc/systemd/system/

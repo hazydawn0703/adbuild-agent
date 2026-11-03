@@ -15,7 +15,13 @@ def history_for(conn, project):
 
 def pending_questions(conn,draft_id):
     row=conn.execute('select data from intake_tasks where draft_id=%s',(draft_id,)).fetchone()
-    return row['data'].get('semantic_questions',[]) if row else []
+    if not row:return []
+    questions=list(row['data'].get('semantic_questions',[]))
+    proposal=row['data'].get('proposal')
+    if proposal and proposal['status']=='pending':
+        questions.append({'field':'included','requirement_ids':[e['requirement_id'] for e in proposal['edits']],
+            'question':'存在待采纳的修改提案，请先采纳或拒绝，再确认完整方案','blocking':True})
+    return questions
 
 
 def edit_draft(conn, draft_id, actor, expected_version, edits):
@@ -58,7 +64,7 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
         values.update(patch)
         req = Requirement.model_validate(values)
         for field,value in patch.items():
-            req.sources[field] = SourceRef(file_id="",sheet="",cell="",raw_value=str(value),kind="confirmed")
+            req.sources[field] = SourceRef(file_id="",sheet="",cell="",raw_value=str(value),kind="confirmed",message_id=edit.get('source_message_id'))
             if field not in req.confirmed_fields:
                 req.confirmed_fields.append(field)
         req.issues = [i for i in req.issues if i.field not in patch]

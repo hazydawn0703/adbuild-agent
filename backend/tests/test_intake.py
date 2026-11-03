@@ -81,3 +81,14 @@ def test_pending_semantic_question_blocks_exact_preview_confirmation():
     result=build_preview(draft,[],0,datetime(2026,11,3,tzinfo=timezone.utc),pending_questions=[question])
     assert not result['can_confirm']
     assert result['rows'][0]['field_states']['budget']=='conflict'
+
+
+def test_credentials_are_excluded_from_model_inspection_and_range_reads():
+    import json
+    from app.excel import read_region
+    w=Workbook();s=w.active;s.append(['API key','example-secret']);s.append([])
+    s.append(['Post','Budget','Goal','access_token']);s.append(['https://www.tiktok.com/@a/video/123',50,'followers','another-secret'])
+    out=BytesIO();w.save(out);data=out.getvalue()
+    assert 'example-secret' not in json.dumps(inspect_workbook(data))
+    assert 'another-secret' not in json.dumps(read_region(data,s.title,'D4:D4'))
+    assert 'Budget' in json.dumps(inspect_workbook(data))

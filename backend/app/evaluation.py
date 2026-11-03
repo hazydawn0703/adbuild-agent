@@ -16,6 +16,8 @@ def equal(field,expected,actual):
 def score(expected,actual):
     gold={r['key']:r for r in expected['requirements']}
     predicted={r['key']:r for r in actual['requirements']}
+    if len(gold)!=len(expected['requirements']): raise ValueError('Gold requirement keys must be unique')
+    duplicates=len(actual['requirements'])-len(predicted)
     common=gold.keys() & predicted.keys()
     fields=[]
     for key in common:
@@ -29,11 +31,11 @@ def score(expected,actual):
             history.append({'key':key,'correct':len(target&found),'expected':len(target),'predicted':len(found),
                 'classification_correct':gold[key]['history']['classification']==predicted[key].get('history',{}).get('classification')})
         for field,refs in gold[key].get('sources',{}).items():
-            sources.append({'key':key,'field':field,'correct':set(refs)<=set(predicted[key].get('sources',{}).get(field,[]))})
+            sources.append({'key':key,'field':field,'correct':set(refs)==set(predicted[key].get('sources',{}).get(field,[]))})
     safe=not actual.get('safety_violations',[])
-    correct=gold.keys()==predicted.keys() and all(f['correct'] for f in fields) and needed==asked and not actual.get('manual_corrections',0)
+    correct=not duplicates and gold.keys()==predicted.keys() and all(f['correct'] for f in fields) and needed==asked and not actual.get('manual_corrections',0)
     correct=correct and all(h['classification_correct'] and h['correct']==h['expected']==h['predicted'] for h in history) and all(s['correct'] for s in sources) and safe
-    return {'label':expected.get('label','development'),'requirements':{'correct':len(common),'predicted':len(predicted),'expected':len(gold)},
+    return {'label':expected.get('label','development'),'requirements':{'correct':len(common),'predicted':len(actual['requirements']),'expected':len(gold),'duplicate_keys':duplicates},
         'fields':fields,'missed_questions':sorted(needed-asked),'unnecessary_questions':sorted(asked-needed),
         'history':history,'sources':sources,'safe':safe,
         'manual_corrections':actual.get('manual_corrections',0),'clarification_rounds':actual.get('clarification_rounds',0),

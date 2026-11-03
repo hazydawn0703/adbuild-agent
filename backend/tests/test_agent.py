@@ -46,3 +46,15 @@ def test_scope_does_not_confuse_unchanged_with_excluded():
            'draft':{'requirements':[{'id':'r1','business_no':'101'},{'id':'r2','business_no':'102'}]}}
     decision=ChatDecision(answer='proposal',edits=[ChatEdit(requirement_id='r1',values={'budget':'100'}),ChatEdit(requirement_id='r2',values={'included':False})])
     with pytest.raises(ProposalError):validate_decision(state,decision)
+
+
+def test_empty_structured_output_gets_one_bounded_repair(monkeypatch):
+    from app.agent import structured
+    calls=[]
+    class Model:
+        async def ainvoke(self,messages):
+            calls.append(1)
+            return None if len(calls)==1 else ChatDecision(answer='已识别')
+    monkeypatch.setattr('app.agent.llm',lambda schema:Model())
+    assert asyncio.run(structured(ChatDecision,[])).answer=='已识别'
+    assert len(calls)==2
