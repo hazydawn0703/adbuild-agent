@@ -18,7 +18,7 @@ async def main():
             draft={'id':'d','version':1,'requirements':[{'id':'r1','business_no':'101','objective':goal,'budget':'50'},{'id':'r2','business_no':'102','objective':goal,'budget':'50'}]}
             try:
                 graph=conversation_graph(InMemorySaver())
-                result=await graph.ainvoke({'messages':[{'role':'user','content':text}],'draft':draft,'context':{}},{'configurable':{'thread_id':f'{goal}:{i}:{repeat}'}})
+                result=await graph.ainvoke({'messages':[{'id':f'message-{goal}-{i}-{repeat}','role':'user','content':text}],'draft':draft,'context':{}},{'configurable':{'thread_id':f'{goal}:{i}:{repeat}'}})
                 edits=result['decision']['edits']
                 actual=edits[0]['values'].get(field) if len(edits)==1 and edits[0]['requirement_id']=='r1' else None
                 if field=='language': actual={'英语':'en','英文':'en','english':'en'}.get(str(actual).lower(),actual)

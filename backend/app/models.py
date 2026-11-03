@@ -77,6 +77,7 @@ class Requirement(Model):
     name: str = ""
     post_id: str = ""
     post_url: str = ""
+    platform: str = ''
     objective: Objective | None = None
     budget: Decimal | None = None
     budget_mode: Literal["lifetime", "daily"] | None = None
@@ -129,7 +130,7 @@ class ProjectPolicy(Model):
     valid_until: datetime
 
 
-InputField = Literal['account_id','business_no','name','post_url','post_id','objective','budget','budget_mode','currency','start_at','end_at','timezone','audience','language','identity_id','cta','landing_url']
+InputField = Literal['platform','account_id','business_no','name','post_url','post_id','objective','budget','budget_mode','currency','start_at','end_at','timezone','audience','language','identity_id','cta','landing_url']
 
 
 class Binding(Model):
@@ -151,7 +152,7 @@ class SheetMapping(Model):
     header_row: int = Field(ge=1)
     first_row: int = Field(ge=1)
     last_row: int = Field(ge=1)
-    columns: dict[InputField, Annotated[str, Field(pattern=r'^[A-Z]{1,3}$')]] = Field(default_factory=dict)
+    columns: dict[InputField, Annotated[str, Field(pattern=r'^[A-Z]{1,3}$')]] = Field(default_factory=dict, description='只包含真实存在的逐行列映射，值为Excel大写列字母。缺少来源的字段省略，不填空字符串、字段名或null占位。固定资料使用bindings。')
     bindings: dict[InputField, Binding] = Field(default_factory=dict)
     filters: list[RowFilter] = Field(default_factory=list)
     # Defaults are explicitly accepted by a user, not instructions extracted from cells.
@@ -163,6 +164,7 @@ class MappingProposal(Model):
     explanation: str
     complete: bool = True
     pending_ranges: list["RangeRequest"] = Field(default_factory=list)
+    read_state: dict[str, Any] = Field(default_factory=dict)
     regions: list['RegionProposal'] = Field(default_factory=list)
     requested_ranges: list['RangeRequest'] = Field(default_factory=list)
 
@@ -179,7 +181,7 @@ class ChatEdit(Model):
 
 
 class ScopeSelector(Model):
-    field: Literal['business_no','post_id','name','platform','objective']
+    field: Literal['requirement_id','business_no','post_id','name','platform','objective']
     values: list[str]
 
 
@@ -193,6 +195,11 @@ class TaskScope(Model):
     reason: str = ''
 
 
+class DemandCandidate(Model):
+    values: dict[InputField, Any]
+    sources: dict[str, SourceRef] = Field(default_factory=dict)
+
+
 class RequirementExpansion(Model):
     base_requirement_id: str
     objective: Objective
@@ -201,8 +208,8 @@ class RequirementExpansion(Model):
 
 class ChatDecision(Model):
     answer: str
-    scope: TaskScope | None = None
     expansions: list[RequirementExpansion] = Field(default_factory=list)
+    additions: list[DemandCandidate] = Field(default_factory=list)
     edits: list[ChatEdit] = Field(default_factory=list)
     questions: list['Clarification'] = Field(default_factory=list)
 
@@ -249,6 +256,7 @@ class ChangeProposal(Model):
     id: str
     draft_version: int
     expansions: list[RequirementExpansion] = Field(default_factory=list)
+    additions: list[DemandCandidate] = Field(default_factory=list)
     edits: list[ChatEdit]
     reason: str
     status: Literal['pending','accepted','rejected'] = 'pending'

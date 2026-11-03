@@ -7,7 +7,7 @@ from .rules import evaluate, check_policy, fingerprint
 from .db import transaction, json_value
 from .auth import project_access
 
-EDITABLE = {"included","account_id","post_id","post_url","name","objective","budget","budget_mode","currency","start_at","end_at","timezone","audience","language","identity_id","cta","landing_url","structure"}
+EDITABLE = {"included","account_id","post_id","post_url","name","objective","budget","budget_mode","currency","start_at","end_at","timezone","audience","language","identity_id","cta","landing_url","structure","platform"}
 
 
 def history_for(conn, project):
@@ -18,9 +18,16 @@ def pending_questions(conn,draft_id):
     row=conn.execute('select data from intake_tasks where draft_id=%s',(draft_id,)).fetchone()
     if not row:return []
     questions=list(row['data'].get('semantic_questions',[]))
+    analysis=row['data'].get('analysis') or {}
+    if row['data'].get('lease') or analysis.get('resume_available') or (analysis.get('mapping_error') or {}).get('resume_available'):
+        questions.append({'field':'scope','scope':'task','requirement_ids':[],
+            'question':'本任务还有未完成的分析，请恢复或重新分析后再确认完整方案','blocking':True})
+    if (row['data'].get('scope') or {}).get('status')!='resolved' and not any(q.get('scope')=='task' and q.get('field')=='scope' for q in questions):
+        questions.append({'field':'scope','scope':'task','requirement_ids':[],
+            'question':'本次需求范围尚未确定，请先明确选择范围并重新分析，再确认完整方案','blocking':True})
     proposal=row['data'].get('proposal')
     if proposal and proposal['status']=='pending':
-        questions.append({'field':'included','requirement_ids':[e['requirement_id'] for e in proposal['edits']],
+        questions.append({'field':'included','scope':'task' if proposal.get('additions') else 'requirements','requirement_ids':list(dict.fromkeys([e['requirement_id'] for e in proposal['edits']]+[e['base_requirement_id'] for e in proposal.get('expansions',[])])),
             'question':'存在待采纳的修改提案，请先采纳或拒绝，再确认完整方案','blocking':True})
     return questions
 
@@ -31,11 +38,11 @@ def ensure_draft_active(conn,draft_id):
 
 
 def edit_draft(conn, draft_id, actor, expected_version, edits):
-    ensure_draft_active(conn,draft_id)
     row = conn.execute("select * from drafts where id=%s for update",(draft_id,)).fetchone()
     if not row:
         raise HTTPException(404,"草稿不存在")
     project = project_access(conn,row["project_id"],actor,write=True)
+    ensure_draft_active(conn,draft_id)
     draft = BuildDraft.model_validate(row["data"])
     if draft.version != expected_version or draft.status not in ("draft","attention","approved"):
         raise HTTPException(409,"草稿版本已变化或已经冻结，请刷新")
@@ -46,7 +53,7 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
             raise HTTPException(422,"需求或编辑字段无效")
         values = req.model_dump()
         patch=dict(edit["values"])
-        from .excel import normalize_value
+        from .excel import normalize_value,post_id_from_url
         from .models import StructureSpec
         for field,value in list(patch.items()):
             if field=='structure':
@@ -55,15 +62,23 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
                 try: patch[field]=normalize_value(field,value,patch.get('timezone',req.timezone))
                 except (ValueError,TypeError) as error: raise HTTPException(422,str(error))
         if 'post_url' in patch and patch['post_url']:
-            import re
-            match=re.search(r'/video/(\d+)',patch['post_url'])
-            if match: patch['post_id']=match[1]
+            linked=post_id_from_url(patch['post_url'])
+            if not linked:raise HTTPException(422,'请提供含明确帖子 ID 的 TikTok 视频链接')
+            if 'post_id' in patch and patch['post_id'] and patch['post_id']!=linked:
+                raise HTTPException(422,'帖子 ID 与 TikTok 视频链接中的 ID 不一致，请核对后一起提交')
+            patch['post_id']=linked
+        if ('post_id' in patch or 'post_url' in patch) and patch.get('post_url',req.post_url) and patch.get('post_id',req.post_id):
+            linked=post_id_from_url(patch.get('post_url',req.post_url))
+            if linked and linked!=patch.get('post_id',req.post_id):
+                raise HTTPException(422,'帖子 ID 与保留的视频链接冲突，请更新或清空原链接后再提交')
         values.update(patch)
         req = Requirement.model_validate(values)
         for field,value in patch.items():
             offered=edit.get('sources',{}).get(field)
             previous=req.sources.get(field)
-            if offered:
+            if field=='included':
+                req.sources[field]=SourceRef(file_id='',sheet='',cell='',raw_value=str(req.included),kind='confirmed',message_id=edit.get('source_message_id'))
+            elif offered:
                 ref=SourceRef.model_validate(offered)
                 if ref.file_id:
                     source_file=conn.execute('select id from files where id=%s and project_id=%s',(ref.file_id,project['id'])).fetchone()
@@ -106,7 +121,7 @@ def submit_approved_draft(conn, draft, project):
     ensure_draft_active(conn,draft.id)
     # Caller holds the project lock. Reservation and queue insertion commit atomically.
     project = conn.execute("select * from projects where id=%s for update",(project["id"],)).fetchone()
-    preview=build_preview(draft,history_for(conn,project),project['policy_version'],pending_questions=pending_questions(conn,draft.id))
+    preview=build_preview(draft,history_for(conn,project),project['policy_version'],pending_questions=pending_questions(conn,draft.id),expected_account_id=project['account_id'])
     if draft.status!='approved' or not preview['approval_valid']:
         raise HTTPException(409,'必须先人工确认当前版本的搭建预览')
     if not project["policy"]:
@@ -160,4 +175,47 @@ def apply_expansions(conn,draft,actor,expansions,message_id):
     draft.requirements=[r for r in draft.requirements if r.id not in replaced]+added
     draft.version+=1;draft.approval=None;draft.status='draft'
     conn.execute('update drafts set version=%s,data=%s where id=%s',(draft.version,json_value(draft),draft.id))
+    return draft
+
+
+def apply_additions(conn,draft,project,actor,additions,message_id,task):
+    """Adopt grounded message candidates into the one canonical draft."""
+    from .models import DemandCandidate
+    from .provenance import supported_source
+    from .excel import normalize_value
+    from .rules import fingerprint
+    state={'messages':task.messages,'context':task.context.model_dump(mode='json')}
+    added=[]
+    for raw in additions:
+        candidate=DemandCandidate.model_validate(raw)
+        values={};sources={}
+        for field,value in candidate.values.items():
+            if value in (None,''): continue
+            values[field]=normalize_value(field,value,candidate.values.get('timezone',''))
+            sources[field]=supported_source(state,{},field,values[field],candidate.sources.get(field))
+        if values.get('post_url') and not values.get('post_id'):
+            import re
+            match=re.search(r'/video/(\d+)',values['post_url'])
+            if match: values['post_id']=match[1];sources['post_id']=sources['post_url']
+        if not values.get('post_id'): raise HTTPException(422,'新增候选需要可核实的帖子 ID 或视频链接')
+        if not values.get('account_id') and project.get('account_id'):
+            values['account_id']=normalize_value('account_id',project['account_id'])
+            sources['account_id']=SourceRef(file_id='',sheet='',cell='',raw_value=project['account_id'],kind='template')
+        for ref in sources.values(): ref.accepted_by=actor.user_id;ref.accepted_at=datetime.now(timezone.utc)
+        added.append(Requirement(id=str(uuid4()),**values,sources=sources,confirmed_fields=list(sources)))
+    if not added: raise HTTPException(422,'没有可采纳的新需求')
+    current=list(draft.requirements) if draft else []
+    seen={fingerprint(r) for r in current}
+    for req in added:
+        key=fingerprint(req)
+        if key in seen: raise HTTPException(422,'候选与已有需求重复，请修改现有需求或明确新排期')
+        seen.add(key)
+    is_new=draft is None
+    if is_new: draft=BuildDraft(id=str(uuid4()),project_id=project['id'])
+    draft.requirements=[evaluate(r,history_for(conn,project)) for r in current+added];draft.approval=None;draft.status='draft'
+    if is_new:
+        conn.execute('insert into drafts(id,tenant_id,project_id,version,data) values(%s,%s,%s,%s,%s)',(draft.id,project['tenant_id'],project['id'],draft.version,json_value(draft)))
+    else:
+        draft.version+=1
+        conn.execute('update drafts set version=%s,data=%s where id=%s',(draft.version,json_value(draft),draft.id))
     return draft

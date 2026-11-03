@@ -21,3 +21,4 @@ def delete_project_data(c, p):
         c.execute('delete from '+table+' where project_id=%s',(project_id,))
     c.execute('update audit set project_id=null where project_id=%s',(project_id,))
     c.execute('delete from projects where id=%s',(project_id,))
+

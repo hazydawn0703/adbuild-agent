@@ -142,3 +142,4 @@ def test_wrong_project_cannot_supply_a_historical_reference():
     class DB:
         def execute(self,*args):return Result(None)
     with pytest.raises(ValueError,match='当前项目'):verified_history_file(DB(),'other-project',history_reference(historical(),'budget'),'budget',40)
+

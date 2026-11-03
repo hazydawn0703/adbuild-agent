@@ -7,9 +7,10 @@
 * 后端：`cd backend && python -m pytest tests -q`。
 * 原始私有样例：设置 `ADBUILD_FIXTURE_DIR`，不得提交源文件。
 * MySQL 集成：`TEST_DATABASE_URL` 仅允许指向以 `_test` 结尾的隔离数据库，先使用当前 schema 初始化业务表及成熟 SDK checkpoint 表。
-* 浏览器：启动前端后在 frontend 目录执行 `npx playwright test`；`TEST_APP_URL` 可指定测试地址。浏览器用例使用受控接口数据验证状态恢复，MySQL API 集成另行验证真实事务。
+* 浏览器：启动前端后在 frontend 目录执行 `npx playwright test`；`TEST_APP_URL` 可指定测试地址。每次使用新的结果目录，禁止复用旧 `--output`。浏览器用例使用受控接口数据验证状态恢复，真实 API 完整链路使用 `scripts/browser-workflow.cjs` 独立记录。
 * 构建：`npm run typecheck && npm run build`。
 * 模型开发回归：在 backend 目录执行 `PYTHONPATH=. python evals/run_model.py --output <私有结果文件>`，60 个已知字段修改场景，每个重复三次，保留全部结果。
+* 真实任务流程：`evals/run_workflow.py` 从空任务、真实认证和自动映射开始，使用隔离 MySQL 与既定模型；正常补充答案、首次失败和有界依赖恢复分别记录。已揭示的私有输入用 `evals/run_regression.py` 单次运行并封存，参考答案仅供封存后的独立评分。
 
 ## 用户最终验证
 
@@ -25,4 +26,4 @@
 
 运行后核对 `/config`、Worker 状态、原项目文件与草稿、执行批次及预算预占。错误发生在切换前即停止发布；不得以打开真实执行作为分析任务的恢复方法。
 
-共享 TLS 站点在主机配置阶段仅引用一次 `/etc/adbuild-agent/nginx.locations.conf`。日常发布只更新本应用的 include 文件并校验 Nginx，不改写共享站点，也不使用历史整站备份覆盖当前配置。
+共享 TLS 站点在主机配置阶段引用本应用的独立 include。日常发布核对路由字节与既定配置一致并运行 Nginx 检查，不替换 include、不改写共享站点、不重载未变更路由，也不使用历史整站备份覆盖当前配置。

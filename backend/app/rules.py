@@ -1,9 +1,10 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 import json
+import re
 from .models import Requirement, Issue, ProjectPolicy
-from .excel import date_value
+from .excel import date_value,zone_value
 
 
 def normalized_language(value):
@@ -150,6 +151,19 @@ def evaluate(req: Requirement, history: list[dict], now=None):
             req.issues.append(Issue(code="timezone",field=field,message="排期缺少有效时区"))
     if req.end_at and req.end_at.tzinfo and req.end_at <= now:
         req.issues.append(Issue(code="expired",field="end_at",message="排期已经结束，不会自动平移"))
+    elif req.end_at is None and req.timezone and any(i.code=='invalid_date_precision' and i.field=='end_at' for i in req.issues):
+        source=req.sources.get('end_at')
+        if source:
+            try:
+                # A date-only Excel serial does not authorize a midnight schedule.
+                # Its entire calendar day can nevertheless be proved past in an
+                # explicit timezone without choosing any missing start/end time.
+                day=re.fullmatch(r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})',source.raw_value)
+                last_day=date(*(int(v) for v in day.groups())) if day else datetime.fromisoformat(source.raw_value).date()
+                if last_day<now.astimezone(zone_value(req.timezone)).date():
+                    req.issues.append(Issue(code='expired',field='end_at',message=f'原始结束日期 {last_day.isoformat()} 在 {req.timezone} 下已经过去；具体结束时刻仍缺失，不会自动补时或平移'))
+            except (ValueError,KeyError,TypeError):
+                pass
     if req.start_at and req.end_at and bool(req.start_at.tzinfo) == bool(req.end_at.tzinfo) and req.start_at >= req.end_at:
         req.issues.append(Issue(code="schedule",field="end_at",message="结束时间必须晚于开始时间"))
     if not req.structure and req.objective == "traffic" and (not req.landing_url.startswith("https://") or not req.cta):

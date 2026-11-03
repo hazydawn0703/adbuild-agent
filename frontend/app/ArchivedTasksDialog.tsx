@@ -18,3 +18,4 @@ export default function ArchivedTasksDialog({project,token,onClose,onView,onRest
   {target&&<Modal title="恢复搭建任务" className="policy-modal" busy={busy} error={error} onClose={()=>{setTarget(null);setError('')}}><div className="modal-body"><p>确定恢复「{target.name}」？恢复后可继续处理任务。</p></div><footer className="modal-footer"><button className="outline" disabled={busy} onClick={()=>{setTarget(null);setError('')}}>取消</button><button className="primary" disabled={busy} onClick={restore}>确认恢复</button></footer></Modal>}
  </Modal>
 }
+

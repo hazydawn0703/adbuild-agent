@@ -33,3 +33,4 @@ test('archived dialog scopes to the menu project and opens read-only tasks',asyn
  await expect(page.getByLabel('选择搭建任务')).toHaveValue('archived');await expect(page.getByRole('button',{name:'重命名搭建任务'})).toBeDisabled();
  expect(writes).toEqual([]);
 });
+

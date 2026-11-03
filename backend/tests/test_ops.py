@@ -164,3 +164,4 @@ def test_project_cleanup_queues_files_and_threads_and_blocks_active_runs():
     assert cleanup == {'storage_paths':['tenant/file.xlsx'],'checkpoint_threads':['tenant:task','tenant:task:request']}
     for table in ('deployments','runs','intake_tasks','drafts','files','history','messages','mapping_templates','project_contexts'):
         assert ('delete from '+table+' where project_id=%s',('p',)) in c.statements
+

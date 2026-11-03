@@ -9,7 +9,7 @@ from .rules import evaluate
 from .structure import campaign_tree, redact_material_secrets
 
 
-def build_preview(draft: BuildDraft, history: list[dict], policy_version: int, now=None, pending_questions=None):
+def build_preview(draft: BuildDraft, history: list[dict], policy_version: int, now=None, pending_questions=None, expected_account_id=None):
     rows=[]
     totals={}
     issues=[]
@@ -29,6 +29,8 @@ def build_preview(draft: BuildDraft, history: list[dict], policy_version: int, n
         if action=='create':
             campaigns.append(tree)
             selected.append(req.id)
+            if expected_account_id and req.account_id and req.account_id!=expected_account_id:
+                issues.append({'requirement_id':req.id,'code':'account_binding','field':'account_id','message':'需求账户与本项目绑定账户不一致，请核对来源或切换对应项目','blocking':True})
             # Multiple groups in one requirement are intentional; separate duplicate
             # requirements cannot evade checking by changing group names or budgets.
             identities=sorted({(a['material_kind'],a['post_id']) for g in tree['adgroups'] for a in g['ads']})
@@ -44,9 +46,9 @@ def build_preview(draft: BuildDraft, history: list[dict], policy_version: int, n
     if not selected:
         issues.append({'requirement_id':'','code':'empty_selection','field':'included','message':'没有选中需要新增的广告需求','blocking':True})
     for question in pending_questions or []:
-        if question.get('blocking',True) and set(question['requirement_ids']) & set(selected):
+        if question.get('blocking',True) and (question.get('scope')=='task' or set(question['requirement_ids']) & set(selected)):
             issues.append({'requirement_id':'','code':'semantic_review','field':question['field'],'message':question['question'],'blocking':True})
-    snapshot={'draft_id':draft.id,'version':draft.version,'policy_version':policy_version,'rows':rows,'campaigns':campaigns,
+    snapshot={'expected_account_id':expected_account_id,'draft_id':draft.id,'version':draft.version,'policy_version':policy_version,'rows':rows,'campaigns':campaigns,
               'counts':{'campaigns':len(campaigns),'adgroups':sum(len(c['adgroups']) for c in campaigns),
                         'ads':sum(len(g['ads']) for c in campaigns for g in c['adgroups']),'skipped':len(rows)-len(selected)},
               'totals':[{'currency':currency,'budget_mode':mode,'amount':str(amount)} for (currency,mode),amount in sorted(totals.items())],

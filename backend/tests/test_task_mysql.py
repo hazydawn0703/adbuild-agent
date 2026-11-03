@@ -27,7 +27,7 @@ def database(monkeypatch):
         c.execute('insert into users(id,email,password_hash) values(%s,%s,%s)',(user,user+'@test.invalid','unused'))
         c.execute('insert into tenants(id,name) values(%s,%s)',(tenant,'integration'))
         c.execute('insert into memberships values(%s,%s,%s)',(tenant,user,'admin'))
-        c.execute('insert into projects(id,tenant_id,name,account_id) values(%s,%s,%s,%s)',(project,tenant,'test','account'))
+        c.execute('insert into projects(id,tenant_id,name,account_id) values(%s,%s,%s,%s)',(project,tenant,'test','7312345678901234567'))
     app.dependency_overrides[authenticate]=lambda:Actor(user)
     yield project
     app.dependency_overrides.clear()
@@ -65,6 +65,10 @@ def test_task_upload_mapping_answers_replay_and_tenant_scope(database,tmp_path,m
             mapping={'sheet':'Sheet','header_row':1,'first_row':2,'last_row':2,'columns':{'post_url':'A','objective':'B','budget':'C'}}
             result=await client.post(f'/files/{fileid}/mapping/confirm',json={'mappings':[mapping],'expected_task_version':2,'request_id':str(uuid4())})
             assert result.status_code==200,result.text
+            # This integration checks answers/replay; selecting a row is explicit,
+            # never implied by successful column mapping.
+            selected=await client.post('/drafts/'+result.json()['id']+'/edit',json={'expected_version':result.json()['version'],'edits':[{'requirement_id':result.json()['requirements'][0]['id'],'values':{'included':True}}]})
+            assert selected.status_code==200,selected.text
             state=(await client.get('/tasks/'+taskid)).json()
             q=next(q for q in state['task']['questions'] if q['field']=='currency')
             body={'task_id':taskid,'request_id':str(uuid4()),'expected_version':state['task']['version'],'expected_draft_version':state['draft']['version'],'action':'answer','answers':{q['id']:'USD'}}
@@ -114,10 +118,10 @@ def test_checkpoint_proposal_requires_exact_accept_and_survives_reload(database,
 
 
 def test_predraft_question_answer_and_request_replay_use_task_scope(database,monkeypatch):
-    from app.models import ChatDecision, Clarification
+    from app.models import TaskScope
     class Model:
         async def ainvoke(self,messages):
-            return ChatDecision(answer='请先明确本次范围',questions=[Clarification(id='model-id',field='scope',scope='task',question='本次选择哪些业务编号？')])
+            return TaskScope(reason='本次选择哪些业务编号？')
     monkeypatch.setattr('app.agent.llm',lambda schema:Model())
     async def scenario():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
@@ -143,6 +147,82 @@ def test_predraft_question_answer_and_request_replay_use_task_scope(database,mon
     asyncio.run(scenario())
 
 
+def test_message_candidate_can_be_accepted_without_existing_draft_once(database,monkeypatch):
+    from app.models import ChatDecision,DemandCandidate,TaskScope,ScopeSelector
+    import json
+    class ScopeModel:
+        async def ainvoke(self,messages):
+            payload=json.loads(messages[-1][1])
+            source=next(m for m in reversed(payload['messages']) if m['role']=='user')
+            return TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='post_id',values=['7700098765432101234'])],message_ids=[source['id']])
+    class Model:
+        async def ainvoke(self,_):
+            return ChatDecision(answer='消息中新需求候选',additions=[DemandCandidate(values={
+                'account_id':'7700012345678901234','post_id':'7700098765432101234','objective':'followers','budget':'50'})])
+    monkeypatch.setattr('app.agent.llm',lambda schema:ScopeModel() if schema is TaskScope else Model())
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+            task=(await client.post(f'/projects/{database}/tasks',json={'name':'message-first'})).json()
+            request={'task_id':task['id'],'request_id':str(uuid4()),'expected_version':task['version'],'action':'message',
+                     'message':'新增广告，账户7700012345678901234，帖子7700098765432101234，目标涨粉，预算50美元。'}
+            response=await client.post(f'/projects/{database}/chat',json=request)
+            assert response.status_code==200,response.text
+            state=(await client.get('/tasks/'+task['id'])).json()
+            assert state['draft'] is None
+            assert state['task']['proposal']['draft_version']==0
+            assert len(state['task']['proposal']['additions'])==1
+            accept={'task_id':task['id'],'request_id':str(uuid4()),'expected_version':state['task']['version'],
+                    'expected_draft_version':None,'action':'accept','proposal_id':state['task']['proposal']['id']}
+            accepted=await client.post(f'/projects/{database}/chat',json=accept)
+            assert accepted.status_code==200,accepted.text
+            assert (await client.post(f'/projects/{database}/chat',json=accept)).json()==accepted.json()
+            again=(await client.get('/tasks/'+task['id'])).json()
+            assert again['task']['draft_id']==again['draft']['id']
+            assert len(again['draft']['requirements'])==1
+            assert again['draft']['requirements'][0]['post_id']=='7700098765432101234'
+            assert again['task']['proposal']['status']=='accepted'
+            with db.transaction() as c:
+                assert c.execute('select count(*) n from drafts where project_id=%s',(database,)).fetchone()['n']==1
+                for table in ('runs','deployments'):
+                    assert c.execute('select count(*) n from '+table+' where project_id=%s',(database,)).fetchone()['n']==0
+    asyncio.run(scenario())
+
+
+def test_scope_resolution_selects_existing_candidate_without_boolean_literal_source(database,monkeypatch):
+    import json
+    from app.models import TaskScope,ScopeSelector,ChatDecision,Requirement,BuildDraft
+    code='selection-'+uuid4().hex[:8]
+    calls=[]
+    class ScopeModel:
+        async def ainvoke(self,messages):
+            calls.append('scope')
+            payload=json.loads(messages[-1][1])
+            source=next(m for m in reversed(payload['messages']) if m['role']=='user')
+            return TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='business_no',values=[code])],message_ids=[source['id']])
+    class FieldsModel:
+        async def ainvoke(self,_):calls.append('fields');return ChatDecision(answer='使用已识别的本次需求')
+    monkeypatch.setattr('app.agent.llm',lambda schema:ScopeModel() if schema is TaskScope else FieldsModel())
+    async def scenario():
+        draft=BuildDraft(id=str(uuid4()),project_id=database,requirements=[Requirement(id='wanted',business_no=code,included=False),Requirement(id='reference',business_no='reference',included=False)])
+        with db.transaction() as c:
+            tenant=c.execute('select tenant_id from projects where id=%s',(database,)).fetchone()['tenant_id']
+            c.execute('insert into drafts(id,tenant_id,project_id,version,data) values(%s,%s,%s,%s,%s)',(draft.id,tenant,database,1,db.json_value(draft)))
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+            task=(await client.post(f'/projects/{database}/tasks',json={'draft_id':draft.id})).json()
+            request={'task_id':task['id'],'request_id':str(uuid4()),'expected_version':task['version'],'expected_draft_version':1,'action':'analyze',
+                     'message':f'本次只搭建业务编号 {code}，其他记录保留为参考'}
+            response=await client.post(f'/projects/{database}/chat',json=request)
+            assert response.status_code==200,response.text
+            assert (await client.post(f'/projects/{database}/chat',json=request)).json()==response.json()
+            state=(await client.get('/tasks/'+task['id'])).json()
+            assert [r['id'] for r in state['draft']['requirements'] if r['included']]==['wanted']
+            assert state['task']['scope']['status']=='resolved'
+            assert state['draft']['requirements'][0]['sources']['included']['message_id']
+            assert calls==['scope','fields']
+            with db.transaction() as c:
+                for table in ('runs','deployments'):
+                    assert c.execute('select count(*) n from '+table+' where project_id=%s',(database,)).fetchone()['n']==0
+    asyncio.run(scenario())
 def test_archive_restore_and_project_delete(database):
     async def scenario():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:

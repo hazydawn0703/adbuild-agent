@@ -4,6 +4,8 @@ release="$1"
 case "$release" in /opt/adbuild-agent/releases/*) ;; *) echo 'Invalid release path' >&2; exit 1;; esac
 test -f "$release/frontend/package-lock.json"
 sudo install -d -o admin -g admin -m 755 /opt/adbuild-agent
+exec 9>/opt/adbuild-agent/deploy.lock
+flock -n 9 || { echo 'Another adbuild release is in progress' >&2; exit 1; }
 sudo install -d -o root -g admin -m 750 /etc/adbuild-agent
 if [ ! -x /opt/adbuild-agent/venv/bin/python ]; then
   python3 -m venv /opt/adbuild-agent/venv
@@ -20,6 +22,10 @@ if [ ! -f /etc/adbuild-agent/runtime.env ]; then
   exit 1
 fi
 /opt/adbuild-agent/venv/bin/python "$release/deploy/check-release.py"
+# Routing is provisioned on the shared host. An application release must not
+# replace the include or reload the host's configuration when routes are stable.
+sudo cmp -s "$release/deploy/nginx.locations.conf" /etc/adbuild-agent/nginx.locations.conf
+sudo nginx -t
 
 for service in web api worker; do
   sudo install -o root -g root -m 644 "$release/deploy/adbuild-agent-$service.service" /etc/systemd/system/
@@ -35,10 +41,5 @@ for attempt in $(seq 1 30); do
 done
 curl --fail --silent http://127.0.0.1:18791/health
 curl --fail --silent -o /dev/null http://127.0.0.1:18790/apps/adbuild-agent
-sudo install -o root -g root -m 644 "$release/deploy/nginx.locations.conf" /etc/adbuild-agent/nginx.locations.conf
-# The shared TLS host includes nginx.locations.conf once during host provisioning.
-# Application releases only update their own namespace; never rewrite shared sites.
-sudo nginx -t
-sudo systemctl reload nginx
 sudo systemctl is-active adbuild-agent-web adbuild-agent-api adbuild-agent-worker nginx
 echo 'Deployment ready: https://stratos.run/apps/adbuild-agent'

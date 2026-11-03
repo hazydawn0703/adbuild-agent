@@ -17,3 +17,4 @@ export default function ProjectItem({project,selected,busy,onSelect,onAction}:{p
   </div>
  </div>
 }
+

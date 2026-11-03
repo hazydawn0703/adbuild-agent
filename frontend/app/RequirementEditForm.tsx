@@ -4,19 +4,24 @@ import {Settings2} from 'lucide-react';
 import {beijingTime,objectiveOptions} from './project-form-values';
 import type {Requirement} from '../lib/types';
 
-const fieldNames=['name','account_id','objective','identity_id','budget','budget_mode','currency','timezone','start_at','end_at','audience','language','cta','landing_url'] as const;
+const fieldNames=['name','account_id','objective','post_id','post_url','identity_id','budget','budget_mode','currency','timezone','start_at','end_at','audience','language','cta','landing_url'] as const;
 type EditField=typeof fieldNames[number];
 export type RequirementEditValues=Pick<Requirement,EditField>;
 
 export default function RequirementEditForm({requirement,busy,readOnly=false,onSave,onCancel}:{requirement:Requirement;busy:boolean;readOnly?:boolean;onSave:(values:RequirementEditValues)=>Promise<void>;onCancel:()=>void}) {
   const [values,setValues]=useState(()=>Object.fromEntries(fieldNames.map(field=>[field,String(requirement[field]??'')])) as Record<EditField,string>);
-  function update(field:EditField,value:string){setValues(current=>({...current,[field]:value}))}
+  const [error,setError]=useState('');
+  function update(field:EditField,value:string){setError('');setValues(current=>({...current,[field]:value}))}
   async function submit(e:React.FormEvent<HTMLFormElement>){
     e.preventDefault();if(readOnly)return;
+    setError('');
+    const linked=values.post_url.match(/\/video\/(\d+)/)?.[1];
+    if(linked&&values.post_id&&linked!==values.post_id){setError('帖子 ID 与链接中的视频 ID 不一致，请修改链接或清空旧链接后再保存。');return}
     await onSave({...values,objective:values.objective||null,budget:values.budget||null,budget_mode:values.budget_mode||null,start_at:values.start_at||null,end_at:values.end_at||null});
   }
   function dateField(field:'start_at'|'end_at',label:string){return <label>{label}<input aria-label={label} type="datetime-local" step="1" value={beijingTime(values[field])} onChange={e=>update(field,e.target.value?`${e.target.value}+08:00`:'')}/><span className="policy-help">北京时间（UTC+8）；留空表示待补充。</span></label>}
   return <form className="policy-form modal-form" onSubmit={submit}>
+    {error&&<p className="modal-error" role="alert">{error}</p>}
     <div className="modal-body">
       <div className="policy-intro"><Settings2 size={20}/><div><strong>{requirement.name||'广告需求配置'}</strong><p>修改后生成新版本，原有搭建确认会失效。保存不会创建广告或启用投放。</p></div></div>
       <fieldset className="policy-fields" disabled={busy||readOnly}>
@@ -25,6 +30,8 @@ export default function RequirementEditForm({requirement,busy,readOnly=false,onS
           <label>广告账户<input value={values.account_id} onChange={e=>update('account_id',e.target.value)}/></label>
           <label>广告目标<select aria-label="广告目标" value={values.objective} onChange={e=>update('objective',e.target.value)}><option value="">待补充</option>{objectiveOptions.map(option=><option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
           <label>广告身份<input value={values.identity_id} onChange={e=>update('identity_id',e.target.value)}/></label>
+          <label>帖子 ID<input inputMode="numeric" pattern="[0-9]*" value={values.post_id} onChange={e=>update('post_id',e.target.value)} placeholder="待补充"/></label>
+          <label>TikTok 帖子链接<input type="url" value={values.post_url} onChange={e=>update('post_url',e.target.value)} placeholder="https://www.tiktok.com/@brand/video/…"/></label>
         </div></section>
         <section className="policy-section"><h3>预算与排期</h3><div className="policy-grid">
           <label>预算金额<input inputMode="decimal" pattern="[0-9]+([.][0-9]+)?" value={values.budget} onChange={e=>update('budget',e.target.value)} placeholder="待补充"/></label>

@@ -96,3 +96,4 @@ test('project menu targets its own row and toolbar actions fit all screen sizes'
  expect(deletes).toEqual(['/projects/other']);
  await expect(page.locator('.project.selected')).toHaveText('当前项目');
 });
+

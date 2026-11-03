@@ -82,8 +82,8 @@ def test_wrong_fixed_source_and_overlapping_field_mapping_rejected():
 
 def test_ambiguous_header_currency_does_not_choose_a_code():
     w,m=example();w['Schedule']['D1']='Budget USD / EUR'
-    row=parse_requirements(binary(w),'f',[m])[0]
-    assert row.currency=='' and any(i.code=='invalid_transform' for i in row.issues)
+    with pytest.raises(ValueError,match='固定来源.*不支持 currency_code'):
+        parse_requirements(binary(w),'f',[m])
 
 
 def test_paged_read_has_complete_coverage_without_expanding_single_read_budget():
@@ -142,3 +142,16 @@ def test_export_preserves_budget_levels_without_collapsing_them():
     row=parse_export(binary(w))[0]
     assert row['campaign_budget']=='100' and row['adgroup_budget']=='40'
     assert row['campaign_budget_mode']=='lifetime' and row['adgroup_budget_mode']=='daily'
+
+
+def test_one_row_can_map_to_independent_goals_without_shared_requirement_ids():
+    w=Workbook();s=w.active;s.append(['Post','Followers','Video views']);s.append(['https://www.tiktok.com/@x/video/7712345678901234567',50,100])
+    maps=[SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,columns={'post_url':'A','budget':col},bindings={'objective':Binding(kind='header',cell=col+'1')}) for col in ('B','C')]
+    rows=parse_requirements(binary(w),'file',maps)
+    assert len(rows)==2 and len({r.id for r in rows})==2
+    assert {(r.objective,str(r.budget)) for r in rows}=={('followers','50'),('video_views','100')}
+
+
+def test_budget_separator_ambiguity_is_not_silently_changed():
+    with pytest.raises(ValueError,match='分隔符'):normalize_value('budget','1,00')
+    assert str(normalize_value('budget','1,000.25'))=='1000.25'

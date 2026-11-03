@@ -1,6 +1,5 @@
 import asyncio
 from .db import transaction
-from .executor import execute
 
 async def cleanup(data):
     from .storage import target
@@ -24,7 +23,9 @@ async def main():
         try:
             if 'storage_paths' in data:
                 await cleanup(data)
-            else: await execute(data['run_id'],data.get('action','resume'))
+            else:
+                from .executor import execute
+                await execute(data['run_id'],data.get('action','resume'))
         except Exception as e:
             if 'storage_paths' in data:
                 await asyncio.sleep(2)

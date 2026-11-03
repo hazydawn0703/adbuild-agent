@@ -64,17 +64,17 @@ def test_invalid_question_never_enters_completed_checkpoint(monkeypatch):
         graph=conversation_graph(InMemorySaver())
         config={'configurable':{'thread_id':'invalid-question'}}
         with pytest.raises(ProposalError):
-            await graph.ainvoke({'messages':[],'draft':None,'context':{}},config)
+            await graph.ainvoke({'messages':[{'id':'m','role':'user','content':'新增帖子123，目标涨粉'}],'draft':None,'context':{},'scope':TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='post_id',values=['123'])],message_ids=['m']).model_dump(mode='json')},config)
         checkpoint=await graph.aget_state(config)
         assert not checkpoint.values.get('decision')
-        assert checkpoint.values['progress']['phase']=='evidence'
+        assert checkpoint.values['progress']['phase']=='scope_skipped'
     asyncio.run(scenario())
 
 
 def test_predraft_question_survives_graph_checkpoint(monkeypatch):
     question=Clarification(id='q',field='scope',scope='task',question='本次选择哪些记录？')
     class Model:
-        async def ainvoke(self,messages):return ChatDecision(answer='先明确范围',questions=[question])
+        async def ainvoke(self,messages):return TaskScope(reason=question.question)
     monkeypatch.setattr('app.agent.llm',lambda _:Model())
     async def scenario():
         graph=conversation_graph(InMemorySaver())
@@ -96,7 +96,8 @@ def test_context_only_contains_selected_or_explicitly_referenced_rows():
     assert payload['draft']['requirements'][0]['history_coverage']=={'returned':8,'total':20,'complete':False}
     assert payload['coverage']['excluded_records']==500
     assert len(json.dumps(payload))<20000
-    assert payload['catalog_coverage']=={'returned':100,'total':501,'complete':False}
+    assert payload['catalog_coverage']['returned']==100 and payload['catalog_coverage']['total']==501 and payload['catalog_coverage']['complete'] is False
+    assert payload['catalog_coverage']['scope_search_complete'] is True
     assert 'x'*1000 not in json.dumps(payload)
 
 

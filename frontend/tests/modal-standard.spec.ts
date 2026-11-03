@@ -1,13 +1,13 @@
 import {test,expect,Page} from '@playwright/test';
 
-const values={name:'测试广告计划',account_id:'0001234567890123456789',objective:'traffic',identity_id:'identity-1',budget:'9007199254740993.25',budget_mode:'lifetime',currency:'USD',timezone:'UTC',start_at:'2030-01-01T10:00:45Z',end_at:'2030-01-04T10:00:45Z',audience:'核心受众',language:'en',cta:'了解更多',landing_url:'https://example.com/product'};
+const values={post_id:'00123',post_url:'https://www.tiktok.com/@brand/video/00123',name:'测试广告计划',account_id:'0001234567890123456789',objective:'traffic',identity_id:'identity-1',budget:'9007199254740993.25',budget_mode:'lifetime',currency:'USD',timezone:'UTC',start_at:'2030-01-01T10:00:45Z',end_at:'2030-01-04T10:00:45Z',audience:'核心受众',language:'en',cta:'了解更多',landing_url:'https://example.com/product'};
 const policy={version:3,enabled:false,account_ids:Array.from({length:8},(_,i)=>'account-'+i),objectives:['followers','video_views','traffic'],audiences:['核心受众'],identities:['identity-1'],currency:'USD',per_item_limit:'50',batch_limit:'500',cumulative_limit:'1000',valid_until:'2030-01-01T00:00:00Z'};
 
 async function setup(page:Page,{role='admin',reject=false}={}) {
   let version=4;
   let current={...values};
   const writes:Record<string,unknown>[]=[];
-  const row=()=>({...current,id:'r',business_no:'101',included:true,post_id:'00123',post_url:'https://www.tiktok.com/@brand/video/123',sources:{},classification:'new',history:[],issues:[]});
+  const row=()=>({...current,id:'r',business_no:'101',included:true,sources:{},classification:'new',history:[],issues:[]});
   const project={id:'p',name:'弹窗标准测试项目',tenant_id:'tenant',tenant_name:'客户空间',role,account_id:'0001234567890123456789',policy,reserved:'0'};
   await page.addInitScript(()=>sessionStorage.setItem('adbuild-token','test-token'));
   await page.route('**/apps/adbuild-agent/api/**',async route=>{
@@ -27,6 +27,22 @@ async function setup(page:Page,{role='admin',reject=false}={}) {
   await page.goto('/apps/adbuild-agent');await page.waitForLoadState('networkidle');
   return writes;
 }
+
+test('post corrections preserve string IDs and reject conflicting links before atomic submission',async({page})=>{
+  const writes=await setup(page);
+  await page.locator('.details').getByRole('button',{name:'编辑',exact:true}).click();
+  const dialog=page.getByRole('dialog',{name:'编辑草稿配置',exact:true});
+  const corrected='0001234567890123456789';
+  await dialog.getByLabel('帖子 ID',{exact:true}).fill(corrected);
+  await dialog.getByRole('button',{name:'保存配置',exact:true}).click();
+  await expect(dialog.getByRole('alert')).toContainText('帖子 ID 与链接中的视频 ID 不一致');
+  await expect(dialog.getByLabel('帖子 ID',{exact:true})).toHaveValue(corrected);
+  expect(writes).toHaveLength(0);
+  await dialog.getByLabel('TikTok 帖子链接',{exact:true}).fill(`https://www.tiktok.com/@brand/video/${corrected}`);
+  await dialog.getByRole('button',{name:'保存配置',exact:true}).click();
+  await expect(dialog).toBeHidden();
+  expect(writes).toEqual([{expected_version:4,edits:[{requirement_id:'r',values:{...values,post_id:corrected,post_url:`https://www.tiktok.com/@brand/video/${corrected}`}}]}]);
+});
 
 test('policy header and footer stay fixed while only the green-scrollbar body scrolls',async({page})=>{
   await setup(page);await page.getByRole('button',{name:'项目授权',exact:true}).click();

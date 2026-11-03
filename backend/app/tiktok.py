@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime, timezone
 import httpx
+from fastapi import HTTPException
 from cryptography.fernet import Fernet
 from mcp import ClientSession
 from mcp.client.auth import OAuthClientProvider
@@ -26,6 +27,8 @@ class EncryptedStorage:
 
     def update(self, **values):
         with transaction() as c:
+            tenant=c.execute('select id from tenants where id=%s for update',(self.tenant_id,)).fetchone()
+            if not tenant: raise HTTPException(404,'客户空间不存在，授权连接已终止')
             c.execute("insert into connections(tenant_id,state) values(%s,%s) on duplicate key update state=JSON_MERGE_PATCH(state,values(state))",(self.tenant_id,json_value(values)))
 
     async def get_tokens(self):
