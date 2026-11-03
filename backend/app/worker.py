@@ -3,6 +3,9 @@ from .db import transaction
 from .executor import execute
 
 async def main():
+    from .settings import settings
+    if not settings().execution_enabled:
+        return
     while True:
         with transaction() as c:
             job=c.execute("select * from jobs where status='pending' or (status='processing' and lease_until < UTC_TIMESTAMP()) order by id limit 1 for update skip locked").fetchone()

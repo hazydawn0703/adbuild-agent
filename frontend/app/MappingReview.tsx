@@ -1,0 +1,7 @@
+'use client';
+type Mapping={sheet:string;header_row:number;first_row:number;last_row:number;columns:Record<string,string>;defaults?:Record<string,string>};
+export default function MappingReview({value,onChange}:{value:string;onChange:(value:string)=>void}){
+ let parsed:{mappings:Mapping[]};try{parsed=JSON.parse(value)}catch{return <p>映射结构无效，请重新识别。</p>}
+ function update(index:number,patch:Partial<Mapping>){onChange(JSON.stringify({...parsed,mappings:parsed.mappings.map((m,i)=>i===index?{...m,...patch}:m)},null,2))}
+ return <div>{parsed.mappings.map((m,i)=><fieldset key={i}><legend>需求区域 {i+1} · {m.sheet}</legend><label>工作表<input value={m.sheet} onChange={e=>update(i,{sheet:e.target.value})}/></label>{(['header_row','first_row','last_row'] as const).map(k=><label key={k}>{({header_row:'表头行',first_row:'首条需求行',last_row:'末条需求行'})[k]}<input type="number" min="1" value={m[k]} onChange={e=>update(i,{[k]:Number(e.target.value)})}/></label>)}<table><thead><tr><th>业务字段</th><th>Excel 列</th></tr></thead><tbody>{Object.entries(m.columns).map(([field,col])=><tr key={field}><td>{field}</td><td><input aria-label={`${m.sheet} ${field} 列`} value={col} pattern="[A-Z]{1,3}" onChange={e=>update(i,{columns:{...m.columns,[field]:e.target.value.toUpperCase()}})}/></td></tr>)}</tbody></table><button onClick={()=>onChange(JSON.stringify({...parsed,mappings:parsed.mappings.filter((_,n)=>n!==i)}))}>排除此区域</button></fieldset>)}</div>
+}

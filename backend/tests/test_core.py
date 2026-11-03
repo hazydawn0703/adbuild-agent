@@ -52,7 +52,8 @@ def test_text_is_data_and_unmapped_rows_do_not_become_advertisements():
     stream=BytesIO();w.save(stream)
     mapping=SheetMapping(sheet='需求',header_row=1,first_row=2,last_row=3,columns={'post_url':'A','budget':'B','objective':'C'})
     rows=parse_requirements(stream.getvalue(),'file',[mapping])
-    assert len(rows)==1
+    assert len(rows)==2
+    assert any(i.code=="invalid_platform" for i in rows[1].issues)
     assert rows[0].post_id=='7701598778473630998'
     assert rows[0].budget==Decimal('50')
     assert rows[0].sources['budget'].cell=='B2'
@@ -83,7 +84,7 @@ def test_original_workbooks():
     assert all(not r.currency and not r.budget_mode and not r.identity_id for r in rows)
     assert all(r.sources['timezone'].raw_value=='投放时区：UTC+0' for r in rows)
     assert all(r.sources['post_id'].cell==f'J{index}' for index,r in enumerate(rows,3))
-    assert all(any(i.code=='language_conflict' for i in r.issues) for r in evaluated)
+    assert not any(i.code=='language_conflict' for r in evaluated for i in r.issues)
     assert all(any(d['field']=='start_at' for h in r.history for d in h['differences']) for r in evaluated)
     assert any(d['field']=='budget' for h in evaluated[3].history for d in h['differences'])
     from app.preview import build_preview

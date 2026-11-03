@@ -40,11 +40,10 @@ def test_cancelled_agent_edit_does_not_return_mutations(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_mapping_cannot_include_historical_tabs_when_current_demand_tab_exists(monkeypatch):
+def test_mapping_uses_content_not_sheet_name(monkeypatch):
     class Model:
         async def ainvoke(self,messages):
-            assert '当前需求' in messages[1][1]
-            return MappingProposal(mappings=[SheetMapping(sheet='历史原始表',header_row=1,first_row=2,last_row=3,columns={'post_url':'J'})],explanation='模型误选历史页')
+            return MappingProposal(mappings=[SheetMapping(sheet='Sheet42',header_row=1,first_row=2,last_row=40,columns={'post_url':'J'})],explanation='content')
     monkeypatch.setattr('app.agent.llm',lambda _:Model())
-    with pytest.raises(ValueError,match='非当前需求页'):
-        asyncio.run(propose_mapping({'sheets':[{'sheet':'当前需求'},{'sheet':'历史原始表'}]}))
+    result=asyncio.run(propose_mapping({'sheets':[{'sheet':'Sheet42','rows':40}]}))
+    assert result.mappings[0].last_row==40

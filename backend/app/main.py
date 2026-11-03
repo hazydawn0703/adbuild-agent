@@ -7,8 +7,8 @@ from pydantic import BaseModel
 from .settings import settings
 from .auth import authenticate, Actor, project_access
 from .db import transaction, json_value
-from .models import SheetMapping, BuildDraft, DraftPatch, ProjectPolicy, Model, SourceRef
-from .excel import inspect_workbook, parse_export, parse_requirements
+from .models import SheetMapping, BuildDraft, DraftPatch, ProjectPolicy, Model, SourceRef, Requirement
+from .excel import inspect_workbook, parse_export, parse_requirements, rebind_mapping
 from .rules import evaluate
 from .service import history_for, edit_draft, submit_approved_draft
 from . import storage
@@ -22,6 +22,8 @@ from .tiktok import EncryptedStorage, connect
 oauth_tasks = set()
 
 app = FastAPI(title="Adbuild API",version="0.1.0",root_path=os.getenv('ROOT_PATH',''))
+from .intake import router as intake_router
+app.include_router(intake_router)
 web=urlsplit(os.getenv('APP_ORIGIN','http://localhost:3000'))
 app.add_middleware(CORSMiddleware,allow_origins=[f'{web.scheme}://{web.netloc}',"http://127.0.0.1:3000"],allow_methods=["*"],allow_headers=["Authorization","Content-Type"])
 
@@ -121,18 +123,21 @@ def new_project(body:NewProject,actor:Actor=Depends(authenticate)):
 def workspace(project_id:str,actor:Actor=Depends(authenticate)):
     with transaction() as c:
         project=project_access(c,project_id,actor)
-        return {"project":project,"files":c.execute("select id,name,kind,inspection,mapping from files where project_id=%s order by created_at desc",(project_id,)).fetchall(),
+        return {"tasks":[{k:r[k] for k in ("id","draft_id","version","data")} for r in c.execute("select id,draft_id,version,data from intake_tasks where project_id=%s order by created_at desc",(project_id,))],"project":project,"files":c.execute("select id,name,kind,inspection,mapping from files where project_id=%s order by created_at desc",(project_id,)).fetchall(),
             "drafts":[r['data'] for r in c.execute("select data from drafts where project_id=%s order by created_at desc",(project_id,))],
             "runs":c.execute("select id,status,error,created_at from runs where project_id=%s order by created_at desc",(project_id,)).fetchall(),
             "messages":c.execute("select role,content from messages where project_id=%s order by created_at",(project_id,)).fetchall()}
 
 
 @app.post('/projects/{project_id}/files')
-async def upload_file(project_id:str,kind:str,file:UploadFile=File(),actor:Actor=Depends(authenticate)):
+async def upload_file(project_id:str,kind:str,task_id:str,file:UploadFile=File(),actor:Actor=Depends(authenticate)):
     if kind not in ('requirements','export') or not file.filename or not file.filename.lower().endswith('.xlsx'):
         raise HTTPException(422,"请选择 .xlsx 需求文件或 ExportAds")
     with transaction() as c:
         project=project_access(c,project_id,actor,write=True)
+        from .intake import access
+        task,_=access(c,task_id,actor,write=True)
+        if task.project_id!=project_id: raise HTTPException(404,"任务不属于项目")
     data=await file.read(20*1024*1024+1)
     inspection=inspect_workbook(data)
     file_id=str(uuid4())
@@ -142,7 +147,13 @@ async def upload_file(project_id:str,kind:str,file:UploadFile=File(),actor:Actor
     with transaction() as c:
         project_access(c,project_id,actor,write=True)
         c.execute("insert into files(id,tenant_id,project_id,name,kind,sha256,storage_path,inspection) values(%s,%s,%s,%s,%s,%s,%s,%s)",(file_id,project['tenant_id'],project_id,file.filename,kind,inspection['sha256'],path,json_value(inspection)))
+        from .intake import access,save
+        task,_=access(c,task_id,actor,write=True)
+        task.file_ids.append(file_id);task.version+=1;task.stage='mapping' if kind=='requirements' else task.stage
+        save(c,task)
         for r in records:
+            r['source_file']=file_id
+            r['imported_at']=__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
             r['account_id']=project['account_id']
             c.execute("insert into history(tenant_id,project_id,account_id,ad_id,data) values(%s,%s,%s,%s,%s) on duplicate key update data=values(data),account_id=values(account_id)",(project['tenant_id'],project_id,project['account_id'],r['ad_id'],json_value(r)))
     return {"id":file_id,"inspection":inspection,"imported_ads":len(records),"campaigns":len({r['campaign_id'] for r in records}),"adgroups":len({r['adgroup_id'] for r in records})}
@@ -154,9 +165,13 @@ async def mapping_proposal(file_id:str,actor:Actor=Depends(authenticate)):
         row=c.execute("select * from files where id=%s",(file_id,)).fetchone()
         if not row: raise HTTPException(404,"文件不存在")
         project_access(c,row['project_id'],actor,write=True)
-        templates=c.execute("select data from mapping_templates where project_id=%s and signature=%s",(row['project_id'],signature(row['inspection']))).fetchone()
-    if templates:
-        return {"mappings":templates['data'],"explanation":"结构匹配项目已确认映射，请检查本次数据范围。"}
+        templates=c.execute("select data from mapping_templates where project_id=%s and JSON_TYPE(data)='OBJECT'",(row['project_id'],)).fetchall()
+    from .templates import reuse
+    matches=[m for t in templates if (m:=reuse(t['data'],row['inspection']))]
+    unique={json.dumps([m.model_dump() for m in group],sort_keys=True):group for group in matches}
+    if len(unique)==1:
+        maps=next(iter(unique.values()))
+        return {'mappings':[m.model_dump() for m in maps],'explanation':'已按确认过的表头语义复用列，并重新检测数据范围。','reused':True}
     return await propose_mapping(row['inspection'])
 
 
@@ -187,17 +202,41 @@ async def confirm_mapping(file_id:str,body:MappingConfirmation,actor:Actor=Depen
     draft=BuildDraft(id=str(uuid4()),project_id=str(project['id']),requirements=requirements,summary={"source_file":file_id,"count":len(requirements)})
     with transaction() as c:
         project_access(c,row['project_id'],actor,write=True)
-        c.execute("insert into drafts(id,tenant_id,project_id,version,data) values(%s,%s,%s,%s,%s)",(draft.id,project['tenant_id'],project['id'],draft.version,json_value(draft)))
-        maps=[m.model_dump() for m in body.mappings]
-        c.execute("update files set mapping=%s where id=%s",(json_value(maps),file_id))
-        c.execute("insert into mapping_templates(tenant_id,project_id,signature,data) values(%s,%s,%s,%s) on duplicate key update data=values(data)",(project['tenant_id'],project['id'],signature(row['inspection']),json_value(maps)))
+        from .intake import access,save,refresh
+        taskrow=c.execute("select id from intake_tasks where project_id=%s and JSON_CONTAINS(data,%s,'$.file_ids')",(project['id'],json.dumps(file_id))).fetchone()
+        if not taskrow: raise HTTPException(422,'文件未关联搭建任务')
+        task,_=access(c,taskrow['id'],actor,write=True)
+        from .models import InputField
+        context=task.context
+        if (not context.account_ids or project['account_id'] in context.account_ids):
+            for req in draft.requirements:
+                if context.objectives and req.objective not in context.objectives: continue
+                for field,value in context.defaults.items():
+                    if getattr(req,field) in (None,''):
+                        setattr(req,field,value)
+                        req.sources[field]=SourceRef(file_id='',sheet='',cell='',raw_value=value,kind='template')
+            draft.requirements=[evaluate(Requirement.model_validate(r.model_dump()),history) for r in draft.requirements]
+
+        if task.draft_id:
+            old=c.execute('select version from drafts where id=%s for update',(task.draft_id,)).fetchone()
+            draft.id=task.draft_id;draft.version=old['version']+1
+            c.execute('update drafts set version=%s,data=%s where id=%s',(draft.version,json_value(draft),draft.id))
+        else:
+            c.execute("insert into drafts(id,tenant_id,project_id,version,data) values(%s,%s,%s,%s,%s)",(draft.id,project['tenant_id'],project['id'],draft.version,json_value(draft)))
+        task.draft_id=draft.id;task.version+=1;task.proposal=None;refresh(task,draft);save(c,task)
+        from .templates import capture
+        try: maps=capture(body.mappings,row['inspection'])
+        except ValueError: maps=None
+        c.execute("update files set mapping=%s where id=%s",(json_value([m.model_dump() for m in body.mappings]),file_id))
+        if maps:
+            c.execute("insert into mapping_templates(tenant_id,project_id,signature,data) values(%s,%s,%s,%s) on duplicate key update data=values(data)",(project['tenant_id'],project['id'],signature(row['inspection']),json_value(maps)))
     return draft
 
 
 @app.post('/drafts/{draft_id}/edit')
 def patch_draft(draft_id:str,body:DraftPatch,actor:Actor=Depends(authenticate)):
     with transaction() as c:
-        draft=edit_draft(c,draft_id,actor,body.expected_version,[body.model_dump()])
+        draft=edit_draft(c,draft_id,actor,body.expected_version,[e.model_dump() for e in body.edits])
         project=project_access(c,draft.project_id,actor,write=True)
         return draft
 
@@ -285,38 +324,12 @@ def run_action(run_id:str,action:str,actor:Actor=Depends(authenticate)):
     return {"accepted":True}
 
 
-class ChatBody(BaseModel):
-    draft_id:str
-    expected_version:int
-    message:str=""
-    confirm:bool|None=None
+from .intake import TaskAction as ChatBody, act
 
 
 @app.post('/projects/{project_id}/chat')
 async def chat(project_id:str,body:ChatBody,actor:Actor=Depends(authenticate)):
-    from langgraph.checkpoint.mysql.aio import AIOMySQLSaver
-    from langgraph.types import Command
-    with transaction() as c:
-        project=project_access(c,project_id,actor,write=True)
-        row=c.execute("select data from drafts where id=%s and project_id=%s",(body.draft_id,project_id)).fetchone()
-        if not row: raise HTTPException(404,"请先生成草稿")
-        if row['data']['version']!=body.expected_version: raise HTTPException(409,"草稿已变化")
-        messages=c.execute("select role,content from messages where project_id=%s order by created_at",(project_id,)).fetchall()
-        if body.message:
-            c.execute("insert into messages(tenant_id,project_id,role,content) values(%s,%s,'user',%s)",(project['tenant_id'],project_id,body.message))
-    thread=f"{project['tenant_id']}:{body.draft_id}:{body.expected_version}"
-    async with AIOMySQLSaver.from_conn_string(settings().database_url.replace("mysql+pymysql://","mysql://")) as saver:
-        graph=conversation_graph(saver)
-        input_value=Command(resume=body.confirm) if body.confirm is not None else {"messages":[*messages,{"role":"user","content":body.message}],"draft":row['data']}
-        out=await graph.ainvoke(input_value,{"configurable":{"thread_id":thread}})
-    if out.get('__interrupt__'):
-        return {"answer":out['decision']['answer'],"proposal":out['decision']['edits'],"pending":True}
-    with transaction() as c:
-        if out.get('edits'):
-            draft=edit_draft(c,body.draft_id,actor,body.expected_version,out['edits'])
-        answer=out.get('decision',{}).get('answer','已更新草稿')
-        c.execute("insert into messages(tenant_id,project_id,role,content) values(%s,%s,'assistant',%s)",(project['tenant_id'],project_id,answer))
-    return {"answer":answer,"pending":False}
+    return await asyncio.wait_for(act(project_id,body,actor),180)
 
 
 @app.post('/projects/{project_id}/agent')
@@ -339,12 +352,12 @@ async def agent_stream(project_id:str,request:Request,actor:Actor=Depends(authen
     async def process(_):
         result=await chat(project_id,body,actor)
         with transaction() as c:
-            current=c.execute('select data from drafts where id=%s and project_id=%s',(body.draft_id,project_id)).fetchone()
+            current={'data':result.get('draft')}
         return {'messages':[AIMessage(content=result['answer'])],'response':result,'draft':current['data']}
     builder=StateGraph(TransportState)
     builder.add_node('process',process);builder.add_edge(START,'process');builder.add_edge('process',END)
     transport=LangGraphAgent(name='adbuild',graph=builder.compile())
-    input_data.thread_id=f"{p['tenant_id']}:{body.draft_id}"
+    input_data.thread_id=f"{p['tenant_id']}:{body.task_id}"
     input_data.state={}
     encoder=EventEncoder(accept=request.headers.get('accept'))
     async def events():

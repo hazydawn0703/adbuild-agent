@@ -105,12 +105,12 @@ class SheetMapping(Model):
 class MappingProposal(Model):
     mappings: list[SheetMapping]
     explanation: str
+    regions: list['RegionProposal'] = Field(default_factory=list)
 
 
 class DraftPatch(Model):
     expected_version: int
-    requirement_id: str
-    values: dict[str, Any]
+    edits: list["ChatEdit"]
 
 
 class ChatEdit(Model):
@@ -121,3 +121,79 @@ class ChatEdit(Model):
 class ChatDecision(Model):
     answer: str
     edits: list[ChatEdit] = Field(default_factory=list)
+
+
+class RegionProposal(Model):
+    sheet: str
+    range: str
+    role: Literal['requirements','history','instructions','account','statistics','unknown']
+    reason: str
+
+
+class EvidenceRef(Model):
+    kind: Literal['excel','history','message','template']
+    ref_id: str
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class FieldEvidence(Model):
+    requirement_id: str
+    field: str
+    state: Literal['explicit','inferred','conflict','missing']
+    sources: list[EvidenceRef] = Field(default_factory=list)
+    reason: str = ''
+
+
+class Clarification(Model):
+    id: str
+    field: str
+    requirement_ids: list[str]
+    question: str
+    answer_type: Literal['text','choice','datetime','decimal'] = 'text'
+    options: list[str] = Field(default_factory=list)
+    blocking: bool = True
+
+
+class ChangeProposal(Model):
+    id: str
+    draft_version: int
+    edits: list[ChatEdit]
+    reason: str
+    status: Literal['pending','accepted','rejected'] = 'pending'
+
+
+class PlatformCheck(Model):
+    item: str
+    status: Literal['unverified','passed','failed','not_applicable'] = 'unverified'
+    reason: str = '尚未连接后台核实'
+
+
+class ProjectContext(Model):
+    version: int = 0
+    defaults: dict[InputField, str] = Field(default_factory=dict)
+    account_ids: list[str] = Field(default_factory=list)
+    objectives: list[Objective] = Field(default_factory=list)
+    terms: dict[str, str] = Field(default_factory=dict)
+    confirmed_by: str = ''
+
+
+class IntakeTask(Model):
+    id: str
+    project_id: str
+    version: int = 1
+    name: str = '新搭建任务'
+    draft_id: str | None = None
+    file_ids: list[str] = Field(default_factory=list)
+    stage: Literal['intake','mapping','clarifying','preview','attention'] = 'intake'
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+    evidence: list[FieldEvidence] = Field(default_factory=list)
+    questions: list[Clarification] = Field(default_factory=list)
+    proposal: ChangeProposal | None = None
+    context: ProjectContext = Field(default_factory=ProjectContext)
+    requests: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    lease: dict[str, Any] | None = None
+
+
+MappingProposal.model_rebuild()
+
+DraftPatch.model_rebuild()
