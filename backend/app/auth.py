@@ -32,7 +32,7 @@ async def authenticate(authorization: str = Header(default="")):
 
 
 def project_access(conn, project_id, actor, write=False, admin=False):
-    row = conn.execute("select p.*,m.role from projects p join memberships m on m.tenant_id=p.tenant_id where p.id=%s and m.user_id=%s",(project_id,actor.user_id)).fetchone()
+    row = conn.execute("select p.*,m.role from projects p join memberships m on m.tenant_id=p.tenant_id where p.id=%s and m.user_id=%s for update",(project_id,actor.user_id)).fetchone()
     if not row:
         raise HTTPException(404,"项目不存在")
     if admin and row["role"] != "admin" or write and row["role"] == "viewer":

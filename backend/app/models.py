@@ -271,6 +271,7 @@ class ProjectContext(Model):
 
 
 class IntakeTask(Model):
+    archived_at: datetime | None = None
     id: str
     project_id: str
     version: int = 1
