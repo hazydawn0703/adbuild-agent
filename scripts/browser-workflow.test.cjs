@@ -3,6 +3,13 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
 const {spawnSync}=require('node:child_process');
+const {safeTransportCode}=require('./browser-workflow.cjs');
+
+test('transport diagnostics expose only a known code rather than request credentials',()=>{
+ const diagnostic=safeTransportCode(new Error('socket hang up ECONNRESET; authorization: Bearer private-unit-credential'));
+ assert.equal(diagnostic,'ECONNRESET');
+ assert.equal(safeTransportCode(new Error('authorization: Bearer private-unit-credential')),'transport_failure');
+});
 
 function fixture(){
  const dir=fs.mkdtempSync(path.resolve('.tmp/browser-output-contract-'));

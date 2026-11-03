@@ -3,6 +3,11 @@ const fs=require('node:fs/promises');
 const path=require('node:path');
 const assert=require('node:assert/strict');
 const {chromium,expect}=require('../frontend/node_modules/@playwright/test');
+function safeTransportCode(error){
+ const code=String(error?.code||'');
+ const allowed=['ECONNRESET','ECONNREFUSED','ETIMEDOUT','EHOSTUNREACH','ENETUNREACH'];
+ return allowed.includes(code)?code:allowed.find(item=>String(error?.message||'').includes(item))||'transport_failure';
+}
 
 async function main(){
  const previewUrl=process.env.PREVIEW_URL;
@@ -17,7 +22,7 @@ async function main(){
  await fs.mkdir(output); // A run must never overwrite an existing evidence directory.
  const report={started_at:new Date().toISOString(),preview_url:previewUrl,api_url:apiUrl,project:projectName,
   task:process.env.QA_TASK_NAME||null,api_forwarding:'route.fetch to actual isolated API; no mocked responses',
-  steps:[],api:[],workspace_snapshots:[],page_errors:[],forbidden_attempts:[],passed:false};
+  steps:[],api:[],transport_errors:[],workspace_snapshots:[],preview_snapshots:[],agent_events:[],page_errors:[],forbidden_attempts:[],passed:false};
  try{
   const configuration=await fetch(apiUrl.replace(/\/$/,'')+'/config').then(async response=>{
    assert(response.ok,'Isolated QA API config is unavailable');return response.json();
@@ -32,6 +37,7 @@ async function main(){
  const browser=await chromium.launch({headless:true,channel:process.env.QA_BROWSER_CHANNEL||'chrome'});
  const page=await browser.newPage({viewport:{width:1440,height:1000}});
  page.setDefaultTimeout(30000);
+ let closing=false;
  page.on('pageerror',error=>report.page_errors.push(error.message));
  const save=async name=>{await page.screenshot({path:path.join(output,`${name}.png`),fullPage:true});report.steps.push({step:name,at:new Date().toISOString()})};
  await page.route('**/apps/adbuild-agent/api/**',async route=>{
@@ -41,13 +47,28 @@ async function main(){
    report.forbidden_attempts.push({method:request.method(),path:suffix});
    await route.abort('blockedbyclient');return;
   }
-  const response=await route.fetch({url:apiUrl.replace(/\/$/,'')+suffix+url.search,timeout:240000});
-  report.api.push({method:request.method(),path:suffix,status:response.status()});
-  if(suffix.endsWith('/workspace')&&response.ok()){
-   const payload=await response.json();
-   report.workspace_snapshots.push({project_id:payload.project.id,project_name:payload.project.name,runs:payload.runs.length,reserved:String(payload.project.reserved)});
+  try{
+   const response=await route.fetch({url:apiUrl.replace(/\/$/,'')+suffix+url.search,timeout:240000});
+   report.api.push({method:request.method(),path:suffix,status:response.status()});
+   if(suffix.endsWith('/workspace')&&response.ok()){
+    const payload=await response.json();
+    report.workspace_snapshots.push({project_id:payload.project.id,project_name:payload.project.name,runs:payload.runs.length,reserved:String(payload.project.reserved)});
+   }
+   if(suffix.endsWith('/preview')&&response.ok()){
+    const payload=await response.json();
+    report.preview_snapshots.push({draft_id:payload.draft_id,version:payload.version,can_confirm:payload.can_confirm,approval_valid:payload.approval_valid,counts:payload.counts,issue_codes:payload.issues.map(issue=>issue.code)});
+   }
+   if(suffix.endsWith('/agent')&&response.ok()){
+    for(const line of (await response.text()).split(/\r?\n/)){
+     if(!line.startsWith('data:'))continue;
+     try{const event=JSON.parse(line.slice(5));if(['RUN_STARTED','RUN_FINISHED','RUN_ERROR'].includes(event.type))report.agent_events.push({type:event.type,run_id:event.runId||null});}catch{}
+    }
+   }
+   await route.fulfill({response});
+  }catch(error){
+   if(!closing)report.transport_errors.push({method:request.method(),path:suffix,error_code:safeTransportCode(error),cancelled:request.method()==='GET'&&request.failure()?.errorText==='net::ERR_ABORTED'});
+   await route.abort('failed').catch(()=>{});
   }
-  await route.fulfill({response});
  });
  try{
   await page.goto(previewUrl);await page.waitForLoadState('networkidle');
@@ -57,7 +78,7 @@ async function main(){
   await page.getByRole('button',{name:'登录',exact:true}).click();
   await expect(page.getByLabel('发送给 Agent 的需求')).toBeEnabled({timeout:60000});
   await page.getByRole('button',{name:projectName,exact:true}).click();
-  await expect(page.locator('h1')).toHaveText(projectName);
+  await expect(page.locator('.project.selected .project-name')).toHaveText(projectName);
   await page.waitForLoadState('networkidle');
   if(process.env.QA_INPUT_DIR){
    const input=path.resolve(process.env.QA_INPUT_DIR);
@@ -106,13 +127,14 @@ async function main(){
    await page.getByRole('button',{name:'调整分组与素材',exact:true}).first().click();
    await page.getByLabel('结构预算层级').selectOption('adgroup');
    await page.getByRole('button',{name:'添加广告组',exact:true}).click();
-   const modes=page.getByLabel('分配方式',{exact:true});
+   const modes=page.getByLabel(/^分配方式/);
    await modes.nth(0).selectOption('ratio');await modes.nth(1).selectOption('ratio');
    const ratios=page.getByLabel('比例（0.4 代表 40%）',{exact:true});
    await ratios.nth(0).fill('0.4');await ratios.nth(1).fill('0.6');
    await page.getByRole('button',{name:'生成结构修改提案',exact:true}).click();
    await expect(page.getByRole('heading',{name:'调整广告组与素材结构'})).toHaveCount(0);
    await expect(page.getByRole('button',{name:'确认搭建方案',exact:true})).toBeDisabled();
+   await expect(page.getByRole('button',{name:'已确认此版本',exact:true})).toHaveCount(0);
    await page.getByRole('button',{name:'关闭搭建预览',exact:true}).click();
    await expect(page.getByRole('button',{name:'确认修改',exact:true})).toBeVisible();
    await save('04-structure-proposal-pending');
@@ -143,6 +165,7 @@ async function main(){
   await save('07-small-screen-preview');
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'Small screen overflows');
   assert.deepEqual(report.page_errors,[],'Browser page errors');
+  assert.equal(report.transport_errors.filter(error=>!error.cancelled).length,0,'API transport failures occurred; inspect safe error codes');
   assert.deepEqual(report.forbidden_attempts,[],'Forbidden advertising execution attempted');
   const observed=report.workspace_snapshots.filter(snapshot=>snapshot.project_name===projectName);
   assert(observed.length>0,'No actual QA workspace was observed');
@@ -156,10 +179,12 @@ async function main(){
   await page.screenshot({path:path.join(output,'failure.png'),fullPage:true}).catch(()=>{});
   throw error;
  }finally{
+  closing=true;
   report.completed_at=new Date().toISOString();
   await fs.writeFile(path.join(output,'report.json'),JSON.stringify(report,null,2),{flag:'wx'});
   await browser.close();
  }
  console.log(JSON.stringify({passed:report.passed,task_id:report.task_id,confirmation_action:report.confirmation_action,api_requests:report.api.length,artifact_directory:output}));
 }
-main().catch(error=>{console.error(`${error.name}: ${error.message}`);process.exitCode=1});
+if(require.main===module)main().catch(error=>{console.error(`${error.name}: ${error.message}`);process.exitCode=1});
+module.exports={safeTransportCode};

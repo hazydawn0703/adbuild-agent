@@ -524,6 +524,7 @@ async def agent_stream(project_id:str,request:Request,actor:Actor=Depends(authen
     from ag_ui.encoder import EventEncoder
     from ag_ui_langgraph import LangGraphAgent
     from langgraph.graph import StateGraph, MessagesState, START, END
+    from langgraph.checkpoint.memory import InMemorySaver
     from langchain_core.messages import AIMessage
     from fastapi.responses import StreamingResponse
     # Never accept tenant identity, authoritative draft or a reusable graph thread from the browser.
@@ -537,14 +538,14 @@ async def agent_stream(project_id:str,request:Request,actor:Actor=Depends(authen
         draft:dict
     async def process(_):
         result=await chat(project_id,body,actor)
-        with transaction() as c:
-            current={'data':result.get('draft')}
-        safe=public_agent_state(result,current['data'],body.request_id)
+        safe=public_agent_state(result,result.get('draft'),body.request_id)
         return {'messages':[AIMessage(content=safe['response']['answer'])],**safe}
     builder=StateGraph(TransportState)
     builder.add_node('process',process);builder.add_edge(START,'process');builder.add_edge('process',END)
-    transport=LangGraphAgent(name='adbuild',graph=builder.compile())
-    input_data.thread_id=f"{p['tenant_id']}:{body.task_id}"
+    # The official AG-UI adapter reads graph state before executing a frame.
+    # This saver belongs only to this HTTP request; business recovery stays in MySQL.
+    transport=LangGraphAgent(name='adbuild',graph=builder.compile(checkpointer=InMemorySaver()))
+    input_data.thread_id=f"{p['tenant_id']}:{body.task_id}:{body.request_id}"
     input_data.state={}
     encoder=EventEncoder(accept=request.headers.get('accept'))
     async def events():
