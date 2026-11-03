@@ -23,6 +23,7 @@ assert (make_url(os.environ['DATABASE_URL']).database or '').endswith('_test')
 assert os.getenv('EXECUTION_ENABLED','false').lower() in ('false','0')
 os.environ['EXECUTION_ENABLED']='false'
 os.environ['TEST_DATABASE_URL']=os.environ['DATABASE_URL']
+os.environ['OPS_ROLLBACK_TEST']='1'
 os.environ['PYTHONPATH']=str(release/'backend')
 os.environ['PYTHONIOENCODING']='utf-8'
 os.environ['LANGSMITH_TRACING']='false'

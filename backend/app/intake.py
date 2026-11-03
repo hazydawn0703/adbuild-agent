@@ -75,10 +75,23 @@ def refresh(task,draft):
         if req.included and req.classification not in ('existing','change','ignored'):
             for issue in req.issues:
                 if issue.blocking:
-                    grouped.setdefault((issue.field,issue.code),{'ids':[],'message':issue.message})['ids'].append(req.id)
+                    group=grouped.setdefault((issue.field,issue.code),{'ids':set(),'messages':[]})
+                    group['ids'].add(req.id)
+                    if issue.message not in group['messages']:group['messages'].append(issue.message)
     task.evidence=evidence
-    task.questions=[Clarification(id=sha256(f'{task.id}:{draft.version}:{f}:{code}'.encode()).hexdigest()[:20],field=f,
-        requirement_ids=list(dict.fromkeys(v['ids'])),question=v['message']) for (f,code),v in grouped.items()]
+    # A flat missing-field check and the default hierarchy can report the same
+    # field for exactly the same records. One answer addresses that whole set.
+    # Preserve distinct record sets, and leave semantic/candidate questions alone.
+    combined={}
+    for (field,_code),group in grouped.items():
+        key=(field,'requirements',tuple(sorted(group['ids'])))
+        messages=combined.setdefault(key,[])
+        messages.extend(message for message in group['messages'] if message not in messages)
+    task.questions=[]
+    for (field,scope,ids),messages in combined.items():
+        key=json.dumps({'origin':'system','task':task.id,'draft_version':draft.version,'field':field,'scope':scope,'requirements':ids},sort_keys=True)
+        task.questions.append(Clarification(id=sha256(key.encode()).hexdigest()[:20],field=field,scope=scope,
+            requirement_ids=list(ids),question='；'.join(messages)))
     task.questions.extend(task.semantic_questions)
     task.stage='attention' if task.analysis.get('phase')=='attention' else 'clarifying' if task.questions else 'preview'
 
