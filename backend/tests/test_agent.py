@@ -15,7 +15,7 @@ def test_graph_persists_proposal_without_applying_edits(monkeypatch):
     async def scenario():
         graph=conversation_graph(InMemorySaver())
         config={'configurable':{'thread_id':'tenant:task:request'}}
-        result=await graph.ainvoke({'messages':[],'draft':{'requirements':[{'id':'r','budget':'50'}]},'context':{}},config)
+        result=await graph.ainvoke({'messages':[{'id':'message','role':'user','content':'预算改为40'}],'draft':{'requirements':[{'id':'r','budget':'50'}]},'context':{}},config)
         assert result['draft']['requirements'][0]['budget']=='50'
         snapshot=await graph.aget_state(config)
         assert snapshot.values['decision']['edits'][0]['values']['budget']=='40'

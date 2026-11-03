@@ -1,0 +1,172 @@
+"""Validate that a proposal's value is supported, separately from human adoption."""
+from decimal import Decimal,InvalidOperation
+from datetime import datetime
+import re
+from .models import SourceRef
+from .excel import normalize_value,objective,date_value
+
+CRITICAL_FIELDS={'account_id','post_id','post_url','budget','budget_mode','currency','start_at','end_at',
+                 'timezone','audience','language','identity_id','cta','landing_url'}
+
+
+def equivalent(field,left,right,tz=''):
+    try:
+        a=normalize_value(field,left,tz);b=normalize_value(field,right,tz)
+        return a==b and a not in (None,'')
+    except (ValueError,KeyError,TypeError,InvalidOperation):return False
+
+
+def history_reference(h,field):
+    if not h.get('source_file') or not h.get('source_sheet') or not h.get('source_row') or h.get(field) in (None,''):
+        return None
+    return SourceRef(kind='history',file_id=h['source_file'],sheet=h['source_sheet'],
+                     cell=f"{field}:{h['source_row']}",raw_value=str(h[field]))
+
+
+def _same_reference(a,b):
+    ignored={'accepted_at','accepted_by'}
+    return a.model_dump(exclude=ignored)==b.model_dump(exclude=ignored)
+
+
+def match_history_reference(ref,field,value,history,tz=''):
+    """The history rows here come from server-selected evidence, never model output."""
+    ref=SourceRef.model_validate(ref)
+    if ref.kind!='history':return None
+    for item in history:
+        expected=history_reference(item,field)
+        if expected and _same_reference(ref,expected) and equivalent(field,value,item[field],tz):return item
+    return None
+
+
+def _budget_values(text):
+    found=[]
+    for clause in re.split(r'[，,；;\n]',text):
+        anchor=re.search(r'预算|\bbudget\b',clause,re.I)
+        if not anchor:continue
+        tail=clause[anchor.end():]
+        assignment=list(re.finditer(r'改为|改成|设为|设置为|调至|调到|调整为|调整到|统一为|降到|升到|\bto\b|[:：=]',tail,re.I))
+        if assignment:tail=tail[assignment[-1].end():]
+        amount=re.search(r'(?<![0-9])([0-9]+(?:\.[0-9]+)?)(?![0-9])',tail[:35])
+        if amount:found.append(Decimal(amount[1]))
+    return found
+
+
+def message_supports(field,value,text,tz=''):
+    """Accept explicit, equivalent inputs; unresolved interpretations need a question."""
+    if value in (None,''):return False
+    target=normalize_value(field,value,tz)
+    if field=='budget':return target in _budget_values(text)
+    if field=='objective':
+        return any(objective(part)==target for part in re.split(r'[，,；;\n/]|和|以及|及|\band\b',text,flags=re.I))
+    if field=='budget_mode':
+        return bool(re.search(r'日预算|每日预算|(?<![A-Za-z0-9_])daily(?![A-Za-z0-9_])',text,re.I)) if target=='daily' else bool(re.search(r'总预算|终身预算|(?<![A-Za-z0-9_])(?:lifetime|total)(?![A-Za-z0-9_])',text,re.I))
+    if field=='language':
+        aliases={'en':r'英语|英文|(?<![A-Za-z0-9_])(?:english|en)(?![A-Za-z0-9_])','all':r'全部语言|不限语言|语言不限|(?<![A-Za-z0-9_])all(?![A-Za-z0-9_])'}
+        return bool(re.search(aliases.get(target,re.escape(str(target))),text,re.I))
+    if field in ('start_at','end_at'):
+        # Relative dates require a separately resolved and confirmed absolute timestamp.
+        timestamps=re.findall(r'\d{4}[-/]\d{1,2}[-/]\d{1,2}[T\s]\d{1,2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:\d{2})?',text)
+        return any(equivalent(field,value,stamp,tz) for stamp in timestamps)
+    if field=='timezone':
+        zones=re.findall(r'(?:UTC|GMT)(?:[+-]\d{1,2}(?::\d{2})?)?|\b[A-Za-z_]+/[A-Za-z_]+(?:/[A-Za-z_]+)?\b',text,re.I)
+        return any(equivalent(field,value,zone) for zone in zones)
+    if field=='post_id':
+        if re.search(r'/video/'+re.escape(str(target))+r'(?![0-9])',text):return True
+        return bool(re.search(r'(?:帖子|视频|post|video)[^\n，,；;]{0,30}(?<![0-9])'+re.escape(str(target))+r'(?![0-9])',text,re.I))
+    if field=='account_id':
+        return bool(re.search(r'(?:账户|账号|advertiser|account)[^\n，,；;]{0,30}(?<![0-9])'+re.escape(str(target))+r'(?![0-9])',text,re.I))
+    # URLs, audience names, CTA and identity codes must occur as complete values.
+    return bool(re.search(r'(?<![0-9A-Za-z_])'+re.escape(str(target))+r'(?![0-9A-Za-z_])',text,re.I))
+
+
+def _context_supports(state,row,field,value):
+    context=state.get('context',{})
+    if context.get('account_ids') and row.get('account_id') not in context['account_ids']:return False
+    if context.get('objectives') and row.get('objective') not in context['objectives']:return False
+    default=context.get('defaults',{}).get(field)
+    return equivalent(field,value,default,row.get('timezone',''))
+
+
+def supported_source(state,row,field,value,offered=None):
+    """Return the verified provenance without converting a suggestion into user fact."""
+    tz=row.get('timezone','');previous=row.get('sources',{}).get(field)
+    previous=SourceRef.model_validate(previous) if previous else None
+    if offered:
+        ref=SourceRef.model_validate(offered)
+        if ref.kind=='history':
+            if match_history_reference(ref,field,value,row.get('history',[]),tz):return ref
+            raise ValueError(f'{field} 的历史来源或值不支持本提案')
+        if previous and _same_reference(ref,previous) and equivalent(field,value,row.get(field),tz):return previous
+        if ref.kind=='confirmed' and not ref.file_id and ref.message_id:
+            message=next((m for m in state.get('messages',[]) if m.get('id')==ref.message_id and m.get('role')=='user'),None)
+            if message and equivalent(field,value,ref.raw_value,tz) and message_supports(field,value,str(message.get('content','')),tz):return ref
+        if ref.kind=='template' and not ref.file_id and ref.context_version==state.get('context',{}).get('version') and equivalent(field,value,ref.raw_value,tz) and _context_supports(state,row,field,value):return ref
+        raise ValueError(f'{field} 的新来源尚未经过服务端核实')
+    for message in reversed(state.get('messages',[])):
+        if message.get('role')=='user' and message_supports(field,value,str(message.get('content','')),tz):
+            return SourceRef(kind='confirmed',file_id='',sheet='',cell='',raw_value=str(value),message_id=message.get('id'))
+        if message.get('role')=='user' and field=='budget' and _budget_values(str(message.get('content',''))):
+            # A newer explicit budget correction supersedes an older amount.
+            break
+    if previous and equivalent(field,value,row.get(field),tz):return previous
+    if _context_supports(state,row,field,value):
+        return SourceRef(kind='template',file_id='',sheet='',cell='',raw_value=str(value),context_version=state.get('context',{}).get('version'))
+    raise ValueError(f'{field} 缺少支持该值的用户输入、项目默认或字段证据，请先澄清')
+
+
+def validate_proposal_evidence(state,decision):
+    rows={r['id']:r for r in (state.get('draft') or {}).get('requirements',[])}
+    for edit in decision.edits:
+        row=rows.get(edit.requirement_id)
+        if not row:continue # Scope validation supplies the more specific error.
+        for field,value in edit.values.items():
+            if field in CRITICAL_FIELDS or field=='objective':
+                edit.sources[field]=supported_source(state,row,field,value,edit.sources.get(field))
+            if field=='structure' and value:
+                from .models import StructureSpec
+                structure=StructureSpec.model_validate(value)
+                existing=row.get('structure') or {}
+                if structure.model_dump(mode='json')==existing:continue
+                for group in structure.groups:
+                    old=next((g for g in existing.get('groups',[]) if g['id']==group.id),{})
+                    child={**row,**{key:old[key] for key in ('audience','language') if old.get(key) not in (None,'')},'sources':{**row.get('sources',{}),**old.get('sources',{})}}
+                    if group.budget:
+                        for target,new_value in (('budget',group.budget.amount),('budget_mode',group.budget.mode),('currency',group.budget.currency)):
+                            if new_value not in (None,''):
+                                child[target]=(old.get('budget') or {}).get({'budget':'amount','budget_mode':'mode','currency':'currency'}[target])
+                                group.sources[target]=supported_source(state,child,target,new_value,group.sources.get(target))
+                        if group.budget.allocation_ratio is not None:
+                            ratio=group.budget.allocation_ratio
+                            if not any(re.search(r'(?<![0-9])'+re.escape(str(ratio*100).rstrip('0').rstrip('.') if '.' in str(ratio*100) else str(ratio*100))+r'\s*%',str(m.get('content',''))) for m in state.get('messages',[]) if m.get('role')=='user'):
+                                raise ValueError('广告组预算比例缺少明确用户依据')
+                    for target in ('audience','language'):
+                        new_value=getattr(group,target)
+                        if new_value not in (None,''):group.sources[target]=supported_source(state,child,target,new_value,group.sources.get(target))
+                    for ad in group.ads:
+                        old_ad=next((a for a in old.get('ads',[]) if a['id']==ad.id),{})
+                        material={**row,**old_ad,'sources':{**row.get('sources',{}),**old_ad.get('sources',{})}}
+                        for target in ('post_id','post_url','identity_id','cta','landing_url'):
+                            new_value=getattr(ad,target)
+                            if new_value:ad.sources[target]=supported_source(state,material,target,new_value,ad.sources.get(target))
+                        if ad.authorization_code:
+                            if not any(ad.authorization_code in str(m.get('content','')) for m in state.get('messages',[]) if m.get('role')=='user'):
+                                raise ValueError('素材授权码缺少用户提供的依据')
+                edit.values['structure']=structure.model_dump(mode='json')
+
+
+def verified_history_file(conn,project_id,ref,field,value,tz=''):
+    """Re-read immutable project-owned export bytes before adopting historical data."""
+    from .storage import target
+    from .excel import parse_export
+    ref=SourceRef.model_validate(ref)
+    source=conn.execute('select id,kind,storage_path,sha256 from files where id=%s and project_id=%s',(ref.file_id,project_id)).fetchone()
+    if not source or source['kind']!='export':raise ValueError('历史字段来源不属于当前项目的 ExportAds')
+    data=target(source['storage_path']).read_bytes()
+    from hashlib import sha256
+    if sha256(data).hexdigest()!=source['sha256']:raise ValueError('历史来源文件指纹已变化')
+    rows=parse_export(data)
+    # Advertiser binding is server-owned import metadata, not a workbook cell.
+    # It cannot be invented as a field reference to an export lacking the value.
+    if not match_history_reference(ref,field,value,[{**r,'source_file':ref.file_id} for r in rows],tz):
+        raise ValueError('历史字段原始行、原始值或规范化值与提案不一致')
+    return ref
