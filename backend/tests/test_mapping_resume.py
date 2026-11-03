@@ -20,7 +20,7 @@ def test_mapping_source_errors_are_repaired_inside_bounded_model_call(monkeypatc
     class Model:
         async def ainvoke(self,messages):
             calls.append(messages)
-            bad=Binding(kind='header',column='B') if len(calls)==1 else Binding(kind='header',cell='B1')
+            bad=Binding(kind='cell',column='B') if len(calls)==1 else Binding(kind='cell',cell='B1')
             return model_response(MappingProposal(mappings=[SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,bindings={**row_bindings({'post_id':'A'}), **{'currency':bad}})],explanation='sources'))
     monkeypatch.setattr('app.agent.llm',lambda _:Model())
     result=asyncio.run(propose_mapping(inspect_workbook(data),data))

@@ -9,7 +9,7 @@ NOW=datetime(2026,11,3,tzinfo=timezone.utc)
 
 
 def requirement(**patch):
-    return campaign_fixture(**(dict(id='row',account_id='7312345678901234567',post_id='7712345678901234567',business_no='batch-42',
+    return campaign_fixture(**(dict(id='row',name='Explicit plan',account_id='7312345678901234567',post_id='7712345678901234567',business_no='batch-42',
         objective='video_views',budget=Decimal(100),budget_mode='lifetime',currency='USD',
         start_at='2027-02-01T09:00:00+00:00',end_at='2027-02-02T18:00:00+00:00',timezone='UTC',
         audience='reviewed audience',identity_id='identity')|patch))

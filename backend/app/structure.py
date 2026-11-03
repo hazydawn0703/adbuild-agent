@@ -87,10 +87,12 @@ def campaign_tree(req: Requirement):
         if not materials:
             problem('structure', '广告组尚无明确素材')
         ads = []
-        audience = req.audience if group.audience is None else group.audience
-        language = req.language if group.language is None else group.language
+        audience = group.audience
+        language = group.language
         if not audience:
             problem('audience', f'广告组 {group.name or group.id} 缺少受众')
+        if not language:
+            problem('language', f'广告组 {group.name or group.id} 缺少语言')
         delivered=set()
         if not group.start_at or not group.end_at or not group.timezone:
             problem('start_at', f'广告组 {group.name or group.id} 缺少明确排期或时区')
@@ -103,11 +105,11 @@ def campaign_tree(req: Requirement):
             if not material.id.strip() or material.id in material_ids:
                 problem('structure', '广告 ID 必须非空且在计划内唯一')
             material_ids.add(material.id)
-            post_id = material.post_id or req.post_id
-            post_url = material.post_url or req.post_url
-            identity_id = material.identity_id or req.identity_id
-            cta = material.cta or req.cta
-            destination = material.landing_url or req.landing_url
+            post_id = material.post_id
+            post_url = material.post_url
+            identity_id = material.identity_id
+            cta = material.cta
+            destination = material.landing_url
             if material.kind == 'authorization_code':
                 if not material.authorization_code.strip():
                     problem('structure', f'广告 {material.name or material.id} 缺少素材授权码')

@@ -3,6 +3,7 @@ from typing import TypedDict
 from langgraph.graph import StateGraph, START, END
 from langchain_openai import ChatOpenAI
 from .models import MappingProposal, ChatDecision, TaskScope, Clarification, SourceRef
+from .rules import business_now
 from .settings import settings
 from openai import APIError,APIConnectionError,APITimeoutError,APIStatusError
 
@@ -389,6 +390,7 @@ def conversation_graph(checkpointer):
         from .scope import compact_state
         scope=TaskScope.model_validate(state.get('scope') or {}).model_dump(mode='json')
         prepared=compact_state({**state,'scope':scope})
+        prepared['business_time']=business_now().isoformat()
         return {'scope':scope,'prepared':prepared,'scope_question':None,'progress':{'phase':'evidence','coverage':prepared['coverage']}}
     async def resolve_scope(state):
         from .scope import compact_state,validate_scope

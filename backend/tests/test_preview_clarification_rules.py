@@ -27,3 +27,12 @@ def test_new_allocation_does_not_reuse_an_old_ratio():
     messages=[{'id':'old','role':'user','content':'预算按1:1分配'}, {'id':'new','role':'user','content':'预算比例还需要确认'}]
     assert allocation_message({'messages':messages},[Decimal(1),Decimal(1)]) is None
 
+
+def test_generated_display_name_cannot_hide_missing_campaign_name():
+    from test_core import req
+    from app.preview import build_preview
+    preview=build_preview(BuildDraft(id='d',project_id='p',requirements=[req(name='')]),[],0)
+    assert preview['campaigns'][0]['name']
+    assert not preview['can_confirm']
+    assert any(i['field']=='name' and i['blocking'] for i in preview['issues'])
+

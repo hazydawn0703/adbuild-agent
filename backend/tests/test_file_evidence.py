@@ -27,3 +27,13 @@ def test_project_binding_is_independent_from_workbook_evidence():
     assert actual.raw_value=='123' and actual.kind=='project'
     with pytest.raises(ValueError):supported_source({'project_account_id':'456'},{},'account_id','123',ref)
 
+
+def test_url_derived_post_and_platform_reverify_the_original_cell(monkeypatch,tmp_path):
+    w=Workbook();w.active['A1']='https://www.tiktok.com/@fixture/video/7312345678901234567';b=BytesIO();w.save(b)
+    data=b.getvalue();path=tmp_path/'post.xlsx';path.write_bytes(data);monkeypatch.setattr('app.storage.target',lambda _:path)
+    state={'documents':[{'id':'owned','storage_path':'private','sha256':sha256(data).hexdigest()}]}
+    ref=SourceRef(file_id='owned',sheet='Sheet',cell='A1',raw_value='untrusted')
+    assert supported_source(state,{},'post_id','7312345678901234567',ref).raw_value.endswith('7312345678901234567')
+    assert supported_source(state,{},'platform','TikTok',ref).kind=='excel'
+    with pytest.raises(ValueError):supported_source(state,{},'post_id','OTHER',ref)
+

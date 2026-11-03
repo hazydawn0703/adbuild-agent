@@ -25,7 +25,7 @@ def example():
     m=SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=3,
 
                    bindings={**row_bindings({'business_no':'A','post_url':'C','budget':'D','objective':'E'}), **{'account_id':Binding(kind='cell',sheet='Client',cell='B1'),
-                             'currency':Binding(kind='header',cell='D1',transform='currency_code'),
+                             'currency':Binding(kind='cell',cell='D1',transform='currency_code'),
                              'start_at':Binding(kind='row',column='F',transform='interval_start'),
                              'end_at':Binding(kind='row',column='F',transform='interval_end')}},
                    filters=[RowFilter(column='B',operator='eq',values=['TikTok'])])
@@ -83,8 +83,9 @@ def test_wrong_fixed_source_and_overlapping_field_mapping_rejected():
 
 def test_ambiguous_header_currency_does_not_choose_a_code():
     w,m=example();w['Schedule']['D1']='Budget USD / EUR'
-    with pytest.raises(ValueError,match='固定来源.*不支持 currency_code'):
-        parse_requirements(binary(w),'f',[m])
+    rows=parse_requirements(binary(w),'f',[m])
+    assert rows and all(r.currency=='' for r in rows)
+    assert all(any(i.field=='currency' and i.code=='invalid_transform' for i in r.issues) for r in rows)
 
 
 def test_paged_read_has_complete_coverage_without_expanding_single_read_budget():
@@ -147,7 +148,7 @@ def test_export_preserves_budget_levels_without_collapsing_them():
 
 def test_one_row_can_map_to_independent_goals_without_shared_requirement_ids():
     w=Workbook();s=w.active;s.append(['Post','Followers','Video views']);s.append(['https://www.tiktok.com/@x/video/7712345678901234567',50,100])
-    maps=[SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,bindings={**row_bindings({'post_url':'A','budget':col}), **{'objective':Binding(kind='header',cell=col+'1')}}) for col in ('B','C')]
+    maps=[SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,bindings={**row_bindings({'post_url':'A','budget':col}), **{'objective':Binding(kind='cell',cell=col+'1')}}) for col in ('B','C')]
     rows=parse_requirements(binary(w),'file',maps)
     assert len(rows)==2 and len({r.id for r in rows})==2
     assert {(r.objective,str(r.budget)) for r in rows}=={('followers','50'),('video_views','100')}

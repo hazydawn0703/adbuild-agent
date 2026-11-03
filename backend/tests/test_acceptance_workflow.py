@@ -4,7 +4,7 @@ from evals.run_acceptance import normal_answers
 
 def test_normal_workflow_only_submits_declared_facts_for_actual_questions():
     calls=[];summary={}
-    state={'task':{'version':2,'questions':[{'id':'budget-question','field':'budget'},{'id':'other','field':'currency'}]},'draft':{'version':1}}
+    state={'task':{'version':2,'questions':[{'id':'budget-question','field':'budget'},{'id':'other','field':'currency'}]},'draft':{'version':1},'preview':{'can_confirm':True}}
     async def call(stage,method,path,**kwargs):
         calls.append((stage,kwargs))
         return 200,state

@@ -55,7 +55,7 @@ def test_explicit_groups_are_real_nodes_and_budget_is_counted_once():
     assert [g['budget']['amount'] for g in plan['adgroups']] == ['40.40', '60.61']
     assert preview['totals'] == [{'currency':'USD', 'budget_mode':'lifetime', 'amount':'101.01'}]
     assert [g['audience'] for g in plan['adgroups']] == ['North audience', 'South audience']
-    assert [g['language'] for g in plan['adgroups']] == ['', '']
+    assert [g['language'] for g in plan['adgroups']] == ['all', 'all']
 
 
 def test_rounding_preserves_exact_total_and_is_deterministic():

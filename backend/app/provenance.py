@@ -5,7 +5,7 @@ import re
 from .models import SourceRef
 from .excel import normalize_value,objective,date_value
 
-CRITICAL_FIELDS={'account_id','post_id','post_url','budget','budget_mode','currency','start_at','end_at',
+CRITICAL_FIELDS={'platform','name','account_id','post_id','post_url','budget','budget_mode','currency','start_at','end_at',
                  'timezone','audience','language','identity_id','cta','landing_url'}
 
 
@@ -158,7 +158,13 @@ def verify_excel_source(document,field,value,ref,tz=''):
     if field in ('account_id','post_id','identity_id') and isinstance(raw,(int,float)) and abs(raw)>=10**15:raise ValueError('长 ID 数值精度未核实')
     if field in ('start_at','end_at') and isinstance(raw,date) and (not isinstance(raw,datetime) or not re.search(r'[hHsS]',re.sub(r'"[^"]*"','',cell.number_format))):raise ValueError('日期来源缺少时刻精度')
     actual=_transform(raw,ref.transform)
-    if not equivalent(field,value,actual,tz):raise ValueError('字段值与原始单元格不一致')
+    # The parser already derives these two fields from a verified TikTok URL.
+    # Reapply the same controlled derivation to the server-read cell value.
+    if ref.transform=='value' and field in ('post_id','platform'):
+        from .excel import post_id_from_url
+        post=post_id_from_url(actual)
+        if post:actual=post if field=='post_id' else 'TikTok'
+    if not equivalent(field,value,actual,tz):raise ValueError(f'{field} 字段值与原始单元格 {ref.sheet}!{cell.coordinate} 不一致')
     return ref.model_copy(update={'raw_value':clean(raw),'cell':cell.coordinate})
 
 

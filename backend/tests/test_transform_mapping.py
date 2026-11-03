@@ -85,7 +85,7 @@ def test_transform_support_must_come_from_filtered_selected_rows():
 def test_invalid_fixed_currency_transform_is_rejected_before_review(header):
     w=Workbook();s=w.active;s.append(['Post',header]);s.append(['7712345678901234567',50])
     mapping=SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,
-                         bindings={**row_bindings({'post_id':'A'}), **{'currency':Binding(kind='header',cell='B1',transform='currency_code')}})
+                         bindings={**row_bindings({'post_id':'A'}), **{'currency':Binding(kind='cell',cell='B1',transform='currency_code')}})
     with pytest.raises(ValueError,match='固定来源.*不支持 currency_code'):
         validate_mapping(mapping,read_workbook(binary(w)))
 
@@ -98,6 +98,15 @@ def test_currency_transform_accepts_supported_rows_and_preserves_bad_row():
     rows=parse_requirements(data,'file',[mapping])
     assert rows[0].currency=='USD' and rows[1].currency=='' and len(rows)==2
     assert any(i.code=='invalid_transform' and i.field=='currency' for i in rows[1].issues)
+
+
+def test_invalid_fixed_transform_keeps_other_verified_fields_in_draft():
+    w=Workbook();s=w.active;s.append(['Post','Budget']);s.append(['7712345678901234567',50])
+    mapping=SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,
+        bindings={**row_bindings({'post_id':'A','budget':'B'}),'currency':Binding(kind='cell',cell='B1',transform='currency_code')})
+    rows=parse_requirements(binary(w),'file',[mapping])
+    assert rows[0].post_id=='7712345678901234567' and rows[0].budget==50
+    assert any(i.code=='invalid_transform' and i.field=='currency' for i in rows[0].issues)
 
 
 def template_with_changed_data():

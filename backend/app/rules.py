@@ -133,12 +133,16 @@ def fingerprint(req: Requirement):
     return sha256(json.dumps(values).encode()).hexdigest()
 
 
+def business_now():
+    return datetime.now(timezone.utc)
+
+
 def evaluate(req: Requirement, history: list[dict], now=None):
-    now = now or datetime.now(timezone.utc)
+    now = now or business_now()
     req = req.model_copy(deep=True)
     req.issues = [i for i in req.issues if i.code.startswith("invalid_")]
     req.history = history_candidates(req,history)
-    for field in ("account_id", "post_id", "objective", "budget", "budget_mode", "currency", "start_at", "end_at", "timezone", "audience", "identity_id"):
+    for field in ("name", "account_id", "post_id", "objective", "budget", "budget_mode", "currency", "start_at", "end_at", "timezone", "audience", "identity_id"):
         if req.structure and field in ('post_id','identity_id','audience','start_at','end_at','timezone'):
             continue
         if getattr(req, field) in (None, ""):
@@ -206,12 +210,12 @@ def evaluate(req: Requirement, history: list[dict], now=None):
             if any(s in ('existing','change','unknown') for s in states):
                 req.issues.append(Issue(code='history_review',field='included',message='本计划包含已有投放或待核实素材，请按素材明确选择新增范围',target_id=req.id))
             req.classification='incomplete' if req.issues else 'new'
-    req.issues=list({(i.code,i.field,i.message):i for i in req.issues}.values())
+    req.issues=list({(i.code,i.field,i.message,i.target_id):i for i in req.issues}.values())
     return req
 
 
 def check_policy(req: Requirement, policy: ProjectPolicy, now=None):
-    now = now or datetime.now(timezone.utc)
+    now = now or business_now()
     failures = []
     if not policy.enabled or policy.valid_until.tzinfo is None or policy.valid_until <= now:
         failures.append("项目预授权未启用或已过期")

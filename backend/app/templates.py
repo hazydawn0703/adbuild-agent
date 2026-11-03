@@ -27,7 +27,7 @@ def capture(mappings,inspection,data):
         for field,binding in m.bindings.items():
             source_sheet=workbook[binding.sheet or m.sheet]
             if binding.kind=='row':fields[field]={'header':header.get(binding.column,''),'transform':binding.transform}
-            elif binding.kind=='header':fixed[field]={'label':clean(source_sheet[binding.cell].value),'direction':'self','kind':'header','transform':binding.transform}
+            elif source_sheet.title==m.sheet and source_sheet[binding.cell].row==m.header_row:fixed[field]={'label':clean(source_sheet[binding.cell].value),'direction':'self','kind':'cell','transform':binding.transform}
             else:fixed[field]={**_label(source_sheet,source_sheet[binding.cell]),'kind':'cell','transform':binding.transform}
         labels=[entry['header'] for entry in fields.values()]
         if not fields or not all(labels) or any(list(header.values()).count(label)!=1 for label in labels):raise ValueError('表头为空或重名，不能保存可复用模板')

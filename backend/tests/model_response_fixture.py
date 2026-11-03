@@ -16,16 +16,21 @@ def row_bindings(fields):
 def campaign_fixture(**values):
     """Explicit singleton hierarchy for tests unrelated to source-row assembly."""
     from app.models import Requirement,StructureSpec,GroupSpec,MaterialSpec
-    row=Requirement(**values)
+    row=Requirement(**{'language':'all',**values})
     if row.structure is None:
         row.structure=StructureSpec(groups=[GroupSpec(id=row.id+':group',ads=[MaterialSpec(
             id=row.id+':ad',post_id=row.post_id,post_url=row.post_url,identity_id=row.identity_id,
             cta=row.cta,landing_url=row.landing_url,sources=dict(row.sources))])])
     for group in row.structure.groups:
+        group.audience=group.audience if group.audience is not None else row.audience
+        group.language=group.language if group.language is not None else row.language
         group.start_at=group.start_at or row.start_at
         group.end_at=group.end_at or row.end_at
         group.timezone=group.timezone or row.timezone
         if not group.ads:
             group.ads=[MaterialSpec(id=group.id+':ad',post_id=row.post_id,post_url=row.post_url,identity_id=row.identity_id)]
+        for ad in group.ads:
+            for field in ('identity_id','cta','landing_url'):
+                if not getattr(ad,field):setattr(ad,field,getattr(row,field))
     return row
 

@@ -13,7 +13,7 @@ from app.excel import parse_export,parse_requirements,inspect_workbook
 
 
 def req(**values):
-    defaults=dict(id='r1',account_id='1234567890123456789',post_id='7701598778473630998',objective='followers',budget=Decimal('50'),budget_mode='lifetime',currency='USD',start_at=datetime(2027,1,1,tzinfo=timezone.utc),end_at=datetime(2027,1,2,tzinfo=timezone.utc),timezone='UTC',audience='HQ',identity_id='identity')
+    defaults=dict(id='r1',name='Explicit plan',account_id='1234567890123456789',post_id='7701598778473630998',objective='followers',budget=Decimal('50'),budget_mode='lifetime',currency='USD',start_at=datetime(2027,1,1,tzinfo=timezone.utc),end_at=datetime(2027,1,2,tzinfo=timezone.utc),timezone='UTC',audience='HQ',identity_id='identity')
     return campaign_fixture(**(defaults|values))
 
 

@@ -34,8 +34,15 @@ def save(c,task):
 
 def question_observation(question,draft):
     rows=[] if draft is None else [r for r in draft.requirements if r.included and (question.scope=='task' or r.id in question.requirement_ids)]
-    return {r.id:sha256(json.dumps({'value':str(getattr(r,question.field,'')),
-        'source':r.sources[question.field].model_dump(mode='json') if question.field in r.sources else None},sort_keys=True,ensure_ascii=False).encode()).hexdigest() for r in rows}
+    result={}
+    from .entities import evidence_values
+    for row in rows:
+        for target in question.target_ids or [row.id]:
+            try:data=row.model_dump(mode='json') if target==row.id else evidence_values(row,target)
+            except ValueError:continue
+            result[target]=sha256(json.dumps({'value':data.get(question.field),
+                'source':data.get('sources',{}).get(question.field)},sort_keys=True,ensure_ascii=False,default=str).encode()).hexdigest()
+    return result
 
 
 def reconcile_questions(task,draft):
@@ -55,9 +62,16 @@ def reconcile_questions(task,draft):
         if question.field=='scope':
             if task.scope.status=='resolved' and (draft is None or any(r.included for r in draft.requirements)):continue
         elif old is not None and current and current!=old and draft is not None:
-            targets=[r for r in draft.requirements if r.id in current]
-            if all(getattr(r,question.field,None) not in (None,'') and r.sources.get(question.field)
-                   and not any(i.field==question.field and i.blocking for i in r.issues) for r in targets):continue
+            from .entities import evidence_values
+            targets=[]
+            for row in draft.requirements:
+                for target in current:
+                    try:data=row.model_dump(mode='json') if target==row.id else evidence_values(row,target)
+                    except ValueError:continue
+                    targets.append((row,target,data))
+            if targets and all(data.get(question.field) not in (None,'') and data.get('sources',{}).get(question.field)
+                   and not any(i.field==question.field and i.blocking and (not i.target_id or i.target_id==target) for i in row.issues)
+                   for row,target,data in targets):continue
         unresolved.append(question)
     task.semantic_questions=unresolved
 
@@ -93,15 +107,20 @@ def refresh(task,draft):
     # field for exactly the same records. One answer addresses that whole set.
     # Preserve distinct record sets, and leave semantic/candidate questions alone.
     combined={}
-    for (field,_code),group in grouped.items():
+    for (field,code),group in grouped.items():
         key=(field,'requirements',tuple(sorted(group['ids'])),tuple(sorted(group['targets'])))
-        messages=combined.setdefault(key,[])
-        messages.extend(message for message in group['messages'] if message not in messages)
+        entry=combined.setdefault(key,{'messages':[],'codes':set()})
+        entry['messages'].extend(message for message in group['messages'] if message not in entry['messages'])
+        entry['codes'].add(code)
     task.questions=[]
-    for (field,scope,ids,targets),messages in combined.items():
-        key=json.dumps({'origin':'system','task':task.id,'draft_version':draft.version,'field':field,'scope':scope,'requirements':ids,'targets':targets},sort_keys=True)
-        task.questions.append(Clarification(id=sha256(key.encode()).hexdigest()[:20],field=field,scope=scope,
-            requirement_ids=list(ids),target_ids=list(targets),evidence_version=draft.version,question='；'.join(messages)))
+    for (field,scope,ids,targets),entry in combined.items():
+        reason='conflict' if any(c.startswith('invalid_') or c in ('duplicate','history_review','language_conflict') for c in entry['codes']) else 'missing'
+        question=Clarification(id='',field=field,scope=scope,reason_code=reason,
+            requirement_ids=list(ids),target_ids=list(targets),evidence_version=draft.version,question='；'.join(entry['messages']))
+        key=json.dumps({'origin':'system','task':task.id,'field':field,'scope':scope,'requirements':ids,
+            'targets':targets,'reason':reason,'evidence':question_observation(question,draft)},sort_keys=True)
+        question.id=sha256(key.encode()).hexdigest()[:20]
+        task.questions.append(question)
     task.questions.extend(task.semantic_questions)
     task.stage='attention' if task.analysis.get('phase')=='attention' else 'clarifying' if task.questions else 'preview'
 
@@ -270,7 +289,7 @@ async def act(project_id,body,actor):
                 q=next((q for q in task.questions if q.id==qid),None)
                 if not q or not value.strip(): raise HTTPException(422,'问题已过期或答案为空')
                 if q.scope=='task':
-                    if q.field!='scope':
+                    if q.field not in ('scope','structure'):
                         from .excel import normalize_value
                         try:normalize_value(q.field,value,'')
                         except (ValueError,TypeError,KeyError):raise HTTPException(422,'任务答案格式无效，请按字段要求填写') from None
@@ -278,6 +297,8 @@ async def act(project_id,body,actor):
                     if q.field=='scope':
                         task.scope.status='unresolved';task.scope.reason='已保存范围回答，请继续分析核对本次集合'
                         scope_answered=True
+                elif q.field=='structure':
+                    task.answers[qid]={'field':q.field,'value':value,'question':q.question,'message_id':message_id}
                 elif not draft or q.field not in EDITABLE:
                     raise HTTPException(422,'问题需要当前草稿与有效字段')
                 else:
@@ -365,7 +386,7 @@ async def act(project_id,body,actor):
             current.lease=None
             for question in decision.questions:
                 question.evidence_version=draft.version if draft else current.context.version
-                question.id=sha256(json.dumps({'task':task.id,'scope':question.scope,'field':question.field,'ids':sorted(question.requirement_ids),'targets':sorted(question.target_ids),'reason':question.reason_code,'evidence_version':question.evidence_version},sort_keys=True,ensure_ascii=False).encode()).hexdigest()[:20]
+                question.id=sha256(json.dumps({'task':task.id,'scope':question.scope,'field':question.field,'ids':sorted(question.requirement_ids),'targets':sorted(question.target_ids),'reason':question.reason_code,'evidence':question_observation(question,draft)},sort_keys=True,ensure_ascii=False).encode()).hexdigest()[:20]
             # Empty model output cannot discard unresolved questions or pending proposals.
             existing={q.id:q for q in current.semantic_questions if q.id not in current.answers}
             existing.update({q.id:q for q in decision.questions})

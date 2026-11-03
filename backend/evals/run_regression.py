@@ -117,6 +117,8 @@ async def main(args,after_analysis=None):
     manifest=json.loads(Path(args.freeze).read_text(encoding='utf-8'))
     if manifest.get('commit')!=args.commit or manifest.get('model')!=cfg.llm_model or manifest.get('execution_enabled') is not False:
         raise ValueError('Commit, model configuration or execution flag differs from freeze')
+    business_time=datetime.fromisoformat(manifest['business_time'].replace('Z','+00:00'))
+    if business_time.tzinfo is None:raise ValueError('Business time requires an explicit timezone')
     mismatch=verify_sources(source_root,manifest)
     if mismatch:raise ValueError('Source files differ from freeze: '+repr(mismatch))
     if after_analysis and 'backend/evals/run_acceptance.py' not in manifest['files']:raise ValueError('Acceptance workflow driver missing from freeze')
@@ -128,7 +130,7 @@ async def main(args,after_analysis=None):
     os.environ['STORAGE_DIRECTORY']=str(output/'private-workbooks');settings.cache_clear()
     run.write('freeze.json',manifest)
     protocol={'label':'exposed_regression','run_id':args.run_id,'parent_run':args.parent_run,'started_at':now(),
-              'commit':args.commit,'cases':cases,'input_files':input_hashes,'model':cfg.llm_model,
+              'commit':args.commit,'cases':cases,'input_files':input_hashes,'model':cfg.llm_model,'business_time':business_time.isoformat(),
               'attempts_per_case':1,'max_analysis_actions':3 if after_analysis else 1,'max_unchanged_proposal_acceptances':2 if after_analysis else 1,
               'mapping_resume_actions':0,'extra_retries':0,'manual_mapping_changes':0,'manual_field_changes':0,
               'extra_answers':0,'final_confirmation':False,'execution_enabled':False,
@@ -181,7 +183,7 @@ async def main(args,after_analysis=None):
         run.seal()
         raise
     try:
-        with patch('app.executor.call',run.forbidden_ad_call),patch('app.executor.call_binding',run.forbidden_ad_call),patch('app.main.connect',run.forbidden_ad_call):
+        with patch('app.executor.call',run.forbidden_ad_call),patch('app.executor.call_binding',run.forbidden_ad_call),patch('app.main.connect',run.forbidden_ad_call),patch('app.rules.business_now',lambda:business_time),patch('app.agent.business_now',lambda:business_time):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=observed,raise_app_exceptions=False),base_url='https://regression.invalid',timeout=210) as client:
                 login=await client.post('/auth/login',json={'email':email,'password':password})
                 if login.status_code!=200:raise RuntimeError('Test user authentication failed')

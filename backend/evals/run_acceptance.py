@@ -17,12 +17,12 @@ async def normal_answers(case,setup,call,summary,task_id,project_id,file_id):
     status,_=await call('normal-user-answers','POST',f'/projects/{project_id}/chat',json=request(state,'answer',answers=answers))
     summary['normal_answers_submitted']=len(answers)
     if status!=200:return
-    if 'scope' not in facts:return
     _,state=await call('after-normal-answers','GET','/tasks/'+task_id)
+    if (state.get('preview') or {}).get('can_confirm'):return
     status,_=await call('analyze-after-normal-answers','POST',f'/projects/{project_id}/chat',json=request(state,'analyze'))
     if status!=200:return
     _,state=await call('after-normal-analysis','GET','/tasks/'+task_id)
-    if not state.get('draft') and file_id:
+    if not state.get('draft') and file_id and 'scope' in facts:
         status,mapping=await call('mapping-after-scope-answer','POST',f'/files/{file_id}/mapping/propose')
         if status!=200 or not mapping.get('mappings') or not mapping.get('complete',True):return
         status,_=await call('confirm-mapping-after-scope-answer','POST',f'/files/{file_id}/mapping/confirm',json={'mappings':mapping['mappings'],'expected_task_version':mapping['expected_task_version'],'request_id':str(uuid4())})
