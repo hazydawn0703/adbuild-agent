@@ -128,3 +128,17 @@ def test_authentication_keeps_its_access_token_contract(monkeypatch):
     output=main.login(main.LoginBody(email='qa@example.invalid',password='not-a-real-password'))
     assert isinstance(output['access_token'],str) and output['access_token']
     assert output['expires_in']==86400
+
+
+def test_validation_errors_never_echo_private_input():
+    from app.main import error_detail
+    from app.models import MaterialSpec
+    from pydantic import ValidationError
+    import json
+    secret='private-material-value'
+    try:MaterialSpec.model_validate({'id':{'authorization_code':secret}})
+    except ValidationError as error:
+        detail=error_detail(error)
+        assert secret not in json.dumps(detail)
+        assert all(set(item)<= {'loc','type','msg'} for item in detail)
+    else:raise AssertionError('invalid material accepted')

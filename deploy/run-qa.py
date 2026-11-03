@@ -12,6 +12,7 @@ parser=argparse.ArgumentParser()
 parser.add_argument('--release',required=True)
 parser.add_argument('--output',required=True)
 parser.add_argument('--stage',choices=['all','tests','workflow'],default='all')
+parser.add_argument('--repeats',type=int,choices=[1,2,3],default=1)
 args=parser.parse_args()
 release=Path(args.release).resolve()
 output=Path(args.output).resolve()
@@ -29,4 +30,4 @@ os.umask(0o077)
 if args.stage in ('all','tests'):
     subprocess.run([sys.executable,'-m','pytest','tests','-q'],cwd=release/'backend',env=os.environ,check=True)
 if args.stage in ('all','workflow'):
-    subprocess.run([sys.executable,'evals/run_workflow.py','--output',str(output),'--repeats','1'],cwd=release/'backend',env=os.environ,check=True)
+    subprocess.run([sys.executable,'evals/run_workflow.py','--output',str(output),'--repeats',str(args.repeats)],cwd=release/'backend',env=os.environ,check=True)

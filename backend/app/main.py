@@ -86,10 +86,20 @@ def oauth_callback(code:str,state:str):
     return RedirectResponse(settings().app_origin)
 
 
+from fastapi.exceptions import RequestValidationError
+
+
+def error_detail(error):
+    if isinstance(error,(ValidationError,RequestValidationError)):
+        return [{key:item[key] for key in ('loc','type','msg') if key in item} for item in error.errors()]
+    return str(error)
+
+
+@app.exception_handler(RequestValidationError)
 @app.exception_handler(ValueError)
 async def invalid(_,exc):
     from fastapi.responses import JSONResponse
-    return JSONResponse(status_code=422,content={"detail":str(exc)})
+    return JSONResponse(status_code=422,content={'detail':error_detail(exc)})
 
 
 @app.get('/health')
