@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any, Literal, Annotated
 from pydantic import BaseModel, Field, ConfigDict
 
 
@@ -89,14 +89,17 @@ class ProjectPolicy(Model):
     valid_until: datetime
 
 
+InputField = Literal['account_id','business_no','name','post_url','post_id','objective','budget','budget_mode','currency','start_at','end_at','timezone','audience','language','identity_id','cta','landing_url']
+
+
 class SheetMapping(Model):
     sheet: str
     header_row: int = Field(ge=1)
     first_row: int = Field(ge=1)
     last_row: int = Field(ge=1)
-    columns: dict[str, str]
+    columns: dict[InputField, Annotated[str, Field(pattern=r'^[A-Z]{1,3}$')]]
     # Defaults are explicitly accepted by a user, not instructions extracted from cells.
-    defaults: dict[str, str] = Field(default_factory=dict)
+    defaults: dict[InputField, str] = Field(default_factory=dict)
 
 
 class MappingProposal(Model):

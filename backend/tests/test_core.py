@@ -27,7 +27,7 @@ def test_expired_is_blocked():
 
 
 def test_same_post_different_objective_or_schedule_is_new():
-    history=[dict(post_id=req().post_id,objective='traffic',start_at='2027/01/01 00:00',end_at='2027/01/02 00:00',language='All',budget='50')]
+    history=[dict(post_id=req().post_id,objective='traffic',start_at='2027/01/01 00:00',end_at='2027/01/02 00:00',timezone='UTC',language='All',budget='50')]
     assert evaluate(req(),history,datetime(2026,1,1,tzinfo=timezone.utc)).classification=='new'
     history[0]['objective']='followers'
     assert evaluate(req(),history,datetime(2026,1,1,tzinfo=timezone.utc)).classification=='existing'
@@ -68,7 +68,7 @@ def test_original_workbooks():
     assert len({r['campaign_id'] for r in exports})==219
     assert len({r['adgroup_id'] for r in exports})==221
     mapping=SheetMapping(sheet='搭建需求-运营使用',header_row=2,first_row=3,last_row=10,
-        columns={'business_no':'B','name':'E','objective':'G','post_url':'J','audience':'K','language':'L','budget':'N','start_at':'O','end_at':'P'},defaults={'account_id':'1234567890123456789','timezone':'UTC'})
+        columns={'business_no':'B','name':'S','objective':'G','post_url':'J','audience':'K','language':'L','budget':'N','start_at':'O','end_at':'P','timezone':'Q'},defaults={})
     data=(base/'to产品运营-【GSTM】加热投流表 (2).xlsx').read_bytes()
     rows=parse_requirements(data,'requirements',[mapping])
     assert len(rows)==8
@@ -76,3 +76,17 @@ def test_original_workbooks():
     assert all(r.history for r in evaluated)
     assert all(any(i.code=='expired' for i in r.issues) for r in evaluated)
     assert all(r.classification!='new' for r in evaluated)
+    assert [len(r.history) for r in evaluated]==[1,1,1,2,3,1,1,1]
+    assert [r.business_no for r in rows]==['98','153','156','101','158','118','191','193']
+    assert all(r.objective=='followers' and r.language=='en' and r.timezone=='UTC' for r in rows)
+    assert sum(r.budget for r in rows)==Decimal('400')
+    assert all(not r.currency and not r.budget_mode and not r.identity_id for r in rows)
+    assert all(r.sources['timezone'].raw_value=='投放时区：UTC+0' for r in rows)
+    assert all(r.sources['post_id'].cell==f'J{index}' for index,r in enumerate(rows,3))
+    assert all(any(i.code=='language_conflict' for i in r.issues) for r in evaluated)
+    assert all(any(d['field']=='start_at' for h in r.history for d in h['differences']) for r in evaluated)
+    assert any(d['field']=='budget' for h in evaluated[3].history for d in h['differences'])
+    from app.preview import build_preview
+    from app.models import BuildDraft
+    preview=build_preview(BuildDraft(id='real',project_id='test',requirements=evaluated),exports,0,datetime(2026,11,3,tzinfo=timezone.utc))
+    assert not preview['can_confirm'] and not preview['approval_valid']

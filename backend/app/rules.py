@@ -1,8 +1,40 @@
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 import json
 from .models import Requirement, Issue, ProjectPolicy
+from .excel import date_value
+
+
+def normalized_language(value):
+    text=str(value or '').strip().lower()
+    return {'英语':'en','英文':'en','english':'en'}.get(text,text)
+
+
+def history_differences(req, h):
+    differences=[]
+    for field in ('name','objective','budget','budget_mode','language','start_at','end_at'):
+        requested=getattr(req,field)
+        historical=h.get(field)
+        if requested in (None,'') or historical in (None,''):
+            continue
+        if field in ('start_at','end_at'):
+            try:
+                # The export has no timezone column. Display local clock differences only;
+                # never infer the advertiser timezone from a requirement's UTC label.
+                equal=requested.replace(tzinfo=None)==date_value(historical,'').replace(tzinfo=None)
+            except (ValueError,KeyError):
+                equal=False
+        elif field=='budget':
+            try: equal=requested==Decimal(historical)
+            except (InvalidOperation,ValueError): equal=False
+        elif field=='language':
+            equal=normalized_language(requested)==normalized_language(historical)
+        else:
+            equal=str(requested)==str(historical)
+        if not equal:
+            differences.append({'field':field,'requested':str(requested),'historical':str(historical)})
+    return differences
 
 
 def fingerprint(req: Requirement):
@@ -18,9 +50,14 @@ def evaluate(req: Requirement, history: list[dict], now=None):
     req.issues = [i for i in req.issues if i.code.startswith("invalid_")]
     req.history = []
     for h in history:
-        if h["post_id"] == req.post_id and req.post_id:
+        if h["post_id"] == req.post_id and req.post_id and (not h.get('account_id') or h['account_id']==req.account_id):
             candidate = {k:v for k,v in h.items() if k != "raw"}
             candidate["same_objective"] = h["objective"] == req.objective
+            candidate['differences']=history_differences(req,h)
+            candidate['match_reason']='帖子 ID 一致；'+('目标一致' if candidate['same_objective'] else '目标不同，仅作历史参考')
+            candidate['timezone_note']=f"历史账户时区：{h['timezone']}" if h.get('timezone') else '导出未包含账户时区，历史时间按原文展示，不能仅凭日期认定已存在'
+            raw=h.get('raw',{})
+            candidate['targeting']={k:raw[k] for k in ('Location','Gender','Age','Languages','Interest Category','Placements','Video Download','Identity ID') if raw.get(k)}
             req.history.append(candidate)
     for field in ("account_id", "post_id", "objective", "budget", "budget_mode", "currency", "start_at", "end_at", "timezone", "audience", "identity_id"):
         if getattr(req, field) in (None, ""):
@@ -40,21 +77,24 @@ def evaluate(req: Requirement, history: list[dict], now=None):
     exact = []
     for h in req.history:
         try:
-            # Export timestamps are account-local; compare only with explicitly supplied account zone.
-            from zoneinfo import ZoneInfo
-            start = datetime.fromisoformat(h["start_at"].replace("/","-")).replace(tzinfo=ZoneInfo(req.timezone))
-            end = datetime.fromisoformat(h["end_at"].replace("/","-")).replace(tzinfo=ZoneInfo(req.timezone))
-            if h["same_objective"] and start == req.start_at and end == req.end_at:
+            start = date_value(h['start_at'],h.get('timezone',''))
+            end = date_value(h['end_at'],h.get('timezone',''))
+            if not start or not end:
+                raise ValueError('历史排期缺失')
+            if h['same_objective'] and start.tzinfo and end.tzinfo and start == req.start_at and end == req.end_at:
                 exact.append(h)
+            elif h['same_objective'] and req.start_at and req.end_at and max(start.replace(tzinfo=None),req.start_at.replace(tzinfo=None))<=min(end.replace(tzinfo=None),req.end_at.replace(tzinfo=None)):
+                req.issues.append(Issue(code='history_review',field='start_at',message=f"历史广告 {h.get('ad_id','')} 的排期相近但并非已核实的同一排期，需核对账户时区与实际投放批次，不能直接当作新增"))
         except (ValueError, KeyError):
             pass
-        if req.language and h["language"] and req.language.lower() != h["language"].lower() and "language" not in req.confirmed_fields:
+        if h['same_objective'] and req.language and h["language"] and normalized_language(req.language) != normalized_language(h["language"]) and "language" not in req.confirmed_fields:
             req.issues.append(Issue(code="language_conflict",field="language",message=f"本次语言 {req.language} 与历史 {h['language']} 不一致，请确认"))
     if exact:
-        changed = any(h["budget"] and req.budget is not None and Decimal(h["budget"]) != req.budget for h in exact)
+        changed = any(any(d['field'] in ('budget','budget_mode','language') for d in h['differences']) for h in exact)
         req.classification = "change" if changed else "existing"
     else:
         req.classification = "incomplete" if req.issues else "new"
+    req.issues=list({(i.code,i.field,i.message):i for i in req.issues}.values())
     return req
 
 
