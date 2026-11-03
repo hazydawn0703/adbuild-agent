@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=Path(__file__).resolve().parents[2] / ".env", extra="ignore")
     database_url: str = Field(min_length=1)
     session_secret: str = Field(min_length=32)
+    ops_password_hash: str = ""
     storage_directory: str = "/opt/adbuild-agent/data/workbooks"
     token_encryption_key: str = Field(min_length=1)
     llm_api_key: str = ""

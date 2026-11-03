@@ -23,6 +23,18 @@ test('controlled group editor proposes a structure and never confirms or execute
  await page.getByRole('button',{name:'调整分组与素材',exact:true}).click();
  await page.getByLabel('结构预算层级').selectOption('adgroup');
  await page.getByRole('button',{name:'添加广告组',exact:true}).click();
+ const editor=page.getByRole('dialog',{name:'调整广告组与素材结构',exact:true});
+ for(const size of [{width:390,height:844},{width:320,height:568},{width:667,height:375},{width:390,height:330}]){
+  await page.setViewportSize(size);
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  const header=(await editor.locator('.modal-header').boundingBox())!,footer=(await editor.locator('.modal-footer').boundingBox())!;
+  await editor.locator('.modal-body').evaluate(e=>e.scrollTop=e.scrollHeight);
+  expect((await editor.locator('.modal-header').boundingBox())!.y).toBe(header.y);
+  expect((await editor.locator('.modal-footer').boundingBox())!.y).toBe(footer.y);
+  expect(footer.y+footer.height).toBeLessThanOrEqual(size.height);
+  expect(await editor.locator('.modal-body').evaluate(e=>e.scrollWidth<=e.clientWidth+1)).toBeTruthy();
+ }
+ await page.setViewportSize({width:1440,height:900});
  await page.getByLabel('组预算金额',{exact:true}).nth(0).fill('50');
  await page.getByLabel('组预算金额',{exact:true}).nth(1).fill('51.01');
  await page.getByLabel('受众',{exact:true}).nth(0).fill('Audience north');

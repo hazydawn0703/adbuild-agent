@@ -1,13 +1,29 @@
-# stratos-aliyun 部署
+# 发布规范
 
-网址：`https://stratos.run/apps/adbuild-agent`
+工作台网址：`https://stratos.run/apps/adbuild-agent`；平台管理入口：`https://stratos.run/apps/adbuild-agent/ops`。
 
-服务器通过 Tailscale 连接，应用由 systemd 托管；Nginx 只新增 `/apps/adbuild-agent` 命名空间。Web 和 API 分别监听 `127.0.0.1:18790`、`127.0.0.1:18791`，不直接暴露端口。
+## 提交、合并后才部署
 
-源代码与构建位于 `/opt/adbuild-agent/releases/`，`/opt/adbuild-agent/current` 指向当前版本。Python 虚拟环境位于 `/opt/adbuild-agent/venv`，项目私有运行配置位于 `/etc/adbuild-agent/runtime.env`。这些文件不加入 Git。
+发布顺序强制为：提交并推送 GitHub → PR 合并到 `main` → 确认合并提交 SHA → 从该提交构建、验证并部署。禁止发布未提交、未合并的修改，完整要求见根目录 `AGENTS.md`。
 
-服务配置在 `deploy/`。执行 `bash deploy/install.sh /opt/adbuild-agent/releases/<版本>` 安装新版本；脚本需要 admin 用户的 sudo 权限。修改 Nginx 前会保留原配置，只有 `nginx -t` 成功后才 reload。队列 Worker 在数据库和权限准备好、创建 `/etc/adbuild-agent/worker-enabled` 后才可启用。
+发布目录中的 `REVISION` 记录合并提交 SHA。部署前后使用该提交的文件清单和哈希核对源码，确认仓库与线上版本一致。回滚只能使用此前已合并、已验证的提交。
 
-DeepSeek 使用 OpenAI-compatible Chat Completions 和工具调用输出结构。模型由 `LLM_MODEL` 指定，端点为 `LLM_BASE_URL`，密钥为 `LLM_API_KEY`，密钥仅保存在服务器。
+服务定义及安装入口位于 `deploy/`，发布目录传给 `deploy/install.sh`。服务器连接信息、真实端口映射、私有路径和运行配置由部署环境维护，不写入公开文档。Nginx 只更新本应用命名空间，配置检查成功后才 reload，不覆盖同域名其他应用的配置。
 
-运行状态由 API `/config` 提供，不向前端暴露数据库密码、模型密钥和 TikTok token。MySQL 8.0 独立库 adbuild_agent，账号限制为服务器实际连接 IP；应用服务只保留本库的数据读写权限。LangGraph 使用 langgraph-checkpoint-mysql，队列使用 InnoDB 的 SKIP LOCKED 和租约。登录为 Argon2 密码与限时签名会话，不再使用 Supabase。
+## 运行配置与权限
+
+`.env.example` 只列出配置键和公开默认值，不包含真实凭据。MySQL DSN、会话密钥、加密密钥、模型密钥及 `OPS_PASSWORD_HASH` 必须通过服务器私有运行配置提供，禁止提交 `.env` 或运行配置文件。
+
+平台管理密码使用 `pwdlib` 生成 Argon2 哈希，前端不保存平台密码。未配置时登录返回 503。平台会话使用独立的 HttpOnly、Secure、SameSite=Strict Cookie，1 小时过期，退出时服务端撤销；API 重启后会话失效。连续登录失败会触发限流。
+
+平台管理员可以开通客户空间和首个项目、添加客户管理员、启停账号及重置密码；客户管理员只能管理所属空间。每个空间至少保留一名启用的管理员。平台操作写入审计记录，不记录密码。客户密码重置后已有登录令牌失效，停用账号后不可访问客户 API。平台 Cookie 与客户 Bearer 令牌互不授予权限。
+
+真实广告执行保持关闭，Worker 仅在数据库和运行权限完成准备后由运维明确启用。发布预检使用 `deploy/check-release.py`，不输出凭据。
+
+## 品牌资源与验收
+
+品牌资源位于 `frontend/public/brand/`。图标在 `frontend/app/layout.tsx` 中显式指向本应用的 URL 命名空间，与同域名其他应用隔离。Standalone 发布需将 `frontend/public` 复制到 `.next/standalone/public`。发布后核对页面 `link[rel="icon"]` 及图标 URL 返回 200。
+
+运行后端测试和前端类型检查、构建及浏览器回归。测试开通、账号和密码功能时优先使用模拟请求；实际 MySQL 测试必须在隔离环境或明确的回滚事务中执行，不创建持久化测试客户。
+
+上线后检查页面、API 健康状态、favicon、平台管理登录门禁，并复核桌面和手机端弹窗交互。
