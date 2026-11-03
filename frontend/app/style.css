@@ -222,3 +222,10 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .task-selection .task-picker>div{max-width:none}
 .task-rename{flex-shrink:0;align-self:flex-end;height:36px}
 @media(min-width:761px) and (max-width:1050px){.task-selection{flex-basis:220px}.task-selection .task-picker{flex-basis:auto}}
+
+.archived-task-list{list-style:none;margin:0;padding:0;display:grid;gap:12px}
+.archived-task-list li{display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid #dfe5d9;border-radius:8px;padding:12px;min-width:0}
+.archived-task-list li>div:first-child{min-width:0;overflow-wrap:anywhere}
+.archived-task-list small{display:block;color:var(--muted);margin-top:6px;font-size:11px}
+.archived-task-actions{display:flex;gap:8px;flex-shrink:0}
+@media(max-width:600px){.archived-task-list li{align-items:stretch;flex-direction:column}.archived-task-actions .outline{flex:1}}

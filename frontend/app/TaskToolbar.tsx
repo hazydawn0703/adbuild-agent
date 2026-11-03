@@ -1,32 +1,29 @@
 'use client';
-import {ChevronDown, Plus, Archive, ArchiveRestore, ListTodo, PencilLine} from 'lucide-react';
+import {ChevronDown, Plus, Archive, ArchiveRestore, PencilLine} from 'lucide-react';
 
 type Props = {
-  tasks:{id:string;data:{name:string}}[];
+  tasks:{id:string;data:{name:string;archived_at?:string|null}}[];
   value:string;
   selected:boolean;
   busy:boolean;
   readOnly:boolean;
-  showArchived:boolean;
   archived:boolean;
   canArchive:boolean;
   onSelect:(id:string)=>void;
   onCreate:()=>void;
-  onToggleArchived:()=>void;
   onArchive:()=>void;
   onRename:()=>void;
 };
 
-export default function TaskToolbar({tasks,value,selected,busy,readOnly,showArchived,archived,canArchive,onSelect,onCreate,onToggleArchived,onArchive,onRename}:Props) {
+export default function TaskToolbar({tasks,value,selected,busy,readOnly,archived,canArchive,onSelect,onCreate,onArchive,onRename}:Props) {
   return <div className="task-toolbar">
     <div className="task-selection"><label className="task-picker"><span>当前任务</span><div>
       <select aria-label="选择搭建任务" disabled={!selected||busy||!tasks.length} value={value} onChange={e=>onSelect(e.target.value)}>
         <option value="">{selected?'创建或选择搭建任务':'请先选择客户项目'}</option>
-        {tasks.map(task=><option key={task.id} value={task.id}>{task.data.name}</option>)}
+        {tasks.map(task=><option key={task.id} value={task.id}>{task.data.name}{task.data.archived_at?'（已归档）':''}</option>)}
       </select><ChevronDown size={14}/>
     </div></label><button className="icon-button task-rename" aria-label="重命名搭建任务" title="重命名搭建任务" disabled={!value||busy||readOnly} onClick={onRename}><PencilLine size={16}/></button></div>
     <div className="task-actions">
-      <button className="outline" disabled={!selected||busy} onClick={onToggleArchived}>{showArchived?<ListTodo size={14}/>:<Archive size={14}/>}<span>{showArchived?'查看进行中的任务':'查看已归档任务'}</span></button>
       <button className="outline" disabled={!canArchive||busy} onClick={onArchive}>{archived?<ArchiveRestore size={14}/>:<Archive size={14}/>}<span>{archived?'恢复任务':'归档任务'}</span></button>
       <button className="outline" disabled={!selected||busy||readOnly} onClick={onCreate}><Plus size={14}/>新建搭建任务</button>
     </div>

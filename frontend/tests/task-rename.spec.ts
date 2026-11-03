@@ -40,5 +40,5 @@ for(const width of [1440,390,320])test(`task rename preserves selection, version
  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();
  expect(writes).toHaveLength(2);
  project.role='viewer';await page.reload();await page.waitForLoadState('networkidle');await expect(page.getByLabel('选择搭建任务')).toHaveValue('task',{timeout:20000});await expect(trigger).toBeDisabled();
- project.role='admin';task.archived_at='2026-11-03T00:00:00Z';await page.reload();await page.waitForLoadState('networkidle');await page.getByRole('button',{name:'查看已归档任务'}).click();await expect(page.getByLabel('选择搭建任务')).toHaveValue('task');await expect(trigger).toBeDisabled();
+ project.role='admin';task.archived_at='2026-11-03T00:00:00Z';await page.reload();await page.waitForLoadState('networkidle');await page.getByRole('button',{name:'测试项目的项目菜单'}).click();await page.getByRole('button',{name:'已归档搭建任务',exact:true}).click();await page.getByRole('dialog',{name:'已归档搭建任务',exact:true}).getByRole('button',{name:'查看任务'}).click();await expect(page.getByLabel('选择搭建任务')).toHaveValue('task');await expect(trigger).toBeDisabled();
 });
