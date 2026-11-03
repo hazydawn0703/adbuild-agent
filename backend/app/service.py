@@ -1,12 +1,13 @@
 from uuid import uuid4
 from decimal import Decimal
+from datetime import datetime, timezone
 from fastapi import HTTPException
 from .models import BuildDraft, ProjectPolicy, Requirement, SourceRef
 from .rules import evaluate, check_policy, fingerprint
 from .db import transaction, json_value
 from .auth import project_access
 
-EDITABLE = {"included","account_id","post_id","post_url","name","objective","budget","budget_mode","currency","start_at","end_at","timezone","audience","language","identity_id","cta","landing_url"}
+EDITABLE = {"included","account_id","post_id","post_url","name","objective","budget","budget_mode","currency","start_at","end_at","timezone","audience","language","identity_id","cta","landing_url","structure"}
 
 
 def history_for(conn, project):
@@ -39,34 +40,40 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
             raise HTTPException(422,"需求或编辑字段无效")
         values = req.model_dump()
         patch=dict(edit["values"])
-        from .excel import objective, date_value
-        if 'post_url' in patch:
+        from .excel import normalize_value
+        from .models import StructureSpec
+        for field,value in list(patch.items()):
+            if field=='structure':
+                patch[field]=StructureSpec.model_validate(value) if value is not None else None
+            elif field!='included':
+                try: patch[field]=normalize_value(field,value,patch.get('timezone',req.timezone))
+                except (ValueError,TypeError) as error: raise HTTPException(422,str(error))
+        if 'post_url' in patch and patch['post_url']:
             import re
-            from urllib.parse import urlsplit
-            host=urlsplit(patch['post_url']).hostname or ''
             match=re.search(r'/video/(\d+)',patch['post_url'])
-            if not (host=='tiktok.com' or host.endswith('.tiktok.com')) or not match:
-                raise HTTPException(422,'请提供可识别帖子 ID 的 TikTok 视频链接')
-            patch['post_id']=match[1]
-        if 'post_id' in patch and not str(patch['post_id']).isdigit():
-            raise HTTPException(422,'帖子 ID 必须为数字字符串')
-        if 'objective' in patch:
-            normalized=objective(patch['objective'])
-            if patch['objective'] and not normalized: raise HTTPException(422,'无法识别广告目标')
-            patch['objective']=normalized
-        if 'budget_mode' in patch:
-            patch['budget_mode']={'总预算':'lifetime','日预算':'daily'}.get(patch['budget_mode'],patch['budget_mode'])
-        if 'language' in patch:
-            from .rules import normalized_language
-            patch['language']=normalized_language(patch['language'])
-        for field in ('start_at','end_at'):
-            if field in patch: patch[field]=date_value(patch[field],patch.get('timezone',req.timezone))
+            if match: patch['post_id']=match[1]
         values.update(patch)
         req = Requirement.model_validate(values)
         for field,value in patch.items():
-            req.sources[field] = SourceRef(file_id="",sheet="",cell="",raw_value=str(value),kind="confirmed",message_id=edit.get('source_message_id'))
-            if field not in req.confirmed_fields:
-                req.confirmed_fields.append(field)
+            offered=edit.get('sources',{}).get(field)
+            previous=req.sources.get(field)
+            if offered:
+                ref=SourceRef.model_validate(offered)
+                if ref.file_id:
+                    source_file=conn.execute('select id from files where id=%s and project_id=%s',(ref.file_id,project['id'])).fetchone()
+                    if not source_file: raise HTTPException(422,'字段来源不属于当前项目')
+                # Model may retain a previously verified reference, never invent a new cell.
+                if not previous or ref.model_dump(exclude={'accepted_at','accepted_by'})!=previous.model_dump(exclude={'accepted_at','accepted_by'}):
+                    raise HTTPException(422,'新来源需通过文件映射或结构化回答核实')
+                req.sources[field]=ref
+            elif previous and str(getattr(next(r for r in draft.requirements if r.id==req.id),field))==str(value):
+                req.sources[field]=previous
+            else:
+                message_id=edit.get('source_message_id')
+                req.sources[field]=SourceRef(file_id='',sheet='',cell='',raw_value=str(value),kind='confirmed',message_id=message_id)
+            req.sources[field].accepted_by=actor.user_id
+            req.sources[field].accepted_at=datetime.now(timezone.utc)
+            if field not in req.confirmed_fields: req.confirmed_fields.append(field)
         req.issues = [i for i in req.issues if i.field not in patch]
         draft.requirements = [evaluate(req,history) if r.id == req.id else r for r in draft.requirements]
     draft.version += 1
@@ -113,3 +120,28 @@ def submit_approved_draft(conn, draft, project):
     draft.status = "queued"
     conn.execute("update drafts set data=%s where id=%s",(json_value(draft),draft.id))
     return run_id
+
+
+def apply_expansions(conn,draft,actor,expansions,message_id):
+    """Accepted variants replace only their explicitly referenced base requirements."""
+    from .models import RequirementExpansion
+    variants=[RequirementExpansion.model_validate(x) for x in expansions]
+    bases={r.id:r for r in draft.requirements}
+    if not variants or any(x.base_requirement_id not in bases for x in variants):
+        raise HTTPException(422,'拆分包含未知需求')
+    keys=[(x.base_requirement_id,x.objective) for x in variants]
+    if len(set(keys))!=len(keys): raise HTTPException(422,'拆分目标重复')
+    added=[]
+    for item in variants:
+        base=bases[item.base_requirement_id]
+        copy=base.model_copy(deep=True)
+        copy.id=str(uuid4());copy.objective=item.objective;copy.budget=item.budget
+        copy.structure=None
+        for field in ('objective','budget'):
+            copy.sources[field]=SourceRef(file_id='',sheet='',cell='',raw_value=str(getattr(copy,field)),kind='confirmed',message_id=message_id,accepted_by=actor.user_id,accepted_at=datetime.now(timezone.utc))
+        added.append(copy)
+    replaced={x.base_requirement_id for x in variants}
+    draft.requirements=[r for r in draft.requirements if r.id not in replaced]+added
+    draft.version+=1;draft.approval=None;draft.status='draft'
+    conn.execute('update drafts set version=%s,data=%s where id=%s',(draft.version,json_value(draft),draft.id))
+    return draft
