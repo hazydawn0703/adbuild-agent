@@ -31,8 +31,8 @@ def login(client):
 def test_all_platform_endpoints_require_platform_session(client):
     for method, path, body in [
         ('GET', '/ops/session', None), ('GET', '/ops/tenants', None),
-        ('POST', '/ops/tenants', {}), ('POST', '/ops/tenants/t/admins', {}),
-        ('PATCH', '/ops/tenants/t/admins/u', {'active': False}),
+        ('POST', '/ops/tenants', {}), ('PATCH', '/ops/tenants/t', {'name':'new'}), ('DELETE', '/ops/tenants/t', None), ('POST', '/ops/tenants/t/admins', {}),
+        ('POST', '/ops/tenants/t/admins/u/status', {'active': False}),
         ('POST', '/ops/tenants/t/admins/u/password', {'password': 'new-password-123456'}),
     ]:
         response = client.request(method, path, json=body)
@@ -94,3 +94,73 @@ def test_password_reset_revokes_customer_token_and_disabled_users(client, monkey
         assert client.get('/_test/customer-session', headers=headers).status_code == 401
     finally:
         app.router.routes[:] = [route for route in app.router.routes if getattr(route,'path','') != '/_test/customer-session']
+
+
+def test_status_action_and_last_admin_protection(client, monkeypatch):
+    state = {'active': True, 'remaining': 1}
+    class DB:
+        def execute(self, sql, params=()):
+            self.row = {'id':'u','active':state['active']}
+            if 'count(*)' in sql: self.row = {'total':state['remaining']}
+            if sql.startswith('update users set active='): state['active'] = params[0]
+            return self
+        def fetchone(self): return self.row
+    @contextmanager
+    def transaction(): yield DB()
+    monkeypatch.setattr(ops, 'transaction', transaction)
+    login(client)
+    headers = {'Cookie':f'{ops.COOKIE}={client.cookies.get(ops.COOKIE)}'}
+    path = '/ops/tenants/t/admins/u/status'
+    assert client.post(path, headers=headers, json={'active':False}).status_code == 200
+    assert state['active'] is False
+    assert client.post(path, headers=headers, json={'active':True}).status_code == 200
+    state['remaining'] = 0
+    assert client.post(path, headers=headers, json={'active':False}).status_code == 409
+    assert state['active'] is True
+
+
+def test_rename_and_delete_tenant(client, monkeypatch):
+    statements = []
+    class DB:
+        def execute(self, sql, params=()):
+            statements.append((sql,params))
+            return self
+        def fetchone(self): return {'id':'t'}
+        def fetchall(self): return []
+    @contextmanager
+    def transaction(): yield DB()
+    monkeypatch.setattr(ops, 'transaction', transaction)
+    login(client)
+    headers = {'Cookie':f'{ops.COOKIE}={client.cookies.get(ops.COOKIE)}'}
+    assert client.patch('/ops/tenants/t',headers=headers,json={'name':'  新名称  '}).status_code == 200
+    assert ('update tenants set name=%s where id=%s',('新名称','t')) in statements
+    assert client.patch('/ops/tenants/t',headers=headers,json={'name':'   '}).status_code == 422
+    assert client.delete('/ops/tenants/t',headers=headers).status_code == 200
+    assert ('delete from tenants where id=%s',('t',)) in statements
+    assert ('delete from connections where tenant_id=%s',('t',)) in statements
+
+
+def test_project_cleanup_queues_files_and_threads_and_blocks_active_runs():
+    import json
+    from fastapi import HTTPException
+    from app.project_cleanup import delete_project_data
+    class DB:
+        def __init__(self, active=False): self.active=active;self.statements=[]
+        def execute(self, sql, params=()):
+            self.statements.append((sql,params));self.sql=sql
+            return self
+        def fetchone(self): return {'id':'run'} if 'select id from runs' in self.sql and self.active else None
+        def fetchall(self):
+            if 'intake_tasks' in self.sql: return [{'data':{'id':'task','requests':{'request':{}}}}]
+            if 'storage_path' in self.sql: return [{'storage_path':'tenant/file.xlsx'}]
+            return []
+    blocked=DB(active=True)
+    with pytest.raises(HTTPException) as error: delete_project_data(blocked,{'id':'p','tenant_id':'tenant'})
+    assert error.value.status_code == 409
+    assert not any(sql.startswith(('delete','insert')) for sql,_ in blocked.statements)
+    c=DB()
+    delete_project_data(c,{'id':'p','tenant_id':'tenant'})
+    cleanup=next(json.loads(params[0]) for sql,params in c.statements if sql.startswith('insert into jobs'))
+    assert cleanup == {'storage_paths':['tenant/file.xlsx'],'checkpoint_threads':['tenant:task','tenant:task:request']}
+    for table in ('deployments','runs','intake_tasks','drafts','files','history','messages','mapping_templates','project_contexts'):
+        assert ('delete from '+table+' where project_id=%s',('p',)) in c.statements
