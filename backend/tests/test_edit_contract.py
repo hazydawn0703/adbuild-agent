@@ -19,6 +19,7 @@ def connection(monkeypatch):
         def __init__(self):self.updates=[]
         def execute(self,sql,args=()):
             if sql.startswith('select * from drafts'):return Result({'project_id':'project','data':draft.model_dump(mode='json')})
+            if sql.startswith('select data from intake_tasks'):return Result(None)
             if sql.startswith('update drafts'):self.updates.append(args);return Result(None)
             pytest.fail('Unexpected DB operation: '+sql)
     monkeypatch.setattr('app.service.project_access',lambda *a,**kw:{'id':'project'})

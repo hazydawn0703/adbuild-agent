@@ -21,7 +21,9 @@ def access(c,task_id,actor,write=False):
     row=c.execute('select * from intake_tasks where id=%s for update',(task_id,)).fetchone()
     if not row: raise HTTPException(404,'搭建任务不存在')
     project=project_access(c,row['project_id'],actor,write=write)
-    return IntakeTask.model_validate(row['data']),project
+    task=IntakeTask.model_validate(row['data'])
+    if write and task.archived_at: raise HTTPException(409,'任务已归档，请先恢复')
+    return task,project
 
 
 def save(c,task):
@@ -99,6 +101,50 @@ def refresh(task,draft):
 class NewTask(Model):
     name: str = '新搭建任务'
     draft_id: str | None = None
+
+
+class ArchiveTask(Model):
+    expected_version: int
+    archived: bool
+
+
+class RenameTask(Model):
+    expected_version: int
+    name: str = Field(min_length=1,max_length=255)
+
+
+@router.patch('/tasks/{task_id}')
+def rename_task(task_id:str,body:RenameTask,actor:Actor=Depends(authenticate)):
+    name=body.name.strip()
+    if not name: raise HTTPException(422,'任务名称不能为空')
+    with transaction() as c:
+        task,p=access(c,task_id,actor,write=True)
+        if task.version!=body.expected_version: raise HTTPException(409,'任务已变化，请刷新后重试')
+        if task.lease and datetime.fromisoformat(task.lease['until'])>datetime.now(timezone.utc):
+            raise HTTPException(409,'任务正在分析，请稍后重试')
+        old_name=task.name
+        task.name=name
+        task.version+=1
+        save(c,task)
+        c.execute("insert into audit(tenant_id,project_id,event,data) values(%s,%s,'task_renamed',%s)",(p['tenant_id'],task.project_id,json_value({'task_id':task.id,'actor':actor.user_id,'old_name':old_name,'name':name})))
+    return {'id':task.id,'name':name,'version':task.version}
+
+
+@router.post('/tasks/{task_id}/archive')
+def archive_task(task_id:str,body:ArchiveTask,actor:Actor=Depends(authenticate)):
+    with transaction() as c:
+        task,p=access(c,task_id,actor)
+        project_access(c,task.project_id,actor,write=True)
+        if task.version!=body.expected_version: raise HTTPException(409,'任务已变化，请刷新')
+        now=datetime.now(timezone.utc)
+        if task.lease and datetime.fromisoformat(task.lease['until'])>now: raise HTTPException(409,'任务正在分析，请稍后重试')
+        if task.draft_id and c.execute("select id from runs where draft_id=%s and status not in ('complete','paused','cancelled') for update",(task.draft_id,)).fetchone():
+            raise HTTPException(409,'请先处理未结束的执行批次')
+        task.archived_at=now if body.archived else None
+        task.version+=1
+        save(c,task)
+        c.execute("insert into audit(tenant_id,project_id,event,data) values(%s,%s,%s,%s)",(p['tenant_id'],task.project_id,'task_archived' if body.archived else 'task_restored',json_value({'task_id':task.id,'actor':actor.user_id})))
+    return public_business(task.model_dump(mode='json',exclude={'requests','lease'}))
 
 
 @router.post('/projects/{project_id}/tasks')

@@ -49,12 +49,22 @@ def test_questions_group_and_evidence_does_not_copy_values():
     assert all('value' not in e.model_dump() for e in task.evidence)
 
 
-def test_worker_disabled_does_not_open_database(monkeypatch):
+def test_worker_with_execution_disabled_only_polls_cleanup(monkeypatch):
+    from contextlib import contextmanager
     from types import SimpleNamespace
     from app.worker import main
     monkeypatch.setattr('app.settings.settings',lambda:SimpleNamespace(execution_enabled=False))
-    monkeypatch.setattr('app.worker.transaction',lambda:pytest.fail('worker touched queue'))
-    asyncio.run(main())
+    class DB:
+        def execute(self,sql,args):
+            assert args==(False,)
+            assert "JSON_CONTAINS_PATH(message,'one','$.storage_paths')" in sql
+            return SimpleNamespace(fetchone=lambda:None)
+    @contextmanager
+    def transaction(): yield DB()
+    async def stop(_): raise asyncio.CancelledError
+    monkeypatch.setattr('app.worker.transaction',transaction)
+    monkeypatch.setattr('app.worker.asyncio.sleep',stop)
+    with pytest.raises(asyncio.CancelledError): asyncio.run(main())
 
 
 def test_reviewed_template_reuses_headers_not_sheet_name_columns_or_last_row():

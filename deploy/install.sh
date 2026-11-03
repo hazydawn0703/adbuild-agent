@@ -24,7 +24,6 @@ fi
 # replace the include or reload the host's configuration when routes are stable.
 sudo cmp -s "$release/deploy/nginx.locations.conf" /etc/adbuild-agent/nginx.locations.conf
 sudo nginx -t
-sudo systemctl disable --now adbuild-agent-worker
 
 for service in web api worker; do
   sudo install -o root -g root -m 644 "$release/deploy/adbuild-agent-$service.service" /etc/systemd/system/
@@ -32,13 +31,13 @@ done
 ln -s "$release" /opt/adbuild-agent/current.next
 mv -Tf /opt/adbuild-agent/current.next /opt/adbuild-agent/current
 sudo systemctl daemon-reload
-sudo systemctl enable --now adbuild-agent-web adbuild-agent-api
-sudo systemctl restart adbuild-agent-web adbuild-agent-api
+sudo systemctl enable --now adbuild-agent-web adbuild-agent-api adbuild-agent-worker
+sudo systemctl restart adbuild-agent-web adbuild-agent-api adbuild-agent-worker
 for attempt in $(seq 1 30); do
   if curl --fail --silent http://127.0.0.1:18791/health >/dev/null && curl --fail --silent http://127.0.0.1:18790/apps/adbuild-agent >/dev/null; then break; fi
   sleep 2
 done
 curl --fail --silent http://127.0.0.1:18791/health
 curl --fail --silent -o /dev/null http://127.0.0.1:18790/apps/adbuild-agent
-sudo systemctl is-active adbuild-agent-web adbuild-agent-api nginx
+sudo systemctl is-active adbuild-agent-web adbuild-agent-api adbuild-agent-worker nginx
 echo 'Deployment ready: https://stratos.run/apps/adbuild-agent'

@@ -1,8 +1,7 @@
 [Unit]
-Description=Adbuild Agent execution worker
+Description=Adbuild Agent background worker
 After=network-online.target adbuild-agent-api.service
 Wants=network-online.target
-ConditionPathExists=/etc/adbuild-agent/worker-enabled
 
 [Service]
 Type=simple

@@ -119,6 +119,7 @@ def test_accepting_verified_history_preserves_original_source_and_adds_adoption(
     file={'id':'export','kind':'export','storage_path':'private/export.xlsx','sha256':sha256(data).hexdigest()}
     class DB:
         def execute(self,sql,args=()):
+            if sql.startswith('select data from intake_tasks'):return Result(None)
             if sql.startswith('select * from drafts'):return Result({'project_id':'project','data':draft.model_dump(mode='json')})
             if sql.startswith('select id from files'):return Result({'id':'export'} if args==('export','project') else None)
             if sql.startswith('select id,kind,storage_path,sha256'):return Result(file if args==('export','project') else None)
@@ -141,3 +142,4 @@ def test_wrong_project_cannot_supply_a_historical_reference():
     class DB:
         def execute(self,*args):return Result(None)
     with pytest.raises(ValueError,match='当前项目'):verified_history_file(DB(),'other-project',history_reference(historical(),'budget'),'budget',40)
+
