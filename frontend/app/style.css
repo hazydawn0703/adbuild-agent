@@ -217,3 +217,8 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
  .topbar-actions .outline{font-size:11px;padding:6px 9px}
  .task-actions .outline{flex:1 1 auto}
 }
+
+.task-selection{display:flex;align-items:center;gap:6px;min-width:0;flex:1}
+.task-selection .task-picker>div{max-width:none}
+.task-rename{flex-shrink:0;align-self:flex-end;height:36px}
+@media(min-width:761px) and (max-width:1050px){.task-selection{flex-basis:220px}.task-selection .task-picker{flex-basis:auto}}

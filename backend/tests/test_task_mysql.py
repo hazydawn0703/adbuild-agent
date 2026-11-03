@@ -254,3 +254,39 @@ def test_project_rename_permissions_conflicts_and_audit(database):
                 c.execute("update memberships set role='operator' where tenant_id=%s",(row['tenant_id'],))
             assert (await client.patch(url,json={'name':'invalid','expected_name':'新项目名称'})).status_code==403
     asyncio.run(scenario())
+
+
+def test_task_rename_is_versioned_and_preserves_batch_data(database):
+    from datetime import datetime,timezone,timedelta
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+            task=(await client.post(f'/projects/{database}/tasks',json={'name':'original batch'})).json()
+            url=f"/tasks/{task['id']}"
+            with db.transaction() as c:
+                before=c.execute('select data from intake_tasks where id=%s',(task['id'],)).fetchone()['data']
+                tenant=c.execute('select tenant_id from projects where id=%s',(database,)).fetchone()['tenant_id']
+                c.execute("update memberships set role='operator' where tenant_id=%s",(tenant,))
+            for name in ('   ','x'*256):
+                assert (await client.patch(url,json={'name':name,'expected_version':1})).status_code==422
+            renamed=await client.patch(url,json={'name':'  第一批 · 11月活动  ','expected_version':1})
+            assert renamed.status_code==200,renamed.text
+            assert renamed.json()=={'id':task['id'],'name':'第一批 · 11月活动','version':2}
+            assert (await client.patch(url,json={'name':'stale','expected_version':1})).status_code==409
+            assert (await client.patch('/tasks/not-owned',json={'name':'no','expected_version':1})).status_code==404
+            with db.transaction() as c:
+                after=c.execute('select data from intake_tasks where id=%s',(task['id'],)).fetchone()['data']
+                assert after=={**before,'name':'第一批 · 11月活动','version':2}
+                audit=c.execute("select data from audit where project_id=%s and event='task_renamed'",(database,)).fetchone()['data']
+                assert audit['task_id']==task['id'] and audit['old_name']=='original batch'
+                c.execute("update memberships set role='viewer' where tenant_id=%s",(tenant,))
+            assert (await client.patch(url,json={'name':'denied','expected_version':2})).status_code==403
+            with db.transaction() as c:
+                c.execute("update memberships set role='admin' where tenant_id=%s",(tenant,))
+                after['lease']={'until':(datetime.now(timezone.utc)+timedelta(minutes=1)).isoformat()}
+                c.execute('update intake_tasks set data=%s where id=%s',(db.json_value(after),task['id']))
+            assert (await client.patch(url,json={'name':'busy','expected_version':2})).status_code==409
+            with db.transaction() as c:
+                after['lease']=None;after['archived_at']=datetime.now(timezone.utc).isoformat()
+                c.execute('update intake_tasks set data=%s where id=%s',(db.json_value(after),task['id']))
+            assert (await client.patch(url,json={'name':'archived','expected_version':2})).status_code==409
+    asyncio.run(scenario())

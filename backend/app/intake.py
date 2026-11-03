@@ -69,6 +69,28 @@ class ArchiveTask(Model):
     archived: bool
 
 
+class RenameTask(Model):
+    expected_version: int
+    name: str = Field(min_length=1,max_length=255)
+
+
+@router.patch('/tasks/{task_id}')
+def rename_task(task_id:str,body:RenameTask,actor:Actor=Depends(authenticate)):
+    name=body.name.strip()
+    if not name: raise HTTPException(422,'任务名称不能为空')
+    with transaction() as c:
+        task,p=access(c,task_id,actor,write=True)
+        if task.version!=body.expected_version: raise HTTPException(409,'任务已变化，请刷新后重试')
+        if task.lease and datetime.fromisoformat(task.lease['until'])>datetime.now(timezone.utc):
+            raise HTTPException(409,'任务正在分析，请稍后重试')
+        old_name=task.name
+        task.name=name
+        task.version+=1
+        save(c,task)
+        c.execute("insert into audit(tenant_id,project_id,event,data) values(%s,%s,'task_renamed',%s)",(p['tenant_id'],task.project_id,json_value({'task_id':task.id,'actor':actor.user_id,'old_name':old_name,'name':name})))
+    return {'id':task.id,'name':name,'version':task.version}
+
+
 @router.post('/tasks/{task_id}/archive')
 def archive_task(task_id:str,body:ArchiveTask,actor:Actor=Depends(authenticate)):
     with transaction() as c:
