@@ -36,7 +36,8 @@ test('pending proposal restores and unresolved conflict disables final confirmat
  const draft={id:'d',project_id:'p',version:1,status:'draft',requirements:[row],summary:{}};
  const task={id:'t',name:'待采纳批次',version:2,draft_id:'d',questions:[],messages:[],proposal:{id:'proposal',draft_version:1,status:'pending',reason:'仅修改本条预算',edits:[{requirement_id:'r',values:{budget:'40'}}]}};
  const project={id:'p',name:'项目',tenant_id:'tenant',role:'admin',account_id:'account',policy:null,reserved:'0'};
- const preview={draft_id:'d',version:1,digest:'digest',rows:[{...row,action:'create',campaign_name:'测试计划',adgroup_name:'广告组',ad_name:'广告',field_states:{currency:'conflict'}}],counts:{campaigns:1,adgroups:1,ads:1,skipped:0},totals:[],issues:[{requirement_id:'r',message:'币种存在冲突'}],can_confirm:false,approval_valid:false,approval:null,confirmation_history:[]};
+ const campaign={id:'campaign',name:'测试计划',budget_level:'campaign',planned_total:'50',budget:{amount:'50',currency:'USD',mode:'lifetime'},adgroups:[{id:'group',name:'广告组',audience:'HQ',language:'en',timezone:'UTC',budget:null,ads:[{id:'ad',name:'广告',material_kind:'post',post_id:'123',authorization_present:false}]}]};
+ const preview={draft_id:'d',version:1,digest:'digest',rows:[{...row,action:'create',campaign_name:'测试计划',campaign,field_states:{currency:'conflict'}}],counts:{campaigns:1,adgroups:1,ads:1,skipped:0},totals:[],issues:[{requirement_id:'r',message:'币种存在冲突'}],can_confirm:false,approval_valid:false,approval:null,confirmation_history:[],platform_checks:[{item:'账户能力',status:'unverified'}]};
  await page.addInitScript(()=>sessionStorage.setItem('adbuild-token','test-token'));
  await page.route('**/apps/adbuild-agent/api/**',async route=>{
   const path=new URL(route.request().url()).pathname.split('/api')[1];

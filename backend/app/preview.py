@@ -5,7 +5,8 @@ from decimal import Decimal
 from datetime import datetime, timezone
 from fastapi import HTTPException
 from .models import BuildDraft, BuildApproval
-from .rules import evaluate, fingerprint
+from .rules import evaluate
+from .structure import campaign_tree, redact_material_secrets
 
 
 def build_preview(draft: BuildDraft, history: list[dict], policy_version: int, now=None, pending_questions=None):
@@ -14,18 +15,25 @@ def build_preview(draft: BuildDraft, history: list[dict], policy_version: int, n
     issues=[]
     selected=[]
     seen=set()
+    campaigns=[]
     for original in draft.requirements:
         req=evaluate(original,history,now)
+        tree,_=campaign_tree(req)
         action='create' if req.included and req.classification not in ('existing','change','ignored') else 'skip'
         campaign_name=req.name or f"{req.business_no or req.id[:8]}-TikTok-{req.objective or '待确认'}"
-        data=req.model_dump(mode='json')
+        data=redact_material_secrets(req.model_dump(mode='json'))
         data['field_states']={q['field']:'conflict' for q in pending_questions or [] if req.id in q['requirement_ids']}
-        data.update(action=action,campaign_name=campaign_name,adgroup_name=campaign_name+'-广告组',ad_name=req.name or req.business_no or req.post_id,
+        data.update(action=action,campaign=tree,campaign_name=campaign_name,adgroup_name=campaign_name+'-广告组',ad_name=req.name or req.business_no or req.post_id,
                     skip_reason=('未勾选' if not req.included else '已有广告，不重复创建' if req.classification=='existing' else '已有广告变更，本次不自动修改' if req.classification=='change' else '忽略'))
         rows.append(data)
         if action=='create':
+            campaigns.append(tree)
             selected.append(req.id)
-            key=fingerprint(req)
+            # Multiple groups in one requirement are intentional; separate duplicate
+            # requirements cannot evade checking by changing group names or budgets.
+            identities=sorted({(a['material_kind'],a['post_id']) for g in tree['adgroups'] for a in g['ads']})
+            private_codes=sorted({sha256(a.authorization_code.encode()).hexdigest() for g in req.structure.groups for a in g.ads if a.kind=='authorization_code'}) if req.structure else []
+            key=sha256(json.dumps([req.account_id,req.objective,str(req.start_at),str(req.end_at),identities,private_codes],sort_keys=True).encode()).hexdigest()
             if key in seen:
                 issues.append({'requirement_id':req.id,'code':'duplicate','field':'included','message':'所选需求中存在相同账户、帖子、目标及排期，请只保留一条','blocking':True})
             seen.add(key)
@@ -38,8 +46,9 @@ def build_preview(draft: BuildDraft, history: list[dict], policy_version: int, n
     for question in pending_questions or []:
         if question.get('blocking',True) and set(question['requirement_ids']) & set(selected):
             issues.append({'requirement_id':'','code':'semantic_review','field':question['field'],'message':question['question'],'blocking':True})
-    snapshot={'draft_id':draft.id,'version':draft.version,'policy_version':policy_version,'rows':rows,
-              'counts':{'campaigns':len(selected),'adgroups':len(selected),'ads':len(selected),'skipped':len(rows)-len(selected)},
+    snapshot={'draft_id':draft.id,'version':draft.version,'policy_version':policy_version,'rows':rows,'campaigns':campaigns,
+              'counts':{'campaigns':len(campaigns),'adgroups':sum(len(c['adgroups']) for c in campaigns),
+                        'ads':sum(len(g['ads']) for c in campaigns for g in c['adgroups']),'skipped':len(rows)-len(selected)},
               'totals':[{'currency':currency,'budget_mode':mode,'amount':str(amount)} for (currency,mode),amount in sorted(totals.items())],
               'issues':issues,'selected_ids':selected,'can_confirm':not issues,
               'platform_checks':[{'item':item,'status':'unverified'} for item in ('账户能力','受众快照','Spark 素材权限')],
