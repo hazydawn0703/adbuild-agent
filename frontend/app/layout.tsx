@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './style.css';
+import './scrollbar.css';
 import './review.css';
 import './modal.css';
 export const metadata: Metadata = {

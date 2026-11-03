@@ -1,5 +1,4 @@
 /* Standard workspace dialog: fixed header/footer and one scrollable content area. */
-:root{--modal-scroll-thumb:#bfd3b0;--modal-scroll-track:#f2f6ed;--modal-scroll-hover:#a2bc91}
 .modal{position:fixed;inset:calc(var(--modal-viewport-top,0px) + var(--modal-viewport-height,100dvh)/2) 0 auto;margin:0 auto;transform:translateY(-50%);border:0;padding:0;width:650px;max-width:calc(100vw - 48px);max-height:calc(var(--modal-viewport-height,100dvh) - 48px);display:flex;flex-direction:column;overflow:hidden;border-radius:14px;background:#fff;color:var(--ink);box-shadow:0 20px 80px #17230f26}
 .modal:not([open]){display:none}
 .modal::backdrop{background:#19241455;backdrop-filter:blur(3px)}
@@ -11,11 +10,6 @@
 .modal-body{flex:1 1 auto;min-height:0;min-width:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;padding:24px}
 .modal-footer{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;flex:0 0 auto;gap:8px;margin:0;padding:16px 24px;border-top:1px solid var(--line);background:#fff}
 .modal-error{flex:0 0 auto;font-size:12px;line-height:1.8;color:#a56448;background:#fff3ed;border-bottom:1px solid #ecd9ce;margin:0;padding:10px 24px;max-height:min(120px,20dvh);overflow:auto;overflow-wrap:anywhere}
-.modal-body,.modal-error,.review-body{scrollbar-width:thin;scrollbar-color:var(--modal-scroll-thumb) var(--modal-scroll-track)}
-:is(.modal-body,.modal-error,.review-body)::-webkit-scrollbar{width:8px;height:8px}
-:is(.modal-body,.modal-error,.review-body)::-webkit-scrollbar-track{background:var(--modal-scroll-track);border-radius:8px}
-:is(.modal-body,.modal-error,.review-body)::-webkit-scrollbar-thumb{background:var(--modal-scroll-thumb);border:2px solid var(--modal-scroll-track);border-radius:8px}
-:is(.modal-body,.modal-error,.review-body)::-webkit-scrollbar-thumb:hover{background:var(--modal-scroll-hover)}
 .modal .policy-form .modal-body>p{font-size:12px;line-height:1.8;color:#88977b}
 .modal .modal-error{margin:0;color:#a56448}
 .modal .login-description{font-size:12px;line-height:1.8;color:#88977b;margin:0 0 18px}
