@@ -197,4 +197,23 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
   .preview-toggle{width:44px;height:44px}
 }
 
-.lifecycle-actions{display:flex;flex-wrap:wrap;gap:8px;padding:8px 20px;flex-shrink:0}
+.project-row{display:flex;align-items:center;border-radius:8px;min-width:0;flex-shrink:0}
+.project-row:hover,.project-row.selected{background:#e9eee2}
+.project-row .project{min-width:0;flex:1;width:auto;padding-right:2px;background:transparent}
+.project-menu-trigger{flex-shrink:0;margin-right:4px}
+.project-menu{position:fixed;margin:0;padding:6px;width:152px;border:1px solid #dfe5d9;border-radius:10px;background:#fff;color:#516446;box-shadow:0 8px 24px #344c2920}
+.project-menu:popover-open{display:grid;gap:2px}
+.project-menu button{display:flex;align-items:center;gap:8px;text-align:left;padding:9px;border-radius:6px;font-size:12px}
+.project-menu button:hover:not(:disabled){background:#f2f6ed}
+.task-actions{flex-wrap:wrap}
+@media(min-width:761px) and (max-width:1050px){.task-toolbar{flex-wrap:wrap}.task-picker{flex-basis:220px}.task-actions{margin-left:auto}}
+@media(max-width:760px){
+ .project-row{flex:0 0 auto;max-width:240px;border:1px solid #dfe7d7;background:#fff}
+ .project-row .project{border:0;max-width:190px}
+ .project-menu-trigger{width:28px;height:28px}
+ .topbar{height:auto;flex-wrap:wrap;padding-top:10px;padding-bottom:10px}
+ .topbar-actions{display:grid;grid-template-columns:auto auto auto;justify-content:end;gap:8px;width:100%;max-width:100%}
+ .topbar-actions .mobile-preview-link{grid-column:1/-1;justify-self:end}
+ .topbar-actions .outline{font-size:11px;padding:6px 9px}
+ .task-actions .outline{flex:1 1 auto}
+}
