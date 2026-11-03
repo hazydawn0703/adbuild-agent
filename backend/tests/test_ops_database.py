@@ -57,13 +57,13 @@ def test_platform_customer_lifecycle_and_isolation(monkeypatch):
             assert client.get('/projects',headers=customer_headers).json()[0]['id'] == project
             assert client.get('/ops/tenants',headers=customer_headers).status_code == 401
             account_path = f'/ops/tenants/{tenant}/admins/{user}'
-            assert client.patch(account_path, headers=platform, json={'active':False}).status_code == 409
+            assert client.post(account_path+'/status', headers=platform, json={'active':False}).status_code == 409
             second = client.post(f'/ops/tenants/{tenant}/admins',headers=platform,
                                  json={'email':uuid4().hex+'@test.invalid','password':body['password']})
             assert second.status_code == 201
-            assert client.patch(account_path,headers=platform,json={'active':False}).status_code == 200
+            assert client.post(account_path+'/status',headers=platform,json={'active':False}).status_code == 200
             assert client.get('/projects',headers=customer_headers).status_code == 401
-            assert client.patch(account_path,headers=platform,json={'active':True}).status_code == 200
+            assert client.post(account_path+'/status',headers=platform,json={'active':True}).status_code == 200
             assert client.post(account_path+'/password',headers=platform,json={'password':'replacement-password-123456'}).status_code == 200
             assert client.get('/projects',headers=customer_headers).status_code == 401
             assert client.post('/auth/login',json={'email':email,'password':body['password']}).status_code == 401
@@ -74,6 +74,13 @@ def test_platform_customer_lifecycle_and_isolation(monkeypatch):
             records = connection.execute('select data from audit where tenant_id=%s',(tenant,)).fetchall()
             assert len(records) == 5
             assert all('password' not in str(row['data']) for row in records)
+            assert client.patch(f'/ops/tenants/{tenant}', headers=platform, json={'name':'renamed space'}).status_code == 200
+            assert connection.execute('select name from tenants where id=%s',(tenant,)).fetchone()['name'] == 'renamed space'
+            assert client.delete(f'/ops/tenants/{tenant}', headers=platform).status_code == 200
+            for table in ('projects','memberships','connections','audit'):
+                assert connection.execute('select count(*) as n from '+table+' where tenant_id=%s',(tenant,)).fetchone()['n'] == 0
+            assert not connection.execute('select id from tenants where id=%s',(tenant,)).fetchone()
+            assert not connection.execute('select id from users where id=%s',(user,)).fetchone()
     finally:
         raw.rollback()
         raw.close()
