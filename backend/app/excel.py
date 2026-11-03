@@ -195,11 +195,13 @@ def rebind_mapping(mapping: SheetMapping, inspection):
 def parse_export(data: bytes):
     wb = read_workbook(data)
     records = []
+    found_table = False
     for sheet in wb:
         rows = sheet.iter_rows(values_only=True)
         headers = [clean(x) for x in next(rows, [])]
         if not {"Campaign ID", "Ad Group ID", "Ad ID", "Post ID"} <= set(headers):
             continue
+        found_table = True
         for row_index, row in enumerate(rows,2):
             d = dict(zip(headers, row))
             if not d.get("Ad ID"):
@@ -216,7 +218,7 @@ def parse_export(data: bytes):
                 "adgroup_budget":clean(d.get("Ad Group Budget Amount")),
                 "adgroup_budget_mode":clean(d.get("Ad Group Budget Type")).lower(),
                 "ad_format": clean(d.get("Ad format")), "raw": {k: clean(v) for k,v in d.items()}})
-    if not records:
+    if not found_table:
         raise ValueError("未找到 ExportAds 广告明细表")
     return records
 
