@@ -17,6 +17,19 @@ def clean(value):
     return "" if value is None else str(value).strip()
 
 
+def sensitive_cells(sheet):
+    pattern=re.compile(r'^(?:(?:TikTok|Spark|广告|账户|账号|登录|登陆|接口|客户)\s*)?(?:access[_ ]?token|refresh[_ ]?token|api[ _-]?key|password|client[_ ]?secret|密码|密钥|授权码)\s*[:：]?$',re.I)
+    rows={};hidden_rows=set();hidden_columns={}
+    for c in sheet._cells.values():
+        if c.value is not None: rows.setdefault(c.row,[]).append(c)
+    for index,cells in rows.items():
+        for c in cells:
+            if pattern.search(clean(c.value)):
+                if len(cells)<=3:hidden_rows.add(index)
+                else:hidden_columns[c.column]=min(index,hidden_columns.get(c.column,index))
+    return {c.coordinate for cells in rows.values() for c in cells if c.row in hidden_rows or c.column in hidden_columns and c.row>=hidden_columns[c.column]}
+
+
 def platform_id(value):
     return re.sub(r"^id:\s*", "", clean(value), flags=re.I)
 
@@ -48,6 +61,7 @@ def inspect_workbook(data: bytes):
     formulas = load_workbook(BytesIO(data), data_only=False, keep_links=False)
     sheets = []
     for sheet in wb:
+        hidden=sensitive_cells(sheet)
         # _cells avoids allocating millions of styled-but-empty cells through iter_rows.
         populated = sorted((c for c in sheet._cells.values() if c.value is not None),key=lambda c:(c.row,c.column))
         formula_cells = [c for c in formulas[sheet.title]._cells.values() if c.data_type=='f']
@@ -56,7 +70,7 @@ def inspect_workbook(data: bytes):
         by_row = {}
         cells_by_row = {}
         for c in populated:
-            by_row.setdefault(c.row,{})[c.coordinate]=clean(c.value)[:500]
+            by_row.setdefault(c.row,{})[c.coordinate]='[敏感资料已隐藏]' if c.coordinate in hidden else clean(c.value)[:500]
             cells_by_row.setdefault(c.row,[]).append(c)
         for c in formula_cells:
             if sheet[c.coordinate].value is None:
@@ -89,7 +103,8 @@ def read_region(data: bytes, sheet: str, cell_range: str):
     left,top,right,bottom=range_boundaries(cell_range)
     if top<1 or left<1 or bottom>50000 or right>300 or (bottom-top+1)*(right-left+1)>1000:
         raise ValueError('补读范围最多 1000 个单元格')
-    return {c.coordinate:clean(c.value)[:500] for row in wb[sheet].iter_rows(min_row=top,max_row=bottom,min_col=left,max_col=right) for c in row if c.value is not None}
+    hidden=sensitive_cells(wb[sheet])
+    return {c.coordinate:'[敏感资料已隐藏]' if c.coordinate in hidden else clean(c.value)[:500] for row in wb[sheet].iter_rows(min_row=top,max_row=bottom,min_col=left,max_col=right) for c in row if c.value is not None}
 
 
 def rebind_mapping(mapping: SheetMapping, inspection):
@@ -162,6 +177,7 @@ def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
         if set(mapping.columns) - fields or set(mapping.defaults) - fields:
             raise ValueError("存在未知的需求字段")
         sheet = wb[mapping.sheet]
+        hidden=sensitive_cells(sheet)
         if mapping.last_row > sheet.max_row or mapping.last_row - mapping.first_row > 10000:
             raise ValueError("数据范围超出工作表或 10,000 行限制")
         for index in range(mapping.first_row, mapping.last_row + 1):
@@ -173,6 +189,9 @@ def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
                         cell = sheet.cell(merged.min_row,merged.min_col)
                         break
                 value = cell.value
+                if cell.coordinate in hidden:
+                    issues.append(Issue(code='invalid_sensitive',field=field,message=f'{cell.coordinate} 为敏感资料，不能作为搭建参数'))
+                    continue
                 if formulas[sheet.title][cell.coordinate].data_type=='f' and value is None:
                     issues.append(Issue(code='invalid_formula',field=field,message=f'{cell.coordinate} 公式缺少缓存结果'))
                     continue

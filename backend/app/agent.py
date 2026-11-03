@@ -60,6 +60,7 @@ class ConversationState(TypedDict):
     draft: dict | None
     context: dict
     decision: dict
+    documents: list[dict]
 
 
 class ProposalError(ValueError):
@@ -88,7 +89,7 @@ def validate_decision(state,decision):
 def conversation_graph(checkpointer):
     from .prompts import COMMON, INTENT, HISTORY, CLARIFY
     async def understand(state):
-        payload=json.dumps({'messages':state['messages'],'draft':state['draft'],'context':state.get('context',{})},ensure_ascii=False)
+        payload=json.dumps({'messages':state['messages'],'draft':state['draft'],'context':state.get('context',{}),'documents':state.get('documents',[])},ensure_ascii=False)
         if len(payload)>150000: raise ValueError('本任务内容超过单轮分析范围，请明确需求子集后处理')
         decision=await structured(ChatDecision,[('system',COMMON+INTENT+HISTORY+CLARIFY),('user',payload)],validator=lambda d:validate_decision(state,d))
         return {'decision':decision.model_dump(mode='json')}

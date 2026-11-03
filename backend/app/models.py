@@ -21,6 +21,8 @@ class SourceRef(Model):
     cell: str
     raw_value: str
     kind: Literal["excel", "confirmed", "template", "history"] = "excel"
+    message_id: str | None = None
+    context_version: int | None = None
 
 
 class Issue(Model):
@@ -168,6 +170,7 @@ class ChangeProposal(Model):
     edits: list[ChatEdit]
     reason: str
     status: Literal['pending','accepted','rejected'] = 'pending'
+    message_id: str | None = None
 
 
 class PlatformCheck(Model):

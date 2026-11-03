@@ -55,7 +55,7 @@ def test_task_upload_mapping_answers_replay_and_tenant_scope(database,tmp_path,m
             assert upload.status_code==200,upload.text
             fileid=upload.json()['id']
             mapping={'sheet':'Sheet','header_row':1,'first_row':2,'last_row':2,'columns':{'post_url':'A','objective':'B','budget':'C'}}
-            result=await client.post(f'/files/{fileid}/mapping/confirm',json={'mappings':[mapping]})
+            result=await client.post(f'/files/{fileid}/mapping/confirm',json={'mappings':[mapping],'expected_task_version':2,'request_id':str(uuid4())})
             assert result.status_code==200,result.text
             state=(await client.get('/tasks/'+taskid)).json()
             q=next(q for q in state['task']['questions'] if q['field']=='currency')

@@ -10,7 +10,7 @@ from .auth import Actor, authenticate, project_access
 from .db import transaction, json_value
 from .models import (Model, IntakeTask, ProjectContext, BuildDraft, FieldEvidence, EvidenceRef,
                      Clarification, ChangeProposal, ChatDecision, ChatEdit)
-from .service import edit_draft, EDITABLE, history_for
+from .service import edit_draft, EDITABLE, history_for, pending_questions
 from .rules import evaluate
 
 router=APIRouter()
@@ -47,7 +47,7 @@ def refresh(task,draft):
                 if issue.blocking:
                     grouped.setdefault((issue.field,issue.code),{'ids':[],'message':issue.message})['ids'].append(req.id)
     task.evidence=evidence
-    task.questions=[Clarification(id=sha256(f'{draft.version}:{f}:{code}'.encode()).hexdigest()[:20],field=f,
+    task.questions=[Clarification(id=sha256(f'{task.id}:{draft.version}:{f}:{code}'.encode()).hexdigest()[:20],field=f,
         requirement_ids=list(dict.fromkeys(v['ids'])),question=v['message']) for (f,code),v in grouped.items()]
     task.questions.extend(task.semantic_questions)
     task.stage='clarifying' if task.questions else 'preview'
@@ -86,7 +86,7 @@ def get_task(task_id:str,actor:Actor=Depends(authenticate)):
             draft=BuildDraft.model_validate(c.execute('select data from drafts where id=%s',(task.draft_id,)).fetchone()['data'])
             history=history_for(c,p)
             draft.requirements=[evaluate(r,history) for r in draft.requirements]
-            preview=build_preview(draft,history,p['policy_version'],pending_questions=[q.model_dump() for q in task.semantic_questions])
+            preview=build_preview(draft,history,p['policy_version'],pending_questions=pending_questions(c,draft.id))
             refresh(task,draft)
         return {'task':task.model_dump(mode='json',exclude={'requests','lease'}),'draft':draft,'preview':preview}
 
@@ -144,22 +144,27 @@ async def act(project_id,body,actor):
             history=history_for(c,p)
             draft.requirements=[evaluate(r,history) for r in draft.requirements]
             refresh(task,draft)
+        documents=[]
+        for file_id in task.file_ids:
+            document=c.execute("select id,name,inspection,mapping from files where id=%s and project_id=%s and kind='requirements'",(file_id,project_id)).fetchone()
+            if document: documents.append(document)
         if body.action in ('accept','reject'):
             proposal=task.proposal
             if not proposal or proposal.id!=body.proposal_id or proposal.status!='pending' or not draft or proposal.draft_version!=draft.version:
                 raise HTTPException(409,'提案已过期或已处理')
             if body.action=='accept':
-                draft=edit_draft(c,draft.id,actor,draft.version,[e.model_dump() for e in proposal.edits])
+                draft=edit_draft(c,draft.id,actor,draft.version,[{**e.model_dump(),'source_message_id':proposal.message_id} for e in proposal.edits])
             proposal.status='accepted' if body.action=='accept' else 'rejected'
         elif body.action=='answer':
             if not draft: raise HTTPException(422,'请先生成草稿')
-            edits=[]
+            edits=[];message_id=str(uuid4())
             for qid,value in body.answers.items():
                 q=next((q for q in task.questions if q.id==qid),None)
                 if not q or q.field not in EDITABLE: raise HTTPException(422,'问题已过期或需要手动核对')
-                edits.extend({'requirement_id':rid,'values':{q.field:value}} for rid in q.requirement_ids)
+                edits.extend({'requirement_id':rid,'values':{q.field:value},'source_message_id':message_id} for rid in q.requirement_ids)
             if not edits: raise HTTPException(422,'请填写答案')
             draft=edit_draft(c,draft.id,actor,draft.version,edits)
+            task.messages.append({'id':message_id,'role':'user','content':'已提交本批答案：'+json.dumps(body.answers,ensure_ascii=False),'created_at':now.isoformat()})
             task.proposal=None
             task.semantic_questions=[q for q in task.semantic_questions if q.id not in body.answers]
         elif body.action in ('message','analyze','resume'):
@@ -185,7 +190,7 @@ async def act(project_id,body,actor):
             if checkpoint.values.get('decision') and not checkpoint.next:
                 output=checkpoint.values
             else:
-                output=await graph.ainvoke({'messages':task.messages,'draft':draft.model_dump(mode='json') if draft else None,'context':task.context.model_dump(mode='json')},config)
+                output=await graph.ainvoke({'messages':task.messages,'draft':draft.model_dump(mode='json') if draft else None,'context':task.context.model_dump(mode='json'),'documents':documents},config)
             decision=ChatDecision.model_validate(output['decision'])
         if decision.edits and not draft: raise ValueError('尚无草稿，不能修改字段')
         if draft:
@@ -205,7 +210,8 @@ async def act(project_id,body,actor):
             current.semantic_questions=decision.questions
             current.messages.append({'id':str(uuid4()),'role':'assistant','content':decision.answer,'created_at':datetime.now(timezone.utc).isoformat()})
             if decision.edits:
-                current.proposal=ChangeProposal(id=str(uuid4()),draft_version=draft.version,edits=decision.edits,reason=decision.answer)
+                message_id=next((m['id'] for m in reversed(current.messages) if m['role']=='user'),None)
+                current.proposal=ChangeProposal(id=str(uuid4()),draft_version=draft.version,edits=decision.edits,reason=decision.answer,message_id=message_id)
             if draft: refresh(current,draft)
             current.version+=1
             result={'answer':decision.answer,'project_id':project_id,'task_id':current.id,'task':current.model_dump(mode='json',exclude={'requests'}),'draft':draft.model_dump(mode='json') if draft else None}

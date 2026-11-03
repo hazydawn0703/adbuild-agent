@@ -3,7 +3,7 @@ from uuid import uuid4
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from .settings import settings
 from .auth import authenticate, Actor, project_access
 from .db import transaction, json_value
@@ -165,6 +165,11 @@ async def mapping_proposal(file_id:str,actor:Actor=Depends(authenticate)):
         row=c.execute("select * from files where id=%s",(file_id,)).fetchone()
         if not row: raise HTTPException(404,"文件不存在")
         project_access(c,row['project_id'],actor,write=True)
+        linked=c.execute("select id from intake_tasks where project_id=%s and JSON_CONTAINS(data,%s,'$.file_ids')",(row['project_id'],json.dumps(file_id))).fetchone()
+        if not linked: raise HTTPException(422,'请在搭建任务中上传需求文件')
+        from .intake import access
+        task,_=access(c,linked['id'],actor,write=True)
+        task_version=task.version
         templates=c.execute("select data from mapping_templates where project_id=%s and JSON_TYPE(data)='OBJECT'",(row['project_id'],)).fetchall()
     from .templates import reuse
     data=await storage.download(row['storage_path'])
@@ -172,8 +177,9 @@ async def mapping_proposal(file_id:str,actor:Actor=Depends(authenticate)):
     unique={json.dumps([m.model_dump() for m in group],sort_keys=True):group for group in matches}
     if len(unique)==1:
         maps=next(iter(unique.values()))
-        return {'mappings':[m.model_dump() for m in maps],'explanation':'已按确认过的表头语义复用列，并重新检测数据范围。','reused':True}
-    return await asyncio.wait_for(propose_mapping(row['inspection'],data),180)
+        return {'mappings':[m.model_dump() for m in maps],'explanation':'已按确认过的表头语义复用列，并重新检测数据范围。','reused':True,'expected_task_version':task_version}
+    proposal=await asyncio.wait_for(propose_mapping(row['inspection'],data),180)
+    return {**proposal.model_dump(mode='json'),'expected_task_version':task_version}
 
 
 def signature(inspection):
@@ -182,8 +188,10 @@ def signature(inspection):
     return hashlib.sha256(json.dumps(headers,sort_keys=True).encode()).hexdigest()
 
 
-class MappingConfirmation(BaseModel):
-    mappings:list[SheetMapping]
+class MappingConfirmation(Model):
+    mappings:list[SheetMapping]=Field(min_length=1)
+    expected_task_version:int
+    request_id:str
 
 
 @app.post('/files/{file_id}/mapping/confirm')
@@ -207,6 +215,13 @@ async def confirm_mapping(file_id:str,body:MappingConfirmation,actor:Actor=Depen
         taskrow=c.execute("select id from intake_tasks where project_id=%s and JSON_CONTAINS(data,%s,'$.file_ids')",(project['id'],json.dumps(file_id))).fetchone()
         if not taskrow: raise HTTPException(422,'文件未关联搭建任务')
         task,_=access(c,taskrow['id'],actor,write=True)
+        from hashlib import sha256
+        request_digest=sha256(body.model_dump_json().encode()).hexdigest()
+        previous=task.requests.get(body.request_id)
+        if previous:
+            if previous['digest']!=request_digest: raise HTTPException(409,'映射请求 ID 已用于其他内容')
+            return previous['result']
+        if task.version!=body.expected_task_version: raise HTTPException(409,'任务已变化，请重新识别和审核映射')
         from .models import InputField
         context=task.context
         if (not context.account_ids or project['account_id'] in context.account_ids):
@@ -215,7 +230,7 @@ async def confirm_mapping(file_id:str,body:MappingConfirmation,actor:Actor=Depen
                 for field,value in context.defaults.items():
                     if getattr(req,field) in (None,''):
                         setattr(req,field,value)
-                        req.sources[field]=SourceRef(file_id='',sheet='',cell='',raw_value=value,kind='template')
+                        req.sources[field]=SourceRef(file_id='',sheet='',cell='',raw_value=value,kind='template',context_version=context.version)
             draft.requirements=[evaluate(Requirement.model_validate(r.model_dump()),history) for r in draft.requirements]
 
         if task.draft_id:
@@ -224,7 +239,9 @@ async def confirm_mapping(file_id:str,body:MappingConfirmation,actor:Actor=Depen
             c.execute('update drafts set version=%s,data=%s where id=%s',(draft.version,json_value(draft),draft.id))
         else:
             c.execute("insert into drafts(id,tenant_id,project_id,version,data) values(%s,%s,%s,%s,%s)",(draft.id,project['tenant_id'],project['id'],draft.version,json_value(draft)))
-        task.draft_id=draft.id;task.version+=1;task.proposal=None;refresh(task,draft);save(c,task)
+        task.draft_id=draft.id;task.version+=1;task.proposal=None;refresh(task,draft)
+        task.requests[body.request_id]={'digest':request_digest,'result':draft.model_dump(mode='json')}
+        save(c,task)
         from .templates import capture
         try: maps=capture(body.mappings,row['inspection'],data)
         except ValueError: maps=None
@@ -237,7 +254,9 @@ async def confirm_mapping(file_id:str,body:MappingConfirmation,actor:Actor=Depen
 @app.post('/drafts/{draft_id}/edit')
 def patch_draft(draft_id:str,body:DraftPatch,actor:Actor=Depends(authenticate)):
     with transaction() as c:
-        draft=edit_draft(c,draft_id,actor,body.expected_version,[e.model_dump() for e in body.edits])
+        linked=c.execute('select id from intake_tasks where draft_id=%s',(draft_id,)).fetchone()
+        message_id=str(uuid4()) if linked else None
+        draft=edit_draft(c,draft_id,actor,body.expected_version,[{**e.model_dump(),'source_message_id':message_id} for e in body.edits])
         project=project_access(c,draft.project_id,actor,write=True)
         linked=c.execute('select id from intake_tasks where draft_id=%s',(draft_id,)).fetchone()
         if linked:
@@ -246,7 +265,7 @@ def patch_draft(draft_id:str,body:DraftPatch,actor:Actor=Depends(authenticate)):
             task.version+=1;task.proposal=None;task.lease=None
             changed={(e.requirement_id,f) for e in body.edits for f in e.values}
             task.semantic_questions=[q for q in task.semantic_questions if not any((rid,q.field) in changed for rid in q.requirement_ids)]
-            task.messages.append({'id':str(uuid4()),'role':'user','content':'人工明确修改草稿：'+json.dumps([e.model_dump() for e in body.edits],ensure_ascii=False)})
+            task.messages.append({'id':message_id,'role':'user','content':'人工明确修改草稿：'+json.dumps([e.model_dump() for e in body.edits],ensure_ascii=False)})
             refresh(task,draft);save(c,task)
         return draft
 
@@ -339,7 +358,10 @@ from .intake import TaskAction as ChatBody, act
 
 @app.post('/projects/{project_id}/chat')
 async def chat(project_id:str,body:ChatBody,actor:Actor=Depends(authenticate)):
-    return await asyncio.wait_for(act(project_id,body,actor),180)
+    try:
+        return await asyncio.wait_for(act(project_id,body,actor),180)
+    except TimeoutError:
+        raise HTTPException(504,'分析超时，已有结果已保留，请刷新任务后继续分析') from None
 
 
 @app.post('/projects/{project_id}/agent')

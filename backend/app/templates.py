@@ -13,7 +13,7 @@ def capture(mappings,inspection,data):
         fields={field:header.get(col,'') for field,col in m.columns.items()}
         if not all(fields.values()) or len(set(fields.values()))!=len(fields):
             raise ValueError('表头为空或重名，不能保存可复用模板')
-        result.append({'fields':fields,'defaults':m.defaults})
+        result.append({'fields':fields,'defaults':{}})
     return {'regions':result,'layout':sorted(len(s['regions']) for s in inspection['sheets'])}
 
 

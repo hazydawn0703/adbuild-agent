@@ -31,8 +31,12 @@ def transaction():
         raw.begin()
         yield Connection(raw)
         raw.commit()
-    except BaseException:
+    except BaseException as error:
         raw.rollback()
+        from pymysql.err import OperationalError
+        if isinstance(error,OperationalError) and error.args[0] in (1205,1213):
+            from fastapi import HTTPException
+            raise HTTPException(409,'并发操作发生冲突，请刷新任务和草稿后重试') from None
         raise
     finally:
         raw.close()
