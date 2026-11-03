@@ -75,6 +75,7 @@ class Run:
         self.raw=self.output/'raw';self.raw.mkdir(mode=0o700)
         self.lock=threading.Lock();self.secrets=[value for value in secrets_to_mask if value]
         self.ad_calls=0
+        self.provider_blocked=None
 
     def safe(self,value):
         text=str(value)
@@ -205,6 +206,9 @@ async def main(args,after_analysis=None):
                         if response.status_code>=400:summary['stage_errors'].append({'stage':stage,'status':response.status_code,'body_file':str(prefix)+'.body'})
                         try:body=response.json()
                         except ValueError:body=None
+                        if isinstance(body,dict) and body.get('upstream_status') in (401,402,403):
+                            run.provider_blocked={'stage':stage,'upstream_status':body['upstream_status'],'code':body.get('code'),'category':body.get('category')}
+                            raise RuntimeError('Provider account unavailable; preserve partial run without further model calls')
                         return response.status_code,body
                     try:
                         async with asyncio.timeout(650):
@@ -261,6 +265,7 @@ async def main(args,after_analysis=None):
                         run.write(Path('raw')/case/'summary.json',summary);summaries.append(summary)
                         print(json.dumps({'case':case,'recorded':True,'selected':len(summary.get('selected_ids',[])),'stage_errors':len(summary['stage_errors'])}),flush=True)
                         if summary.get('safety_failure'):raise RuntimeError('Advertising safety observation failed')
+                        if run.provider_blocked:raise RuntimeError('Provider account unavailable; stop remaining cases without retry')
         run.write('run-complete.json',{'time':now(),'tenant_id':tenant,'cases':summaries,'execution_enabled':False,'label':protocol['label'],'run_id':args.run_id,'parent_run':args.parent_run})
     finally:
         mismatch=verify_sources(source_root,manifest)
@@ -268,6 +273,7 @@ async def main(args,after_analysis=None):
         safety_failure=run.ad_calls!=0 or any(s.get('safety_failure') for s in summaries)
         run.write('run-audit.json',{'time':now(),'source_mismatches_after':mismatch,'input_mismatches_after':input_mismatch,
                   'advertising_calls':run.ad_calls,'cases_recorded':len(summaries),'cases_expected':len(cases),
+                  'provider_blocked':run.provider_blocked,
                   'complete':len(summaries)==len(cases) and not mismatch and not input_mismatch and not safety_failure})
         run.seal()
         if mismatch or input_mismatch:raise RuntimeError('Sources or inputs changed during regression')

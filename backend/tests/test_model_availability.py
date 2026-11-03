@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from openai import InternalServerError,RateLimitError,AuthenticationError,BadRequestError,APIConnectionError,APITimeoutError,APIResponseValidationError
+from openai import InternalServerError,RateLimitError,AuthenticationError,BadRequestError,APIConnectionError,APITimeoutError,APIResponseValidationError,APIStatusError
 
 from app.agent import structured,ModelServiceError
 from app.models import ChatDecision,MappingProposal,RangeRequest
@@ -29,6 +29,7 @@ def provider_error(kind,status):
     (APITimeoutError,None,True,503,'timeout'),
     (AuthenticationError,401,False,503,'configuration'),
     (BadRequestError,400,False,502,'request_rejected'),
+    (APIStatusError,402,False,503,'insufficient_balance'),
     (APIResponseValidationError,200,False,502,'invalid_response'),
 ])
 def test_sdk_availability_errors_do_not_spend_schema_repair_or_leak_provider_data(monkeypatch,kind,status,retryable,http_status,category,caplog):

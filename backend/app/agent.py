@@ -16,10 +16,12 @@ class ModelServiceError(RuntimeError):
         self.category=category
         self.retryable=retryable
         self.upstream_status=upstream_status
-        self.status_code=504 if category=='analysis_timeout' else 503 if retryable or category=='configuration' else 502
-        self.code='analysis_timeout' if category=='analysis_timeout' else 'model_service_unavailable' if self.status_code==503 else 'model_service_rejected'
+        self.status_code=504 if category=='analysis_timeout' else 503 if retryable or category in ('configuration','insufficient_balance') else 502
+        self.code='model_insufficient_balance' if category=='insufficient_balance' else 'analysis_timeout' if category=='analysis_timeout' else 'model_service_unavailable' if self.status_code==503 else 'model_service_rejected'
         if category=='analysis_timeout':
             self.safe_message='分析超时，输入和已完成进度已保留，请稍后恢复未完成分析。'
+        elif category=='insufficient_balance':
+            self.safe_message='模型服务余额不足，输入和已完成进度已保留；请联系管理员补充模型账户余额后继续。'
         elif retryable:
             self.safe_message='模型服务暂时不可用，输入和已完成进度已保留，请稍后继续分析。'
         else:
@@ -33,7 +35,7 @@ class ModelServiceError(RuntimeError):
         status=getattr(error,'status_code',None)
         if isinstance(error,APIStatusError):
             retryable=status in (408,409,429) or status>=500
-            category='rate_limit' if status==429 else 'upstream_server' if retryable else 'configuration' if status in (401,403,404) else 'request_rejected'
+            category='insufficient_balance' if status==402 else 'rate_limit' if status==429 else 'upstream_server' if retryable else 'configuration' if status in (401,403,404) else 'request_rejected'
             return cls(category,retryable=retryable,upstream_status=status)
         return cls('invalid_response',retryable=False,upstream_status=status if isinstance(status,int) else None)
 
