@@ -123,8 +123,10 @@ def supported_source(state,row,field,value,offered=None):
         if previous and _same_reference(ref,previous) and equivalent(field,value,row.get(field),tz):return previous
         if ref.kind=='confirmed' and not ref.file_id and ref.message_id:
             message=next((m for m in state.get('messages',[]) if m.get('id')==ref.message_id and m.get('role')=='user'),None)
-            if message and equivalent(field,value,ref.raw_value,tz) and message_supports(field,value,str(message.get('content','')),tz):return ref
-        if ref.kind=='template' and not ref.file_id and ref.context_version==state.get('context',{}).get('version') and equivalent(field,value,ref.raw_value,tz) and _context_supports(state,row,field,value):return ref
+            if message and message_supports(field,value,str(message.get('content','')),tz):return ref.model_copy(update={'raw_value':str(value)})
+        if ref.kind=='confirmed' and ref.file_id:
+            raise ValueError(f'{field} 的消息来源必须kind=confirmed、file_id为空、message_id为真实用户消息ID；不要伪造文件ID')
+        if ref.kind=='template' and not ref.file_id and ref.context_version==state.get('context',{}).get('version') and _context_supports(state,row,field,value):return ref.model_copy(update={'raw_value':str(value)})
         raise ValueError(f'{field} 的新来源尚未经过服务端核实')
     for message in reversed(state.get('messages',[])):
         if message.get('role')=='user' and message_supports(field,value,str(message.get('content','')),tz):
@@ -176,7 +178,6 @@ def validate_proposal_evidence(state,decision):
                 from .models import StructureSpec
                 structure=StructureSpec.model_validate(value)
                 existing=row.get('structure') or {}
-                if structure.model_dump(mode='json')==existing:continue
                 weighted=[g for g in structure.groups if g.budget and g.budget.allocation_ratio is not None]
                 ratio_message=None
                 if weighted:
@@ -188,6 +189,8 @@ def validate_proposal_evidence(state,decision):
                     if ratio_message is None:raise ValueError('广告组预算比例缺少明确用户依据')
                 for group in structure.groups:
                     old=next((g for g in existing.get('groups',[]) if g['id']==group.id),{})
+                    if group.name and group.name!=old.get('name'):
+                        group.sources['name']=supported_source(state,old,'name',group.name,group.sources.get('name'))
                     child={**row,**{key:old[key] for key in ('audience','language') if old.get(key) not in (None,'')},'sources':{**row.get('sources',{}),**old.get('sources',{})}}
                     if group.budget:
                         for target,new_value in (('budget',group.budget.amount),('budget_mode',group.budget.mode),('currency',group.budget.currency)):
@@ -208,7 +211,41 @@ def validate_proposal_evidence(state,decision):
                         if ad.authorization_code:
                             if not any(ad.authorization_code in str(m.get('content','')) for m in state.get('messages',[]) if m.get('role')=='user'):
                                 raise ValueError('素材授权码缺少用户提供的依据')
+                from .models import Requirement
+                from .structure import validate_structure
+                candidate=Requirement.model_validate({**row,**edit.values,'structure':structure.model_dump(mode='json')})
+                issues=validate_structure(candidate)
+                if issues:raise ValueError('structure 必须保留完整实体配置，不能以省略字段清空已有节点：'+str([i.model_dump(mode='json') for i in issues]))
                 edit.values['structure']=structure.model_dump(mode='json')
+                edit.sources['structure']=SourceRef(kind='calculated',file_id='',sheet='',cell='',raw_value='服务端核实的完整三层结构',
+                    derived_from=sorted({f'{node.id}:{key}:{ref.kind}:{ref.file_id}:{ref.sheet}:{ref.cell}:{ref.message_id or ""}:{ref.context_version or ""}'
+                        for node in [*structure.groups,*[a for g in structure.groups for a in g.ads]] for key,ref in node.sources.items()}))
+
+
+def allocation_edits(state,allocations):
+    """A budget action changes only verified budgets, never the entity graph."""
+    from .models import Requirement,ChatEdit,BudgetSpec
+    result=[];seen=set()
+    for allocation in allocations:
+        if allocation.requirement_id in seen:raise ValueError('同一计划不能重复分配预算')
+        seen.add(allocation.requirement_id)
+        raw=next((r for r in (state.get('draft') or {}).get('requirements',[]) if r['id']==allocation.requirement_id),None)
+        if not raw:raise ValueError('预算分配包含未知计划')
+        req=Requirement.model_validate(raw)
+        if not req.structure:raise ValueError('预算分配需要先核实三层结构')
+        order=[g.id for g in req.structure.groups]
+        if set(allocation.group_weights)!=set(order):raise ValueError('预算权重必须且只能覆盖本计划全部广告组')
+        message=allocation_message(state,[allocation.group_weights[key] for key in order])
+        if not message or message['id']!=allocation.message_id:raise ValueError('预算分配比例与用户消息不一致')
+        source=supported_source(state,raw,'budget',allocation.total)
+        from .structure import allocate_budget
+        allocate_budget(allocation.total,[allocation.group_weights[key] for key in order])
+        structure=req.structure.model_copy(deep=True);structure.budget_level='adgroup'
+        for group in structure.groups:
+            group.budget=BudgetSpec(allocation_ratio=allocation.group_weights[group.id],currency=req.currency,mode=req.budget_mode)
+            group.sources['allocation_ratio']=SourceRef(kind='confirmed',file_id='',sheet='',cell='',raw_value=str(allocation.group_weights[group.id]),message_id=message['id'])
+        result.append(ChatEdit(requirement_id=req.id,values={'budget':str(allocation.total),'structure':structure.model_dump(mode='json')},sources={'budget':source}))
+    return result
 
 
 def validate_candidate_structure(state,values,sources,structure):

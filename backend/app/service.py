@@ -74,6 +74,18 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
             continue
         values = req.model_dump()
         patch=dict(edit["values"])
+        verified_structure=None
+        if patch.get('structure') is not None and edit.get('sources'):
+            from .models import ChatDecision,ChatEdit
+            from .provenance import validate_proposal_evidence
+            taskrow=conn.execute('select data from intake_tasks where draft_id=%s',(draft.id,)).fetchone()
+            taskstate=taskrow['data'] if taskrow else {}
+            documents=list(conn.execute('select id,storage_path,sha256 from files where project_id=%s and kind=%s',(project['id'],'requirements')))
+            decision=ChatDecision(answer='',edits=[ChatEdit(requirement_id=req.id,values=patch,sources=edit['sources'])])
+            try:validate_proposal_evidence({**taskstate,'project_account_id':project.get('account_id',''),'documents':documents,'draft':draft.model_dump(mode='json')},decision)
+            except (ValueError,OSError) as error:raise HTTPException(422,str(error)) from None
+            patch=decision.edits[0].values
+            verified_structure=decision.edits[0].sources.get('structure')
         from .excel import normalize_value,post_id_from_url
         from .models import StructureSpec
         for field,value in list(patch.items()):
@@ -99,6 +111,8 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
             previous=req.sources.get(field)
             if field=='included':
                 req.sources[field]=SourceRef(file_id='',sheet='',cell='',raw_value=str(req.included),kind='confirmed',message_id=edit.get('source_message_id'))
+            elif field=='structure' and verified_structure:
+                req.sources[field]=verified_structure
             elif offered:
                 ref=SourceRef.model_validate(offered)
                 if ref.file_id:
@@ -113,7 +127,7 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
                         taskrow=conn.execute('select data from intake_tasks where draft_id=%s',(draft.id,)).fetchone()
                         taskstate=taskrow['data'] if taskrow else {}
                         documents=list(conn.execute('select id,storage_path,sha256 from files where project_id=%s and kind=%s',(project['id'],'requirements')))
-                        ref=supported_source({'messages':taskstate.get('messages',[]),'context':taskstate.get('context',{}),'documents':documents},original.model_dump(),field,value,ref)
+                        ref=supported_source({'messages':taskstate.get('messages',[]),'context':taskstate.get('context',{}),'project_account_id':project.get('account_id',''),'documents':documents},original.model_dump(),field,value,ref)
                 except (ValueError,OSError) as error:raise HTTPException(422,str(error)) from None
                 req.sources[field]=ref
             elif previous and str(getattr(next(r for r in draft.requirements if r.id==req.id),field))==str(value):

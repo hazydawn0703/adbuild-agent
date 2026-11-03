@@ -432,10 +432,23 @@ def conversation_graph(checkpointer):
         scope=state.get('scope') or {}
         new_material=scope.get('action') in ('new','repost') and any(s['field']=='post_id' for s in scope.get('selectors',[])) and not scope_matches(state,scope)
         schema=DraftDecision if state.get('draft') and not new_material else CandidateDecision
+        def compile_output(output):
+            data=output.model_dump();allocations=data.pop('allocations',[])
+            decision=ChatDecision.model_validate(data)
+            if allocations:
+                from .models import BudgetAllocation
+                from .provenance import allocation_edits
+                allocation_ids={a['requirement_id'] for a in allocations}
+                if any(e.requirement_id in allocation_ids and {'budget','structure'} & set(e.values) for e in decision.edits):
+                    raise ProposalError('预算分配已包含总额和组预算，不要对同一计划重复提交budget或structure修改')
+                try:decision.edits.extend(allocation_edits(state,[BudgetAllocation.model_validate(a) for a in allocations]))
+                except ValueError as error:raise ProposalError(str(error)) from None
+            validate_decision(state,decision)
+            return decision
         def validate_output(output):
-            validate_decision(state,ChatDecision.model_validate(output.model_dump()))
+            compile_output(output)
         output=await structured(schema,[('system',COMMON+INTENT+HISTORY+CLARIFY),('user',payload)],validator=validate_output)
-        decision=ChatDecision.model_validate(output.model_dump())
+        decision=compile_output(output)
         return {'decision':decision.model_dump(mode='json'),'progress':{'phase':'validated','coverage':state['prepared']['coverage']}}
     def validate(state):
         validate_decision(state,ChatDecision.model_validate(state['decision']))

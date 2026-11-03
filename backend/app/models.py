@@ -16,10 +16,10 @@ class Objective(StrEnum):
 
 
 class SourceRef(Model):
-    file_id: str
+    file_id: str = Field(description='仅excel/history填写服务端真实文件ID；confirmed/template/project/calculated必须为空字符串，不能填message:或msg:前缀。')
     sheet: str
     cell: str
-    raw_value: str
+    raw_value: str = Field(description='来源原值供说明；业务事实由服务端重新读取核实，消息来源填写该字段的规范值，不填写整段解释。')
     kind: Literal["excel", "confirmed", "template", "history", "project", "calculated"] = "excel"
     derived_from: list[str] = Field(default_factory=list)
     message_id: str | None = None
@@ -279,10 +279,18 @@ class CandidateDecision(Model):
     questions: list[TaskQuestion] = Field(default_factory=list)
 
 
+class BudgetAllocation(Model):
+    requirement_id: str
+    total: Decimal = Field(gt=0,description='有明确输入依据的该计划总额，由服务端按分分配')
+    group_weights: dict[str,Decimal] = Field(description='当前计划全部真实广告组ID到正权重的映射，如1:1:1填写各组1；不能生成新组')
+    message_id: str = Field(description='明确规定分配比例的真实用户消息ID')
+
+
 class DraftDecision(Model):
     answer: str
     edits: list[ChatEdit] = Field(default_factory=list)
     expansions: list[RequirementExpansion] = Field(default_factory=list)
+    allocations: list[BudgetAllocation] = Field(default_factory=list,description='总额与比例分配专用动作；服务端保留现有组排期、受众、素材和来源。不要为分配预算重写structure。')
     questions: list[Clarification] = Field(default_factory=list)
 
 
