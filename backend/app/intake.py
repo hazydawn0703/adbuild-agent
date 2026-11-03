@@ -1,3 +1,4 @@
+from .public import public_business
 """Task-scoped interaction state. Draft values remain in drafts, never in checkpoints."""
 import json
 import asyncio
@@ -101,7 +102,7 @@ def create_task(project_id:str,body:NewTask,actor:Actor=Depends(authenticate)):
             task.draft_id=body.draft_id
             refresh(task,BuildDraft.model_validate(row['data']))
         c.execute('insert into intake_tasks(id,tenant_id,project_id,draft_id,version,data) values(%s,%s,%s,%s,%s,%s)',(task.id,p['tenant_id'],project_id,task.draft_id,task.version,json_value(task)))
-    return task
+    return public_business(task)
 
 
 @router.get('/tasks/{task_id}')
@@ -117,7 +118,7 @@ def get_task(task_id:str,actor:Actor=Depends(authenticate)):
             draft.requirements=[evaluate(r,history) for r in draft.requirements]
             preview=build_preview(draft,history,p['policy_version'],pending_questions=pending_questions(c,draft.id))
             refresh(task,draft)
-        return {'task':task.model_dump(mode='json',exclude={'requests','lease'}),'draft':draft,'preview':preview}
+        return public_business({'task':task.model_dump(mode='json',exclude={'requests','lease'}),'draft':draft,'preview':preview})
 
 
 @router.get('/projects/{project_id}/context')
@@ -163,7 +164,7 @@ async def act(project_id,body,actor):
         previous=task.requests.get(body.request_id)
         if previous:
             if previous['digest']!=digest: raise HTTPException(409,'请求 ID 已用于不同内容')
-            if 'result' in previous: return previous['result']
+            if 'result' in previous: return public_business(previous['result'])
         if task.version!=body.expected_version: raise HTTPException(409,'任务已变化，请刷新')
         if task.lease and datetime.fromisoformat(task.lease['until'])>now: raise HTTPException(409,'任务正在分析')
         draft=None
@@ -226,7 +227,7 @@ async def act(project_id,body,actor):
             refresh(task,draft);task.version+=1
             result={'answer':'已保存本任务的答案或提案处理结果，请继续分析并检查预览','task_id':task.id,'project_id':project_id,'draft':draft.model_dump(mode='json') if draft else None,'task':task.model_dump(mode='json',exclude={'requests'})}
             task.requests[body.request_id]={'digest':digest,'result':result};save(c,task)
-            return result
+            return public_business(result)
     try:
         from langgraph.checkpoint.mysql.aio import AIOMySQLSaver
         from .agent import conversation_graph
@@ -281,7 +282,7 @@ async def act(project_id,body,actor):
             current.version+=1
             result={'answer':decision.answer,'project_id':project_id,'task_id':current.id,'task':current.model_dump(mode='json',exclude={'requests'}),'draft':draft.model_dump(mode='json') if draft else None}
             current.requests[body.request_id]={'digest':digest,'result':result};save(c,current)
-            return result
+            return public_business(result)
     except (Exception,asyncio.CancelledError) as error:
         with transaction() as c:
             current,_=access(c,task.id,actor,write=True)

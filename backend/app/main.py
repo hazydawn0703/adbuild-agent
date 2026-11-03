@@ -1,3 +1,4 @@
+from .public import public_business, public_agent_state
 import json
 from uuid import uuid4
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Request
@@ -123,10 +124,10 @@ def new_project(body:NewProject,actor:Actor=Depends(authenticate)):
 def workspace(project_id:str,actor:Actor=Depends(authenticate)):
     with transaction() as c:
         project=project_access(c,project_id,actor)
-        return {"tasks":[{k:r[k] for k in ("id","draft_id","version","data")} for r in c.execute("select id,draft_id,version,data from intake_tasks where project_id=%s order by created_at desc",(project_id,))],"project":project,"files":c.execute("select id,name,kind,inspection,mapping from files where project_id=%s order by created_at desc",(project_id,)).fetchall(),
+        return public_business({"tasks":[{k:r[k] for k in ("id","draft_id","version","data")} for r in c.execute("select id,draft_id,version,data from intake_tasks where project_id=%s order by created_at desc",(project_id,))],"project":project,"files":c.execute("select id,name,kind,inspection,mapping from files where project_id=%s order by created_at desc",(project_id,)).fetchall(),
             "drafts":[r['data'] for r in c.execute("select data from drafts where project_id=%s order by created_at desc",(project_id,))],
             "runs":c.execute("select id,status,error,created_at from runs where project_id=%s order by created_at desc",(project_id,)).fetchall(),
-            "messages":c.execute("select role,content from messages where project_id=%s order by created_at",(project_id,)).fetchall()}
+            "messages":c.execute("select role,content from messages where project_id=%s order by created_at",(project_id,)).fetchall()})
 
 
 @app.post('/projects/{project_id}/files')
@@ -220,7 +221,7 @@ async def mapping_proposal(file_id:str,actor:Actor=Depends(authenticate)):
     with transaction() as c:
         current,_=access(c,task.id,actor,write=True)
         if current.version!=task_version or not current.lease or current.lease['request_id']!=lease_id: raise HTTPException(409,'分析期间任务已变化')
-        current.lease=None;save(c,current)
+        current.lease=None;current.stage='mapping';current.analysis.pop('mapping_error',None);save(c,current)
     return {**proposal.model_dump(mode='json'),'expected_task_version':task_version}
 
 
@@ -262,7 +263,7 @@ async def confirm_mapping(file_id:str,body:MappingConfirmation,actor:Actor=Depen
         previous=task.requests.get(body.request_id)
         if previous:
             if previous['digest']!=request_digest: raise HTTPException(409,'映射请求 ID 已用于其他内容')
-            return previous['result']
+            return public_business(previous['result'])
         if task.version!=body.expected_task_version: raise HTTPException(409,'任务已变化，请重新识别和审核映射')
         proposed=task.analysis.get('mapping',{})
         if proposed.get('file_id')==file_id and not proposed.get('proposal',{}).get('complete',True):
@@ -305,7 +306,7 @@ async def confirm_mapping(file_id:str,body:MappingConfirmation,actor:Actor=Depen
         c.execute("update files set mapping=%s where id=%s",(json_value([m.model_dump() for m in body.mappings]),file_id))
         if maps:
             c.execute("insert into mapping_templates(tenant_id,project_id,signature,data) values(%s,%s,%s,%s) on duplicate key update data=values(data)",(project['tenant_id'],project['id'],signature(row['inspection']),json_value(maps)))
-    return draft
+    return public_business(draft)
 
 
 class StructureProposalBody(Model):
@@ -343,7 +344,7 @@ def propose_structure(draft_id:str,body:StructureProposalBody,actor:Actor=Depend
         task.messages.append({'id':message_id,'role':'user','content':'提交分组结构供审核','created_at':__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()})
         task.proposal=ChangeProposal(id=str(uuid4()),draft_version=draft.version,edits=[ChatEdit(requirement_id=req.id,values={'structure':structure.model_dump(mode='json')})],reason='分组结构已校验，请采纳后核对完整预览',message_id=message_id)
         task.version+=1;task.lease=None;save(c,task)
-        return {'task_id':task.id,'proposal':task.proposal}
+        return public_business({'task_id':task.id,'proposal':task.proposal})
 
 
 @app.post('/drafts/{draft_id}/edit')
@@ -367,7 +368,7 @@ def patch_draft(draft_id:str,body:DraftPatch,actor:Actor=Depends(authenticate)):
                 task.scope=TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='requirement_id',values=selected_ids)],message_ids=[message_id],reason='用户在预览中明确选择本批需求') if selected_ids else TaskScope(reason='用户取消了全部选择')
                 task.semantic_questions=[q for q in task.semantic_questions if q.field!='scope']
             refresh(task,draft);save(c,task)
-        return draft
+        return public_business(draft)
 
 
 def draft_access(c,draft_id,actor,write=False):
@@ -383,7 +384,7 @@ def preview_draft(draft_id:str,actor:Actor=Depends(authenticate)):
         draft,project=draft_access(c,draft_id,actor)
         result=build_preview(draft,history_for(c,project),project['policy_version'],pending_questions=pending_questions(c,draft.id))
         result['confirmation_history']=[r['data'] for r in c.execute("select data from audit where project_id=%s and event='build_confirmed' and JSON_UNQUOTE(JSON_EXTRACT(data,'$.draft_id'))=%s order by id desc",(project['id'],draft_id))]
-    return result
+    return public_business(result)
 
 class BuildConfirmation(Model):
     expected_version:int
@@ -398,7 +399,7 @@ def page_history(draft_id:str,requirement_id:str,offset:int=0,limit:int=25,actor
         req=next((r for r in draft.requirements if r.id==requirement_id),None)
         if not req: raise HTTPException(404,'需求不存在')
         req=evaluate(req,history_for(c,project))
-        return {'items':req.history[offset:offset+limit],'total':len(req.history),'offset':offset,'complete':offset+limit>=len(req.history)}
+        return public_business({'items':req.history[offset:offset+limit],'total':len(req.history),'offset':offset,'complete':offset+limit>=len(req.history)})
 
 
 @app.post('/drafts/{draft_id}/confirm')
@@ -412,7 +413,7 @@ def confirm_build(draft_id:str,body:BuildConfirmation,actor:Actor=Depends(authen
         c.execute('update drafts set data=%s where id=%s',(json_value(draft),draft_id))
         if previous!=draft.approval:
             c.execute("insert into audit(tenant_id,project_id,event,data) values(%s,%s,'build_confirmed',%s)",(project['tenant_id'],project['id'],json_value({'draft_id':draft.id,'version':draft.version,'digest':body.digest,'actor':actor.user_id,'approval':draft.approval.model_dump(mode='json')})))
-    return draft
+    return public_business(draft)
 
 @app.post('/drafts/{draft_id}/execute')
 def execute_build(draft_id:str,body:BuildConfirmation,actor:Actor=Depends(authenticate)):
@@ -446,7 +447,7 @@ def get_run(run_id:str,actor:Actor=Depends(authenticate)):
         row=c.execute("select * from runs where id=%s",(run_id,)).fetchone()
         if not row: raise HTTPException(404,"任务不存在")
         project_access(c,row['project_id'],actor)
-        return {**row,"deployments":c.execute("select status,steps,requirement from deployments where run_id=%s",(run_id,)).fetchall()}
+        return public_business({**row,"deployments":c.execute("select status,steps,requirement from deployments where run_id=%s",(run_id,)).fetchall()})
 
 
 @app.post('/runs/{run_id}/{action}')
@@ -496,7 +497,8 @@ async def agent_stream(project_id:str,request:Request,actor:Actor=Depends(authen
         result=await chat(project_id,body,actor)
         with transaction() as c:
             current={'data':result.get('draft')}
-        return {'messages':[AIMessage(content=result['answer'])],'response':result,'draft':current['data']}
+        safe=public_agent_state(result,current['data'])
+        return {'messages':[AIMessage(content=safe['response']['answer'])],**safe}
     builder=StateGraph(TransportState)
     builder.add_node('process',process);builder.add_edge(START,'process');builder.add_edge('process',END)
     transport=LangGraphAgent(name='adbuild',graph=builder.compile())

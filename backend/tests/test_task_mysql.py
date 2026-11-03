@@ -27,7 +27,7 @@ def database(monkeypatch):
         c.execute('insert into users(id,email,password_hash) values(%s,%s,%s)',(user,user+'@test.invalid','unused'))
         c.execute('insert into tenants(id,name) values(%s,%s)',(tenant,'integration'))
         c.execute('insert into memberships values(%s,%s,%s)',(tenant,user,'admin'))
-        c.execute('insert into projects(id,tenant_id,name,account_id) values(%s,%s,%s,%s)',(project,tenant,'test','account'))
+        c.execute('insert into projects(id,tenant_id,name,account_id) values(%s,%s,%s,%s)',(project,tenant,'test','7312345678901234567'))
     app.dependency_overrides[authenticate]=lambda:Actor(user)
     yield project
     app.dependency_overrides.clear()
@@ -57,6 +57,10 @@ def test_task_upload_mapping_answers_replay_and_tenant_scope(database,tmp_path,m
             mapping={'sheet':'Sheet','header_row':1,'first_row':2,'last_row':2,'columns':{'post_url':'A','objective':'B','budget':'C'}}
             result=await client.post(f'/files/{fileid}/mapping/confirm',json={'mappings':[mapping],'expected_task_version':2,'request_id':str(uuid4())})
             assert result.status_code==200,result.text
+            # This integration checks answers/replay; selecting a row is explicit,
+            # never implied by successful column mapping.
+            selected=await client.post('/drafts/'+result.json()['id']+'/edit',json={'expected_version':result.json()['version'],'edits':[{'requirement_id':result.json()['requirements'][0]['id'],'values':{'included':True}}]})
+            assert selected.status_code==200,selected.text
             state=(await client.get('/tasks/'+taskid)).json()
             q=next(q for q in state['task']['questions'] if q['field']=='currency')
             body={'task_id':taskid,'request_id':str(uuid4()),'expected_version':state['task']['version'],'expected_draft_version':state['draft']['version'],'action':'answer','answers':{q['id']:'USD'}}
