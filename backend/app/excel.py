@@ -207,6 +207,7 @@ def parse_export(data: bytes):
             if not d.get("Ad ID"):
                 continue
             records.append({"source_sheet":sheet.title,"source_row":row_index,"campaign_id": platform_id(d.get("Campaign ID")),
+                "account_id":platform_id(d.get('Account ID')), "timezone":clean(d.get('Timezone')),
                 "adgroup_id": platform_id(d.get("Ad Group ID")), "ad_id": platform_id(d.get("Ad ID")),
                 "post_id": platform_id(d.get("Post ID")), "name": clean(d.get("Campaign Name")),
                 "objective": objective(d.get("Advertising Objective")),
@@ -257,6 +258,7 @@ def normalize_value(field,value,tz=''):
     """The shared input contract for workbook cells, answers and manual edits."""
     if value is None or value=='': return None if field in ('budget','objective','start_at','end_at') else ''
     text=clean(value)
+    if field=='platform':return {'tiktok':'TikTok','tt':'TikTok'}.get(text.casefold().replace(' ',''),text)
     if field in ('account_id','post_id'):
         result=platform_id(value)
         if not re.fullmatch(r'[0-9]{1,30}',result): raise ValueError('平台 ID 必须是数字字符串，姓名、链接和授权码不能作为 ID')
@@ -313,19 +315,16 @@ def _transform(value,kind):
     raise ValueError('映射变换类型不支持')
 
 
-def validate_mapping(mapping,wb):
+def validate_mapping_layout(mapping,wb):
     """Validate the complete mapping before reading rows, including foreign sources."""
     if mapping.sheet not in wb.sheetnames or mapping.last_row<mapping.first_row: raise ValueError('工作表或数据范围无效')
     if mapping.last_row>wb[mapping.sheet].max_row or mapping.last_row-mapping.first_row>=10000: raise ValueError('数据范围超出工作表或 10,000 行限制')
-    if set(mapping.columns)&set(mapping.bindings): raise ValueError('同一字段不能同时绑定列和固定来源')
-    for column in mapping.columns.values():
-        if not re.fullmatch(r'[A-Z]{1,3}',column) or column_index_from_string(column)>300:raise ValueError('映射列超出允许的300列')
     for binding in mapping.bindings.values():
         source_sheet=binding.sheet or mapping.sheet
         if source_sheet not in wb.sheetnames: raise ValueError('绑定来源工作表不存在')
         if binding.kind=='row':
             if source_sheet!=mapping.sheet or not re.fullmatch(r'[A-Z]{1,3}',binding.column) or column_index_from_string(binding.column)>300: raise ValueError('逐行绑定必须属于当前区域的有效列')
-        elif binding.kind in ('cell','header'):
+        elif binding.kind in ('cell',):
             if not re.fullmatch(r'[A-Z]{1,3}[1-9][0-9]*',binding.cell): raise ValueError('固定来源必须提供有效单元格')
             cell=wb[source_sheet][binding.cell]
             if cell.row>50000 or cell.column>300: raise ValueError('绑定来源超出允许范围')
@@ -333,10 +332,14 @@ def validate_mapping(mapping,wb):
     for rule in mapping.filters:
         if not re.fullmatch(r'[A-Z]{1,3}',rule.column) or column_index_from_string(rule.column)>300 or rule.operator not in ('eq','in','nonempty'): raise ValueError('行筛选无效')
         if rule.operator=='eq' and len(rule.values)!=1 or rule.operator=='in' and not rule.values: raise ValueError('行筛选缺少明确候选值')
+
+
+def validate_mapping(mapping,wb):
+    validate_mapping_layout(mapping,wb)
     for field,binding in mapping.bindings.items():
         if binding.transform=='value':continue
         source=wb[binding.sheet or mapping.sheet]
-        if binding.kind in ('cell','header'):
+        if binding.kind in ('cell',):
             cell=_anchor(source,source[binding.cell])
             try:
                 if cell.value is None or not clean(cell.value) or cell.data_type=='e':raise ValueError('固定来源为空或为 Excel 错误值')
@@ -366,8 +369,6 @@ def _row_selected(sheet,index,filters):
 
 
 def _binding_sources(mapping,wb,index):
-    for field,col in mapping.columns.items():
-        yield field,wb[mapping.sheet],_anchor(wb[mapping.sheet],wb[mapping.sheet].cell(index,column_index_from_string(col))),'value'
     for field,binding in mapping.bindings.items():
         sheet=wb[binding.sheet or mapping.sheet]
         cell=sheet.cell(index,column_index_from_string(binding.column)) if binding.kind=='row' else sheet[binding.cell]
@@ -379,15 +380,17 @@ def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
     formulas = read_workbook(data,data_only=False)
     result = []
     fields = set(Requirement.model_fields) - {"id", "sources", "confirmed_fields", "classification", "history", "issues"}
+    entity_fields={'campaign_key','group_key','record_key','budget_level','campaign_budget','adgroup_budget'}
+    fields |= entity_fields
     hidden_by_sheet={sheet.title:sensitive_cells(sheet) for sheet in wb}
     for mapping in mappings:
-        validate_mapping(mapping,wb)
-        if (set(mapping.columns)|set(mapping.bindings)|set(mapping.defaults))-fields:
+        validate_mapping_layout(mapping,wb)
+        if set(mapping.bindings)-fields:
             raise ValueError("存在未知的需求字段")
         sheet = wb[mapping.sheet]
         for index in range(mapping.first_row, mapping.last_row + 1):
             if not _row_selected(sheet,index,mapping.filters): continue
-            values, refs, issues = dict(mapping.defaults), {}, []
+            values, refs, issues = {}, {}, []
             for field,source_sheet,cell,transform in _binding_sources(mapping,wb,index):
                 value = cell.value
                 if cell.coordinate in hidden_by_sheet[source_sheet.title]:
@@ -405,7 +408,7 @@ def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
                 if field in ('post_url','landing_url') and cell.hyperlink:
                     value = cell.hyperlink.target or value
                 if value is None or not clean(value): continue
-                refs[field] = SourceRef(file_id=file_id,sheet=source_sheet.title,cell=cell.coordinate,raw_value=clean(value))
+                refs[field] = SourceRef(file_id=file_id,sheet=source_sheet.title,cell=cell.coordinate,raw_value=clean(value),transform=transform)
                 if field in ('start_at','end_at') and isinstance(value,(date,datetime)):
                     # Excel's date serial may decode to midnight even when no time was provided.
                     # Use its number format to preserve that missing precision instead of guessing.
@@ -417,6 +420,14 @@ def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
                     issues.append(Issue(code='invalid_transform',field=field,message=f'{cell.coordinate}：{error}'))
             if not any(values.get(k) for k in ('post_url','post_id','business_no','name','budget','objective')):
                 continue
+            entity={field:values.pop(field) for field in list(values) if field in entity_fields}
+            entity_refs={field:refs.pop(field) for field in list(refs) if field in entity_fields}
+            for field in ('campaign_budget','adgroup_budget'):
+                if entity.get(field) not in (None,''):
+                    try:entity[field]=normalize_value('budget',entity[field])
+                    except ValueError as error:
+                        entity[field]=None
+                        issues.append(Issue(code='invalid_budget',field='budget',message=str(error)))
             url = clean(values.get('post_url'))
             host=urlsplit(url).hostname or ''
             if url and host!='tiktok.com' and not host.endswith('.tiktok.com'):
@@ -455,14 +466,14 @@ def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
                 except (ValueError,KeyError,TypeError) as error:
                     values[field]=None if field in ('budget','objective','start_at','end_at') else ''
                     issues.append(Issue(code='invalid_'+field,field=field,message=str(error)))
-            for field,value in mapping.defaults.items():
-                if field not in refs: refs[field]=SourceRef(file_id=file_id,sheet=sheet.title,cell='',raw_value=value,kind='template')
             row_id=sha256(f'{file_id}:{sheet.title}:{index}:{mapping.model_dump_json()}'.encode()).hexdigest()[:24]
             try:
-                result.append(Requirement(id=row_id,**values,sources=refs,issues=issues))
+                result.append((Requirement(id=row_id,**values,sources=refs,issues=issues),entity,entity_refs))
             except ValidationError as error:
                 for problem in error.errors():
                     field=str(problem['loc'][0]);values.pop(field,None)
                     issues.append(Issue(code='invalid_value',field=field,message=f'{index} 行 {field} 无法识别，需确认'))
-                result.append(Requirement(id=row_id,**values,sources=refs,issues=issues))
-    return result
+                result.append((Requirement(id=row_id,**values,sources=refs,issues=issues),entity,entity_refs))
+    from .assembly import assemble
+    return assemble(result)
+

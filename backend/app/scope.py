@@ -24,6 +24,7 @@ def redact_private(value):
             result={}
             for key,val in item.items():
                 if sensitive.fullmatch(key):
+                    if key=='authorization_code' and item.get('kind')=='post':continue
                     result['authorization_present' if key=='authorization_code' else key+'_present']=bool(val)
                 else: result[key]=sanitize(val)
             return result
@@ -73,6 +74,10 @@ def validate_scope(scope, messages):
 
 def matches(req, selector):
     field = selector['field']
+    if field=='post_id' and getattr(req,'structure',None):
+        structure=as_dict(req.structure)
+        posts={str(ad.get('post_id','')).casefold() for group in structure['groups'] for ad in group['ads']}
+        return bool(posts & {str(v).strip().casefold() for v in selector['values']})
     if field=='requirement_id':
         actual=str(req.id).strip().lower()
     elif field == 'platform':
@@ -96,9 +101,22 @@ def select_requirements(requirements, scope, messages):
     result = []
     for original in requirements:
         req = original.model_copy(deep=True)
+        if req.structure:
+            included_posts={str(v) for s in scope.get('selectors',[]) if s['field']=='post_id' for v in s['values']}
+            excluded_posts={str(v) for s in scope.get('exclude_selectors',[]) if s['field']=='post_id' for v in s['values']}
+            for group in req.structure.groups:
+                group.ads=[ad for ad in group.ads if (not included_posts or ad.post_id in included_posts) and ad.post_id not in excluded_posts]
+            req.structure.groups=[g for g in req.structure.groups if g.ads]
+            active={req.id,*[g.id for g in req.structure.groups],*[ad.id for g in req.structure.groups for ad in g.ads]}
+            req.issues=[issue for issue in req.issues if not issue.target_id or issue.target_id in active]
+            if req.structure.budget_level=='adgroup' and req.sources.get('budget') and req.sources['budget'].kind=='calculated' and all(g.budget and g.budget.amount is not None for g in req.structure.groups):
+                from decimal import Decimal
+                req.budget=sum((g.budget.amount for g in req.structure.groups),Decimal(0))
+                req.sources['budget']=req.sources['budget'].model_copy(update={'raw_value':str(req.budget),'derived_from':[g.id+':budget' for g in req.structure.groups]})
         selected = resolved and (scope.get('all_records', False) or bool(scope.get('selectors')))
         selected = selected and all(matches(req, s) for s in scope.get('selectors', []))
         selected = selected and not any(matches(req, s) for s in scope.get('exclude_selectors', []))
+        if req.structure and not req.structure.groups:selected=False
         req.included = bool(selected)
         result.append(req)
     return result
@@ -155,3 +173,4 @@ def compact_state(state):
         from .history_query import lookup_history
         payload['history_query']=lookup_history(history_records,scope,rows)
     return redact_private(payload)
+

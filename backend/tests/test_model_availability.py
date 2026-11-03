@@ -1,10 +1,11 @@
+from model_response_fixture import model_response
 import asyncio
 import json
 from types import SimpleNamespace
 
 import httpx
 import pytest
-from openai import InternalServerError,RateLimitError,AuthenticationError,BadRequestError,APIConnectionError,APITimeoutError,APIResponseValidationError
+from openai import InternalServerError,RateLimitError,AuthenticationError,BadRequestError,APIConnectionError,APITimeoutError,APIResponseValidationError,APIStatusError
 
 from app.agent import structured,ModelServiceError
 from app.models import ChatDecision,MappingProposal,RangeRequest
@@ -28,6 +29,7 @@ def provider_error(kind,status):
     (APITimeoutError,None,True,503,'timeout'),
     (AuthenticationError,401,False,503,'configuration'),
     (BadRequestError,400,False,502,'request_rejected'),
+    (APIStatusError,402,False,503,'insufficient_balance'),
     (APIResponseValidationError,200,False,502,'invalid_response'),
 ])
 def test_sdk_availability_errors_do_not_spend_schema_repair_or_leak_provider_data(monkeypatch,kind,status,retryable,http_status,category,caplog):
@@ -93,7 +95,7 @@ def test_mapping_evidence_survives_later_sdk_service_unavailability(monkeypatch)
         async def ainvoke(self,_):
             calls.append(1)
             if len(calls)>1:raise provider_error(InternalServerError,503)
-            return MappingProposal(mappings=[],requested_ranges=[RangeRequest(sheet=wb.active.title,range='A1:A2',reason='inspect')],explanation='read')
+            return model_response(MappingProposal(mappings=[],requested_ranges=[RangeRequest(sheet=wb.active.title,range='A1:A2',reason='inspect')],explanation='read'))
     monkeypatch.setattr('app.agent.llm',lambda schema:Model())
     with pytest.raises(ModelServiceError):
         asyncio.run(propose_mapping(inspect_workbook(data),data,on_progress=lambda p:saved.append(p.model_dump(mode='json'))))
@@ -110,12 +112,12 @@ def test_provider_503_resumes_same_graph_checkpoint_without_repeating_scope(monk
     class Scope:
         async def ainvoke(self,_):
             calls['scope']+=1
-            return TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='business_no',values=['batch-development'])],message_ids=['source'])
+            return model_response(TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='business_no',values=['batch-development'])],message_ids=['source']))
     class Fields:
         async def ainvoke(self,_):
             calls['fields']+=1
             if calls['fields']==1:raise provider_error(InternalServerError,503)
-            return ChatDecision(answer='恢复未完成分析')
+            return model_response(ChatDecision(answer='恢复未完成分析'))
     monkeypatch.setattr('app.agent.llm',lambda schema:Scope() if schema is TaskScope else Fields())
     async def scenario():
         graph=conversation_graph(InMemorySaver())
@@ -131,3 +133,4 @@ def test_provider_503_resumes_same_graph_checkpoint_without_repeating_scope(monk
         assert result['scope']['status']=='resolved' and result['decision']['edits']==[]
     asyncio.run(scenario())
     assert calls=={'scope':1,'fields':2}
+

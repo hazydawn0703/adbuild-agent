@@ -29,7 +29,10 @@ def test_official_sse_accepts_structure_then_manual_preview_confirmation_without
             task=(await client.post(f'/projects/{database}/tasks',json={'draft_id':draft.id})).json()
             selected=await client.post('/drafts/'+draft.id+'/edit',json={'expected_version':1,'edits':[{'requirement_id':'row','values':{'included':True}}]})
             assert selected.status_code==200,selected.text
-            structure={'budget_level':'campaign','groups':[{'id':'explicit-group','name':'Explicit group','ads':[{'id':'explicit-ad','kind':'post'}]}]}
+            structure={'budget_level':'campaign','groups':[{'id':'explicit-group','name':'Explicit group',
+                'audience':req.audience,'language':'en',
+                'start_at':start.isoformat(),'end_at':(start+timedelta(days=3)).isoformat(),'timezone':'UTC',
+                'ads':[{'id':'explicit-ad','kind':'post','post_id':req.post_id,'post_url':req.post_url,'identity_id':req.identity_id}]}]}
             proposed=await client.post('/drafts/'+draft.id+'/structure-proposal',json={'expected_version':selected.json()['version'],'requirement_id':'row','structure':structure})
             assert proposed.status_code==200,proposed.text
             before=(await client.get('/tasks/'+task['id'])).json()
@@ -91,3 +94,4 @@ def test_official_sse_error_keeps_task_input_and_unfinished_business_checkpoint(
                 for table in ('runs','deployments'):
                     assert c.execute('select count(*) n from '+table+' where project_id=%s',(database,)).fetchone()['n']==0
     asyncio.run(scenario())
+

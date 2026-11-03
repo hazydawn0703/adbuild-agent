@@ -40,14 +40,22 @@ test('a pending structure proposal invalidates a prior approval without changing
  await page.getByLabel('组预算金额',{exact:true}).nth(1).fill('51.01');
  await page.getByLabel('受众',{exact:true}).nth(0).fill('Audience north');
  await page.getByLabel('受众',{exact:true}).nth(1).fill('Audience south');
+ for(let i=0;i<2;i++){
+  await page.getByLabel('组开始时间',{exact:true}).nth(i).fill('2028-01-10T09:00:00+00:00');
+  await page.getByLabel('组结束时间',{exact:true}).nth(i).fill('2028-01-15T09:00:00+00:00');
+  await page.getByLabel('组时区',{exact:true}).nth(i).fill('UTC');
+  await page.getByRole('button',{name:'添加素材',exact:true}).nth(i).click();
+ }
  await page.getByRole('button',{name:'生成结构修改提案',exact:true}).click();
  await expect(page.getByRole('heading',{name:'调整广告组与素材结构'})).toHaveCount(0);
  await expect(page.getByRole('button',{name:'确认搭建方案',exact:true})).toBeDisabled();
  await expect(page.getByRole('button',{name:'已确认此版本',exact:true})).toHaveCount(0);
  await expect(page.getByText('存在待采纳的修改提案，请先采纳或拒绝，再确认完整方案',{exact:true})).toBeVisible();
  expect(draft.version).toBe(4);expect(draft.requirements[0].structure).toBeNull();
+ expect((proposed as unknown as {structure:{groups:unknown[]}}).structure.groups).toEqual(expect.arrayContaining([expect.objectContaining({start_at:'2028-01-10T09:00:00+00:00',end_at:'2028-01-15T09:00:00+00:00',timezone:'UTC'})]));
  expect(proposed).toMatchObject({expected_version:4,requirement_id:'row',structure:{budget_level:'adgroup',groups:[{audience:'Audience north',budget:{amount:'50'}},{audience:'Audience south',budget:{amount:'51.01'}}]}});
  await page.getByRole('button',{name:'关闭搭建预览',exact:true}).click();
  await expect(page.getByText('分为两个广告组',{exact:true})).toBeVisible();
  expect(errors).toEqual([]);expect(forbidden).toEqual([]);
 });
+

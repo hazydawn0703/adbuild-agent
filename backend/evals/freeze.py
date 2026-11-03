@@ -33,7 +33,7 @@ for filename in args.evidence:
                 metadata=event['payload']['response'].get('llm_output') or {}
                 if metadata.get('model_name'):
                     observed_models.add((metadata['model_name'],metadata.get('system_fingerprint','')))
-manifest={'created_at':datetime.now(timezone.utc).isoformat(),'commit':args.commit,'prompt_hash':PROMPT_HASH,
+manifest={'created_at':datetime.now(timezone.utc).isoformat(),'business_time':datetime.now(timezone.utc).isoformat(),'commit':args.commit,'prompt_hash':PROMPT_HASH,
     'model':settings().llm_model,'thinking':'disabled','method':'function_calling','model_timeout_seconds':60,
     'round_timeout_seconds':180,'schema_attempts':2,'region_read_rounds':2,'execution_enabled':settings().execution_enabled,
     'files':{p:hashlib.sha256((root/p).read_bytes()).hexdigest() for p in paths},
@@ -45,3 +45,4 @@ assert not manifest['execution_enabled']
 with Path(args.output).open('x',encoding='utf-8') as stream:
     json.dump(manifest,stream,ensure_ascii=False,indent=2)
 print('Complete release freeze saved; exposed cases are regression only')
+

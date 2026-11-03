@@ -22,12 +22,12 @@ def capture(mappings,inspection,data):
         if m.filters:raise ValueError('包含本批筛选的映射需重新审核范围，不能直接保存为长期模板')
         sheet=workbook[m.sheet]
         header={coordinate_from_string(c.coordinate)[0]:clean(c.value) for c in sheet[m.header_row] if c.value is not None}
-        fields={field:{'header':header.get(col,''),'transform':'value'} for field,col in m.columns.items()}
+        fields={}
         fixed={}
         for field,binding in m.bindings.items():
             source_sheet=workbook[binding.sheet or m.sheet]
             if binding.kind=='row':fields[field]={'header':header.get(binding.column,''),'transform':binding.transform}
-            elif binding.kind=='header':fixed[field]={'label':clean(source_sheet[binding.cell].value),'direction':'self','kind':'header','transform':binding.transform}
+            elif source_sheet.title==m.sheet and source_sheet[binding.cell].row==m.header_row:fixed[field]={'label':clean(source_sheet[binding.cell].value),'direction':'self','kind':'cell','transform':binding.transform}
             else:fixed[field]={**_label(source_sheet,source_sheet[binding.cell]),'kind':'cell','transform':binding.transform}
         labels=[entry['header'] for entry in fields.values()]
         if not fields or not all(labels) or any(list(header.values()).count(label)!=1 for label in labels):raise ValueError('表头为空或重名，不能保存可复用模板')
@@ -48,12 +48,11 @@ def reuse(template,inspection,data):
                     if region['first_row']<=cell.row<=region['last_row'] and cell.value is not None:
                         actual_rows.setdefault(cell.row,{})[coordinate_from_string(cell.coordinate)[0]]=clean(cell.value)
                 for row_index,header in actual_rows.items():
-                    columns={};bindings={}
+                    bindings={}
                     for field,source in entry['fields'].items():
                         cols=[c for c,value in header.items() if value==source['header']]
                         if len(cols)!=1:break
-                        if source['transform']=='value':columns[field]=cols[0]
-                        else:bindings[field]=Binding(kind='row',column=cols[0],transform=source['transform'])
+                        bindings[field]=Binding(kind='row',column=cols[0],transform=source['transform'])
                     else:
                         for field,source in entry['fixed'].items():
                             matches=[]
@@ -65,7 +64,7 @@ def reuse(template,inspection,data):
                             if len(matches)!=1:break
                             bindings[field]=matches[0]
                         else:
-                            if region['last_row']>row_index:candidates.append(SheetMapping(sheet=sheet['sheet'],header_row=row_index,first_row=row_index+1,last_row=region['last_row'],columns=columns,bindings=bindings))
+                            if region['last_row']>row_index:candidates.append(SheetMapping(sheet=sheet['sheet'],header_row=row_index,first_row=row_index+1,last_row=region['last_row'],bindings=bindings))
         if len(candidates)!=1:return None
         candidate=candidates[0];key=(candidate.sheet,candidate.header_row)
         if key in used:return None
@@ -73,3 +72,4 @@ def reuse(template,inspection,data):
         except ValueError:return None
         used.add(key);mappings.append(candidate)
     return mappings or None
+

@@ -1,3 +1,4 @@
+from model_response_fixture import row_bindings
 import asyncio
 from io import BytesIO
 from datetime import datetime, timezone
@@ -25,7 +26,7 @@ def test_development_structural_scenarios(objective,variant):
     inspection=inspect_workbook(data)
     assert inspection['sheets'][0]['rows']==offset+variant+2
     columns={field:chr(65+headers.index(h)) for field,h in [('post_url','Post'),('budget','Budget'),('objective','Objective')]}
-    mapping=SheetMapping(sheet=s.title,header_row=offset+1,first_row=offset+2,last_row=offset+2,columns=columns)
+    mapping=SheetMapping(sheet=s.title,header_row=offset+1,first_row=offset+2,last_row=offset+2,bindings=row_bindings(columns))
     rebound=rebind_mapping(mapping,inspection)
     rows=parse_requirements(data,'file',[rebound])
     assert len(rows)==variant+1
@@ -35,7 +36,7 @@ def test_development_structural_scenarios(objective,variant):
 def test_formula_without_cache_and_long_numeric_id_remain_blocked():
     w=Workbook();s=w.active;s.append(['Post','Budget','ID']);s.append(['https://www.tiktok.com/@a/video/123','=1+2',1234567890123456789])
     stream=BytesIO();w.save(stream)
-    rows=parse_requirements(stream.getvalue(),'f',[SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,columns={'post_url':'A','budget':'B','identity_id':'C'})])
+    rows=parse_requirements(stream.getvalue(),'f',[SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,bindings=row_bindings({'post_url':'A','budget':'B','identity_id':'C'}))])
     assert {i.code for i in rows[0].issues}>={'invalid_formula','invalid_precision'}
 
 
@@ -75,12 +76,12 @@ def test_reviewed_template_reuses_headers_not_sheet_name_columns_or_last_row():
         for _ in range(records):s.append([values[h] for h in headers])
         out=BytesIO();w.save(out);return out.getvalue()
     old=data(['Post','Budget','Goal'],1,'A')
-    mapping=SheetMapping(sheet='A',header_row=1,first_row=2,last_row=2,columns={'post_url':'A','budget':'B','objective':'C'})
+    mapping=SheetMapping(sheet='A',header_row=1,first_row=2,last_row=2,bindings=row_bindings({'post_url':'A','budget':'B','objective':'C'}))
     template=capture([mapping],inspect_workbook(old),old)
     new=data(['Notes','Goal','Budget','Post'],40,'Renamed')
     maps=reuse(template,inspect_workbook(new),new)
     assert maps[0].sheet=='Renamed' and maps[0].last_row==41
-    assert maps[0].columns=={'post_url':'D','budget':'C','objective':'B'}
+    assert {k:v.column for k,v in maps[0].bindings.items()}=={'post_url':'D','budget':'C','objective':'B'}
 
 
 def test_pending_semantic_question_blocks_exact_preview_confirmation():
@@ -102,3 +103,4 @@ def test_credentials_are_excluded_from_model_inspection_and_range_reads():
     assert 'example-secret' not in json.dumps(inspect_workbook(data))
     assert 'another-secret' not in json.dumps(read_region(data,s.title,'D4:D4'))
     assert 'Budget' in json.dumps(inspect_workbook(data))
+

@@ -1,3 +1,4 @@
+from model_response_fixture import model_response
 """Real MySQL integration. TEST_DATABASE_URL must point to a disposable *_test DB."""
 import asyncio
 import os
@@ -62,7 +63,7 @@ def test_task_upload_mapping_answers_replay_and_tenant_scope(database,tmp_path,m
             upload=await client.post(f'/projects/{database}/files?kind=requirements&task_id={taskid}',files={'file':('batch.xlsx',buf.getvalue())})
             assert upload.status_code==200,upload.text
             fileid=upload.json()['id']
-            mapping={'sheet':'Sheet','header_row':1,'first_row':2,'last_row':2,'columns':{'post_url':'A','objective':'B','budget':'C'}}
+            mapping={'sheet':'Sheet','header_row':1,'first_row':2,'last_row':2,'bindings':{field:{'kind':'row','column':column} for field,column in {'post_url':'A','objective':'B','budget':'C'}.items()}}
             result=await client.post(f'/files/{fileid}/mapping/confirm',json={'mappings':[mapping],'expected_task_version':2,'request_id':str(uuid4())})
             assert result.status_code==200,result.text
             # This integration checks answers/replay; selecting a row is explicit,
@@ -91,7 +92,7 @@ def test_checkpoint_proposal_requires_exact_accept_and_survives_reload(database,
     class Model:
         async def ainvoke(self,messages):
             calls.append(1)
-            return ChatDecision(answer='预算修改提案',edits=[ChatEdit(requirement_id='r',values={'budget':'40'})])
+            return model_response(ChatDecision(answer='预算修改提案',edits=[ChatEdit(requirement_id='r',values={'budget':'40'})]))
     monkeypatch.setattr('app.agent.llm',lambda schema:Model())
     async def scenario():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
@@ -121,7 +122,7 @@ def test_predraft_question_answer_and_request_replay_use_task_scope(database,mon
     from app.models import TaskScope
     class Model:
         async def ainvoke(self,messages):
-            return TaskScope(reason='本次选择哪些业务编号？')
+            return model_response(TaskScope(reason='本次选择哪些业务编号？'))
     monkeypatch.setattr('app.agent.llm',lambda schema:Model())
     async def scenario():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
@@ -154,11 +155,11 @@ def test_message_candidate_can_be_accepted_without_existing_draft_once(database,
         async def ainvoke(self,messages):
             payload=json.loads(messages[-1][1])
             source=next(m for m in reversed(payload['messages']) if m['role']=='user')
-            return TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='post_id',values=['7700098765432101234'])],message_ids=[source['id']])
+            return model_response(TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='post_id',values=['7700098765432101234'])],message_ids=[source['id']]))
     class Model:
         async def ainvoke(self,_):
-            return ChatDecision(answer='消息中新需求候选',additions=[DemandCandidate(values={
-                'account_id':'7700012345678901234','post_id':'7700098765432101234','objective':'followers','budget':'50'})])
+            return model_response(ChatDecision(answer='消息中新需求候选',additions=[DemandCandidate(values={
+                'account_id':'7700012345678901234','post_id':'7700098765432101234','objective':'followers','budget':'50'})]))
     monkeypatch.setattr('app.agent.llm',lambda schema:ScopeModel() if schema is TaskScope else Model())
     async def scenario():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
@@ -198,9 +199,9 @@ def test_scope_resolution_selects_existing_candidate_without_boolean_literal_sou
             calls.append('scope')
             payload=json.loads(messages[-1][1])
             source=next(m for m in reversed(payload['messages']) if m['role']=='user')
-            return TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='business_no',values=[code])],message_ids=[source['id']])
+            return model_response(TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='business_no',values=[code])],message_ids=[source['id']]))
     class FieldsModel:
-        async def ainvoke(self,_):calls.append('fields');return ChatDecision(answer='使用已识别的本次需求')
+        async def ainvoke(self,_):calls.append('fields');return model_response(ChatDecision(answer='使用已识别的本次需求'))
     monkeypatch.setattr('app.agent.llm',lambda schema:ScopeModel() if schema is TaskScope else FieldsModel())
     async def scenario():
         draft=BuildDraft(id=str(uuid4()),project_id=database,requirements=[Requirement(id='wanted',business_no=code,included=False),Requirement(id='reference',business_no='reference',included=False)])
@@ -370,3 +371,4 @@ def test_task_rename_is_versioned_and_preserves_batch_data(database):
                 c.execute('update intake_tasks set data=%s where id=%s',(db.json_value(after),task['id']))
             assert (await client.patch(url,json={'name':'archived','expected_version':2})).status_code==409
     asyncio.run(scenario())
+

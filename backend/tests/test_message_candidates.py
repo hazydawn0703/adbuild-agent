@@ -1,3 +1,4 @@
+from model_response_fixture import model_response
 import asyncio
 from decimal import Decimal
 from uuid import uuid4
@@ -31,7 +32,7 @@ def test_new_candidate_cannot_fabricate_identity_or_omit_required_identity(value
 
 def test_message_candidate_is_checkpointed_as_proposal_without_creation(monkeypatch):
     class Model:
-        async def ainvoke(self,_):return ChatDecision(answer='candidate',additions=[DemandCandidate(values={'post_id':'7700123456789012345','objective':'video_views'})])
+        async def ainvoke(self,_):return model_response(ChatDecision(answer='candidate',additions=[DemandCandidate(values={'post_id':'7700123456789012345','objective':'video_views'})]))
     monkeypatch.setattr('app.agent.llm',lambda _:Model())
     result=asyncio.run(conversation_graph(InMemorySaver()).ainvoke({'messages':messages('新增帖子7700123456789012345，目标视频观看'),'draft':None,'context':{},'scope':TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='post_id',values=['7700123456789012345'])],message_ids=['user-message']).model_dump(mode='json')},{'configurable':{'thread_id':'candidate'}}))
     assert result['draft'] is None
@@ -80,3 +81,4 @@ def test_compact_context_includes_bounded_masked_table_evidence():
     state={'messages':[],'draft':None,'documents':[{'id':'file','inspection':{'sheets':[{'sheet':'S','regions':[{'range':'A1:B10','sample':[{'A1':'Budget','B1':'USD'}], 'header_candidates':[{'row':1,'cells':{'A1':'Budget','B1':'USD'}}]}]}]}}]}
     payload=compact_state(state)
     assert payload['documents'][0]['sheets'][0]['regions'][0]['sample'][0]['B1']=='USD'
+

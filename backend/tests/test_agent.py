@@ -1,3 +1,6 @@
+from app.agent import ModelServiceError
+from model_response_fixture import row_bindings
+from model_response_fixture import model_response
 import asyncio
 from langgraph.checkpoint.memory import InMemorySaver
 from app.models import ChatDecision,ChatEdit
@@ -10,7 +13,7 @@ import pytest
 def test_graph_persists_proposal_without_applying_edits(monkeypatch):
     class Model:
         async def ainvoke(self,messages):
-            return ChatDecision(answer='proposal',edits=[ChatEdit(requirement_id='r',values={'budget':'40'})])
+            return model_response(ChatDecision(answer='proposal',edits=[ChatEdit(requirement_id='r',values={'budget':'40'})]))
     monkeypatch.setattr('app.agent.llm',lambda _:Model())
     async def scenario():
         graph=conversation_graph(InMemorySaver())
@@ -25,16 +28,16 @@ def test_graph_persists_proposal_without_applying_edits(monkeypatch):
 def test_graph_rejects_unknown_scope(monkeypatch):
     class Model:
         async def ainvoke(self,messages):
-            return ChatDecision(answer='bad',edits=[ChatEdit(requirement_id='other',values={'budget':'40'})])
+            return model_response(ChatDecision(answer='bad',edits=[ChatEdit(requirement_id='other',values={'budget':'40'})]))
     monkeypatch.setattr('app.agent.llm',lambda _:Model())
-    with pytest.raises(ValueError,match='未知需求'):
+    with pytest.raises(ModelServiceError):
         asyncio.run(conversation_graph(InMemorySaver()).ainvoke({'messages':[{'id':'m','role':'user','content':'业务编号101'}],'draft':None,'context':{},'scope':{'status':'resolved','action':'edit','selectors':[{'field':'business_no','values':['101']}],'message_ids':['m']}},{'configurable':{'thread_id':'t'}}))
 
 
 def test_mapping_uses_content_not_sheet_name(monkeypatch):
     class Model:
         async def ainvoke(self,messages):
-            return MappingProposal(mappings=[SheetMapping(sheet='Sheet42',header_row=1,first_row=2,last_row=40,columns={'post_url':'J'})],explanation='content')
+            return model_response(MappingProposal(mappings=[SheetMapping(sheet='Sheet42',header_row=1,first_row=2,last_row=40,bindings=row_bindings({'post_url':'J'}))],explanation='content'))
     monkeypatch.setattr('app.agent.llm',lambda _:Model())
     result=asyncio.run(propose_mapping({'sheets':[{'sheet':'Sheet42','rows':40}]}))
     assert result.mappings[0].last_row==40
@@ -54,7 +57,8 @@ def test_empty_structured_output_gets_one_bounded_repair(monkeypatch):
     class Model:
         async def ainvoke(self,messages):
             calls.append(1)
-            return None if len(calls)==1 else ChatDecision(answer='已识别')
+            return model_response(None if len(calls)==1 else ChatDecision(answer='已识别'))
     monkeypatch.setattr('app.agent.llm',lambda schema:Model())
     assert asyncio.run(structured(ChatDecision,[])).answer=='已识别'
     assert len(calls)==2
+

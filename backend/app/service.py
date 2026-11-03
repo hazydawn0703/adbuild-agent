@@ -10,6 +10,12 @@ from .auth import project_access
 EDITABLE = {"included","account_id","post_id","post_url","name","objective","budget","budget_mode","currency","start_at","end_at","timezone","audience","language","identity_id","cta","landing_url","structure","platform"}
 
 
+def stored_draft(data):
+    if data.get('protocol_version')!=3:
+        raise HTTPException(409,'草稿协议已更新，请保留原始资料并创建新任务重新分析；旧确认不能继续使用')
+    return BuildDraft.model_validate(data)
+
+
 def history_for(conn, project):
     return [r["data"] for r in conn.execute("select data from history where project_id=%s and account_id=%s",(project["id"],project["account_id"]))]
 
@@ -43,7 +49,7 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
         raise HTTPException(404,"草稿不存在")
     project = project_access(conn,row["project_id"],actor,write=True)
     ensure_draft_active(conn,draft_id)
-    draft = BuildDraft.model_validate(row["data"])
+    draft = stored_draft(row["data"])
     if draft.version != expected_version or draft.status not in ("draft","attention","approved"):
         raise HTTPException(409,"草稿版本已变化或已经冻结，请刷新")
     history = history_for(conn, project)
@@ -51,8 +57,35 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
         req = next((r for r in draft.requirements if r.id == edit["requirement_id"]),None)
         if not req or set(edit["values"]) - EDITABLE:
             raise HTTPException(422,"需求或编辑字段无效")
+        if edit.get('target_id') and edit['target_id']!=req.id:
+            from .entities import edit_entity,evidence_values
+            try:
+                sources={}
+                if edit.get('sources'):
+                    from .provenance import supported_source
+                    taskrow=conn.execute('select data from intake_tasks where draft_id=%s',(draft.id,)).fetchone()
+                    state=taskrow['data'] if taskrow else {}
+                    state={**state,'project_account_id':project.get('account_id',''),'documents':list(conn.execute('select id,storage_path,sha256 from files where project_id=%s and kind=%s',(project['id'],'requirements')))}
+                    original=evidence_values(req,edit['target_id'])
+                    sources={field:supported_source(state,original,field,value,edit['sources'][field]) for field,value in edit['values'].items() if field in edit['sources']}
+                updated=edit_entity(req,edit['target_id'],edit['values'],edit.get('source_message_id'),actor.user_id,sources)
+            except ValueError as error:raise HTTPException(422,str(error)) from None
+            draft.requirements=[evaluate(updated,history) if r.id==req.id else r for r in draft.requirements]
+            continue
         values = req.model_dump()
         patch=dict(edit["values"])
+        verified_structure=None
+        if patch.get('structure') is not None and edit.get('sources'):
+            from .models import ChatDecision,ChatEdit
+            from .provenance import validate_proposal_evidence
+            taskrow=conn.execute('select data from intake_tasks where draft_id=%s',(draft.id,)).fetchone()
+            taskstate=taskrow['data'] if taskrow else {}
+            documents=list(conn.execute('select id,storage_path,sha256 from files where project_id=%s and kind=%s',(project['id'],'requirements')))
+            decision=ChatDecision(answer='',edits=[ChatEdit(requirement_id=req.id,values=patch,sources=edit['sources'])])
+            try:validate_proposal_evidence({**taskstate,'project_account_id':project.get('account_id',''),'documents':documents,'draft':draft.model_dump(mode='json')},decision)
+            except (ValueError,OSError) as error:raise HTTPException(422,str(error)) from None
+            patch=decision.edits[0].values
+            verified_structure=decision.edits[0].sources.get('structure')
         from .excel import normalize_value,post_id_from_url
         from .models import StructureSpec
         for field,value in list(patch.items()):
@@ -78,6 +111,8 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
             previous=req.sources.get(field)
             if field=='included':
                 req.sources[field]=SourceRef(file_id='',sheet='',cell='',raw_value=str(req.included),kind='confirmed',message_id=edit.get('source_message_id'))
+            elif field=='structure' and verified_structure:
+                req.sources[field]=verified_structure
             elif offered:
                 ref=SourceRef.model_validate(offered)
                 if ref.file_id:
@@ -91,7 +126,8 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
                     else:
                         taskrow=conn.execute('select data from intake_tasks where draft_id=%s',(draft.id,)).fetchone()
                         taskstate=taskrow['data'] if taskrow else {}
-                        ref=supported_source({'messages':taskstate.get('messages',[]),'context':taskstate.get('context',{})},original.model_dump(),field,value,ref)
+                        documents=list(conn.execute('select id,storage_path,sha256 from files where project_id=%s and kind=%s',(project['id'],'requirements')))
+                        ref=supported_source({'messages':taskstate.get('messages',[]),'context':taskstate.get('context',{}),'project_account_id':project.get('account_id',''),'documents':documents},original.model_dump(),field,value,ref)
                 except (ValueError,OSError) as error:raise HTTPException(422,str(error)) from None
                 req.sources[field]=ref
             elif previous and str(getattr(next(r for r in draft.requirements if r.id==req.id),field))==str(value):
@@ -103,6 +139,23 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
             req.sources[field].accepted_at=datetime.now(timezone.utc)
             if field not in req.confirmed_fields: req.confirmed_fields.append(field)
         req.issues = [i for i in req.issues if i.field not in patch]
+        if req.structure:
+            from .entities import edit_entity
+            group_fields={'audience','language','start_at','end_at','timezone','budget_mode','currency'}
+            group_patch={k:v for k,v in patch.items() if k in group_fields}
+            # Plan-shared currency/mode only belong to groups when group budgets are active.
+            if req.structure.budget_level!='adgroup':group_patch={k:v for k,v in group_patch.items() if k not in ('budget_mode','currency')}
+            if group_patch:
+                for group in list(req.structure.groups):
+                    req=edit_entity(req,group.id,group_patch,edit.get('source_message_id'),actor.user_id,{k:req.sources[k] for k in group_patch})
+            material_fields={'post_id','post_url','identity_id','cta','landing_url'}
+            material_patch={k:v for k,v in patch.items() if k in material_fields}
+            materials=[ad for g in req.structure.groups for ad in g.ads]
+            if {'post_id','post_url'} & set(material_patch) and len(materials)!=1:
+                raise HTTPException(422,'修改多个素材的帖子需要明确目标素材')
+            if material_patch:
+                for material in materials:
+                    req=edit_entity(req,material.id,material_patch,edit.get('source_message_id'),actor.user_id,{k:req.sources[k] for k in material_patch})
         draft.requirements = [evaluate(req,history) if r.id == req.id else r for r in draft.requirements]
     draft.version += 1
     draft.approval = None
@@ -184,7 +237,7 @@ def apply_additions(conn,draft,project,actor,additions,message_id,task):
     from .provenance import supported_source
     from .excel import normalize_value
     from .rules import fingerprint
-    state={'messages':task.messages,'context':task.context.model_dump(mode='json')}
+    state={'messages':task.messages,'context':task.context.model_dump(mode='json'),'project_account_id':project.get('account_id','')}
     added=[]
     for raw in additions:
         candidate=DemandCandidate.model_validate(raw)
@@ -192,7 +245,7 @@ def apply_additions(conn,draft,project,actor,additions,message_id,task):
         for field,value in candidate.values.items():
             if value in (None,''): continue
             values[field]=normalize_value(field,value,candidate.values.get('timezone',''))
-            sources[field]=supported_source(state,{},field,values[field],candidate.sources.get(field))
+            sources[field]=supported_source(state,candidate.values,field,values[field],candidate.sources.get(field))
         if values.get('post_url') and not values.get('post_id'):
             import re
             match=re.search(r'/video/(\d+)',values['post_url'])
@@ -200,9 +253,12 @@ def apply_additions(conn,draft,project,actor,additions,message_id,task):
         if not values.get('post_id'): raise HTTPException(422,'新增候选需要可核实的帖子 ID 或视频链接')
         if not values.get('account_id') and project.get('account_id'):
             values['account_id']=normalize_value('account_id',project['account_id'])
-            sources['account_id']=SourceRef(file_id='',sheet='',cell='',raw_value=project['account_id'],kind='template')
+            sources['account_id']=SourceRef(file_id='',sheet='',cell='',raw_value=project['account_id'],kind='project')
         for ref in sources.values(): ref.accepted_by=actor.user_id;ref.accepted_at=datetime.now(timezone.utc)
-        added.append(Requirement(id=str(uuid4()),**values,sources=sources,confirmed_fields=list(sources)))
+        from .provenance import validate_candidate_structure
+        try:structure=validate_candidate_structure(state,values,sources,candidate.structure)
+        except ValueError as error:raise HTTPException(422,str(error)) from None
+        added.append(Requirement(id=str(uuid4()),**values,sources=sources,structure=structure,confirmed_fields=list(sources)))
     if not added: raise HTTPException(422,'没有可采纳的新需求')
     current=list(draft.requirements) if draft else []
     seen={fingerprint(r) for r in current}
@@ -219,3 +275,4 @@ def apply_additions(conn,draft,project,actor,additions,message_id,task):
         draft.version+=1
         conn.execute('update drafts set version=%s,data=%s where id=%s',(draft.version,json_value(draft),draft.id))
     return draft
+

@@ -1,3 +1,4 @@
+from .service import stored_draft
 from .public import public_business, public_agent_state
 import json
 from uuid import uuid4
@@ -197,6 +198,8 @@ async def upload_file(project_id:str,kind:str,task_id:str,file:UploadFile=File()
         file_error={'code':error.code,'message':str(error),'recoverable':True}
         inspection={'sha256':sha256(data).hexdigest(),'sheets':[],'error':file_error}
         records=[]
+    if kind=='export' and any(r.get('account_id') and r['account_id']!=project['account_id'] for r in records):
+        raise HTTPException(422,'历史文件包含其他账户记录，不能归入当前项目')
     file_id=str(uuid4())
     path=f"{project['tenant_id']}/{project_id}/{file_id}.xlsx"
     await storage.upload(path,data)
@@ -213,7 +216,8 @@ async def upload_file(project_id:str,kind:str,task_id:str,file:UploadFile=File()
             for r in records:
                 r['source_file']=file_id
                 r['imported_at']=__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
-                r['account_id']=project['account_id']
+                r['account_binding_source']='export' if r.get('account_id') else 'project'
+                r['account_id']=r.get('account_id') or project['account_id']
                 c.execute("insert into history(tenant_id,project_id,account_id,ad_id,data) values(%s,%s,%s,%s,%s) on duplicate key update data=values(data),account_id=values(account_id)",(project['tenant_id'],project_id,project['account_id'],r['ad_id'],json_value(r)))
     except BaseException:
         with transaction() as c:
@@ -241,7 +245,7 @@ async def mapping_proposal(file_id:str,actor:Actor=Depends(authenticate)):
     unique={json.dumps([m.model_dump() for m in group],sort_keys=True):group for group in matches}
     if len(unique)==1:
         maps=next(iter(unique.values()))
-        return {'mappings':[m.model_dump() for m in maps],'explanation':'已按确认过的表头语义复用列，并重新检测数据范围。','reused':True,'expected_task_version':task_version}
+        return {'mappings':[m.model_dump() for m in maps],'explanation':'已按确认过的表头语义复用列，并重新检测数据范围。','status':'ready','complete':True,'reused':True,'expected_task_version':task_version}
     template_review_required=bool(templates)
     from datetime import datetime,timezone,timedelta
     from .intake import save
@@ -307,7 +311,7 @@ async def confirm_mapping(file_id:str,body:MappingConfirmation,actor:Actor=Depen
     for req in requirements:
         if not req.account_id and not any(i.field=='account_id' and i.code.startswith('invalid_') for i in req.issues):
             req.account_id=project['account_id']
-            req.sources['account_id']=SourceRef(file_id='',sheet='',cell='',raw_value=project['account_id'],kind='template')
+            req.sources['account_id']=SourceRef(file_id='',sheet='',cell='',raw_value=project['account_id'],kind='project')
     requirements=[evaluate(r,history) for r in requirements]
     draft=BuildDraft(id=str(uuid4()),project_id=str(project['id']),requirements=requirements,summary={"source_file":file_id,"count":len(requirements)})
     with transaction() as c:
@@ -339,18 +343,28 @@ async def confirm_mapping(file_id:str,body:MappingConfirmation,actor:Actor=Depen
         context=task.context
         if (not context.account_ids or project['account_id'] in context.account_ids):
             for req in draft.requirements:
+                if context.account_ids and req.account_id not in context.account_ids:continue
                 if context.objectives and req.objective not in context.objectives: continue
                 for field,value in context.defaults.items():
                     if getattr(req,field) in (None,'') and not any(i.field==field and i.code.startswith('invalid_') for i in req.issues):
                         from .excel import normalize_value
                         setattr(req,field,normalize_value(field,value,req.timezone))
                         req.sources[field]=SourceRef(file_id='',sheet='',cell='',raw_value=value,kind='template',context_version=context.version)
+                        if req.structure and field in ('audience','language','start_at','end_at','timezone'):
+                            for group in req.structure.groups:
+                                if getattr(group,field) in (None,''):
+                                    setattr(group,field,getattr(req,field));group.sources[field]=req.sources[field]
+                        if req.structure and field in ('post_id','post_url','identity_id','cta','landing_url'):
+                            for group in req.structure.groups:
+                                for material in group.ads:
+                                    if getattr(material,field) in (None,''):
+                                        setattr(material,field,getattr(req,field));material.sources[field]=req.sources[field]
             draft.requirements=[evaluate(Requirement.model_validate(r.model_dump()),history) for r in draft.requirements]
 
         if task.draft_id:
             old=c.execute('select version,data from drafts where id=%s for update',(task.draft_id,)).fetchone()
             from .merge import merge_requirements
-            draft.requirements=[evaluate(r,history) for r in merge_requirements(BuildDraft.model_validate(old['data']).requirements,draft.requirements)]
+            draft.requirements=[evaluate(r,history) for r in merge_requirements(stored_draft(old['data']).requirements,draft.requirements)]
             draft.id=task.draft_id;draft.version=old['version']+1
             c.execute('update drafts set version=%s,data=%s where id=%s',(draft.version,json_value(draft),draft.id))
         else:
@@ -436,7 +450,7 @@ def draft_access(c,draft_id,actor,write=False):
     if write:
         from .service import ensure_draft_active
         ensure_draft_active(c,draft_id)
-    return BuildDraft.model_validate(row['data']),project
+    return stored_draft(row['data']),project
 
 @app.get('/drafts/{draft_id}/preview')
 def preview_draft(draft_id:str,actor:Actor=Depends(authenticate)):
@@ -595,3 +609,4 @@ async def agent_stream(project_id:str,request:Request,actor:Actor=Depends(authen
         async for event in transport.run(input_data):
             yield encoder.encode(event)
     return StreamingResponse(events(),media_type=encoder.get_content_type())
+

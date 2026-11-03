@@ -1,3 +1,4 @@
+from .service import stored_draft
 from .public import public_business
 """Task-scoped interaction state. Draft values remain in drafts, never in checkpoints."""
 import json
@@ -33,8 +34,15 @@ def save(c,task):
 
 def question_observation(question,draft):
     rows=[] if draft is None else [r for r in draft.requirements if r.included and (question.scope=='task' or r.id in question.requirement_ids)]
-    return {r.id:sha256(json.dumps({'value':str(getattr(r,question.field,'')),
-        'source':r.sources[question.field].model_dump(mode='json') if question.field in r.sources else None},sort_keys=True,ensure_ascii=False).encode()).hexdigest() for r in rows}
+    result={}
+    from .entities import evidence_values
+    for row in rows:
+        for target in question.target_ids or [row.id]:
+            try:data=row.model_dump(mode='json') if target==row.id else evidence_values(row,target)
+            except ValueError:continue
+            result[target]=sha256(json.dumps({'value':data.get(question.field),
+                'source':data.get('sources',{}).get(question.field)},sort_keys=True,ensure_ascii=False,default=str).encode()).hexdigest()
+    return result
 
 
 def reconcile_questions(task,draft):
@@ -43,14 +51,27 @@ def reconcile_questions(task,draft):
     unresolved=[]
     for question in task.semantic_questions:
         if question.id in task.answers:continue
+        if question.reason_code=='platform_check':continue
+        if draft is not None and question.scope!='task':
+            selected=[r for r in draft.requirements if r.included and r.id in question.requirement_ids]
+            if not selected:continue
+            if question.field in ('cta','landing_url') and all(r.objective!='traffic' for r in selected):continue
+            if question.field=='structure' and all(r.structure and not any(i.field=='structure' and i.blocking for i in r.issues) for r in selected):continue
         current=question_observation(question,draft)
         old=basis.get(question.id)
         if question.field=='scope':
             if task.scope.status=='resolved' and (draft is None or any(r.included for r in draft.requirements)):continue
         elif old is not None and current and current!=old and draft is not None:
-            targets=[r for r in draft.requirements if r.id in current]
-            if all(getattr(r,question.field,None) not in (None,'') and r.sources.get(question.field)
-                   and not any(i.field==question.field and i.blocking for i in r.issues) for r in targets):continue
+            from .entities import evidence_values
+            targets=[]
+            for row in draft.requirements:
+                for target in current:
+                    try:data=row.model_dump(mode='json') if target==row.id else evidence_values(row,target)
+                    except ValueError:continue
+                    targets.append((row,target,data))
+            if targets and all(data.get(question.field) not in (None,'') and data.get('sources',{}).get(question.field)
+                   and not any(i.field==question.field and i.blocking and (not i.target_id or i.target_id==target) for i in row.issues)
+                   for row,target,data in targets):continue
         unresolved.append(question)
     task.semantic_questions=unresolved
 
@@ -71,29 +92,35 @@ def refresh(task,draft):
             if conflicts and state!='missing': state='conflict'
             refs=[]
             if source:
-                kind={'confirmed':'message','template':'template','history':'history','excel':'excel'}[source.kind]
+                kind={'confirmed':'message','template':'template','history':'history','excel':'excel','project':'template','calculated':'template'}[source.kind]
                 refs=[EvidenceRef(kind=kind,ref_id=f'{source.file_id}:{source.sheet}:{source.cell}',detail=source.model_dump())]
             evidence.append(FieldEvidence(requirement_id=req.id,field=field,state=state,sources=refs,reason=conflicts[0].question if conflicts else ''))
         if req.included and req.classification not in ('existing','change','ignored'):
             for issue in req.issues:
                 if issue.blocking:
-                    group=grouped.setdefault((issue.field,issue.code),{'ids':set(),'messages':[]})
+                    group=grouped.setdefault((issue.field,issue.code),{'ids':set(),'targets':set(),'messages':[]})
                     group['ids'].add(req.id)
+                    group['targets'].add(issue.target_id or req.id)
                     if issue.message not in group['messages']:group['messages'].append(issue.message)
     task.evidence=evidence
     # A flat missing-field check and the default hierarchy can report the same
     # field for exactly the same records. One answer addresses that whole set.
     # Preserve distinct record sets, and leave semantic/candidate questions alone.
     combined={}
-    for (field,_code),group in grouped.items():
-        key=(field,'requirements',tuple(sorted(group['ids'])))
-        messages=combined.setdefault(key,[])
-        messages.extend(message for message in group['messages'] if message not in messages)
+    for (field,code),group in grouped.items():
+        key=(field,'requirements',tuple(sorted(group['ids'])),tuple(sorted(group['targets'])))
+        entry=combined.setdefault(key,{'messages':[],'codes':set()})
+        entry['messages'].extend(message for message in group['messages'] if message not in entry['messages'])
+        entry['codes'].add(code)
     task.questions=[]
-    for (field,scope,ids),messages in combined.items():
-        key=json.dumps({'origin':'system','task':task.id,'draft_version':draft.version,'field':field,'scope':scope,'requirements':ids},sort_keys=True)
-        task.questions.append(Clarification(id=sha256(key.encode()).hexdigest()[:20],field=field,scope=scope,
-            requirement_ids=list(ids),question='；'.join(messages)))
+    for (field,scope,ids,targets),entry in combined.items():
+        reason='conflict' if any(c.startswith('invalid_') or c in ('duplicate','history_review','language_conflict') for c in entry['codes']) else 'missing'
+        question=Clarification(id='',field=field,scope=scope,reason_code=reason,
+            requirement_ids=list(ids),target_ids=list(targets),evidence_version=draft.version,question='；'.join(entry['messages']))
+        key=json.dumps({'origin':'system','task':task.id,'field':field,'scope':scope,'requirements':ids,
+            'targets':targets,'reason':reason,'evidence':question_observation(question,draft)},sort_keys=True)
+        question.id=sha256(key.encode()).hexdigest()[:20]
+        task.questions.append(question)
     task.questions.extend(task.semantic_questions)
     task.stage='attention' if task.analysis.get('phase')=='attention' else 'clarifying' if task.questions else 'preview'
 
@@ -159,7 +186,7 @@ def create_task(project_id:str,body:NewTask,actor:Actor=Depends(authenticate)):
             if c.execute('select id from intake_tasks where draft_id=%s',(body.draft_id,)).fetchone():
                 raise HTTPException(409,'草稿已关联搭建任务')
             task.draft_id=body.draft_id
-            refresh(task,BuildDraft.model_validate(row['data']))
+            refresh(task,stored_draft(row['data']))
         c.execute('insert into intake_tasks(id,tenant_id,project_id,draft_id,version,data) values(%s,%s,%s,%s,%s,%s)',(task.id,p['tenant_id'],project_id,task.draft_id,task.version,json_value(task)))
     return public_business(task)
 
@@ -172,7 +199,7 @@ def get_task(task_id:str,actor:Actor=Depends(authenticate)):
         task,p=access(c,task_id,actor)
         draft=None;preview=None
         if task.draft_id:
-            draft=BuildDraft.model_validate(c.execute('select data from drafts where id=%s',(task.draft_id,)).fetchone()['data'])
+            draft=stored_draft(c.execute('select data from drafts where id=%s',(task.draft_id,)).fetchone()['data'])
             history=history_for(c,p)
             draft.requirements=[evaluate(r,history) for r in draft.requirements]
             preview=build_preview(draft,history,p['policy_version'],pending_questions=pending_questions(c,draft.id),expected_account_id=p['account_id'])
@@ -231,13 +258,13 @@ async def act(project_id,body,actor):
         draft=None
         history=history_for(c,p)
         if task.draft_id:
-            draft=BuildDraft.model_validate(c.execute('select data from drafts where id=%s',(task.draft_id,)).fetchone()['data'])
+            draft=stored_draft(c.execute('select data from drafts where id=%s',(task.draft_id,)).fetchone()['data'])
             if draft.version!=body.expected_draft_version: raise HTTPException(409,'草稿已变化，请刷新')
             draft.requirements=[evaluate(r,history) for r in draft.requirements]
             refresh(task,draft)
         documents=[]
         for file_id in task.file_ids:
-            document=c.execute("select id,name,inspection,mapping from files where id=%s and project_id=%s and kind='requirements'",(file_id,project_id)).fetchone()
+            document=c.execute("select id,name,inspection,mapping,storage_path,sha256 from files where id=%s and project_id=%s and kind='requirements'",(file_id,project_id)).fetchone()
             if document: documents.append(document)
         if body.action in ('accept','reject'):
             proposal=task.proposal
@@ -262,7 +289,7 @@ async def act(project_id,body,actor):
                 q=next((q for q in task.questions if q.id==qid),None)
                 if not q or not value.strip(): raise HTTPException(422,'问题已过期或答案为空')
                 if q.scope=='task':
-                    if q.field!='scope':
+                    if q.field not in ('scope','structure'):
                         from .excel import normalize_value
                         try:normalize_value(q.field,value,'')
                         except (ValueError,TypeError,KeyError):raise HTTPException(422,'任务答案格式无效，请按字段要求填写') from None
@@ -270,10 +297,24 @@ async def act(project_id,body,actor):
                     if q.field=='scope':
                         task.scope.status='unresolved';task.scope.reason='已保存范围回答，请继续分析核对本次集合'
                         scope_answered=True
+                elif q.field=='structure':
+                    task.answers[qid]={'field':q.field,'value':value,'question':q.question,'message_id':message_id}
                 elif not draft or q.field not in EDITABLE:
                     raise HTTPException(422,'问题需要当前草稿与有效字段')
                 else:
-                    edits.extend({'requirement_id':rid,'values':{q.field:value},'source_message_id':message_id} for rid in q.requirement_ids)
+                    if q.target_ids:
+                        from .entities import find_entity
+                        for target in q.target_ids:
+                            owner=None
+                            for candidate in draft.requirements:
+                                if candidate.id not in q.requirement_ids:continue
+                                try:find_entity(candidate,target)
+                                except ValueError:continue
+                                owner=candidate;break
+                            if owner is None:raise HTTPException(409,'问题目标已变化，请刷新')
+                            edits.append({'requirement_id':owner.id,'target_id':target,'values':{q.field:value},'source_message_id':message_id})
+                    else:
+                        edits.extend({'requirement_id':rid,'values':{q.field:value},'source_message_id':message_id} for rid in q.requirement_ids)
                 answered.append({'question':q.question,'field':q.field,'answer':value})
             if not answered: raise HTTPException(422,'请填写答案')
             if edits: draft=edit_draft(c,draft.id,actor,draft.version,edits)
@@ -344,7 +385,8 @@ async def act(project_id,body,actor):
                 if version!=draft.version: raise HTTPException(409,'分析期间草稿已变化')
             current.lease=None
             for question in decision.questions:
-                question.id=sha256(json.dumps({'task':task.id,'scope':question.scope,'field':question.field,'ids':sorted(question.requirement_ids),'question':question.question},sort_keys=True,ensure_ascii=False).encode()).hexdigest()[:20]
+                question.evidence_version=draft.version if draft else current.context.version
+                question.id=sha256(json.dumps({'task':task.id,'scope':question.scope,'field':question.field,'ids':sorted(question.requirement_ids),'targets':sorted(question.target_ids),'reason':question.reason_code,'evidence':question_observation(question,draft)},sort_keys=True,ensure_ascii=False).encode()).hexdigest()[:20]
             # Empty model output cannot discard unresolved questions or pending proposals.
             existing={q.id:q for q in current.semantic_questions if q.id not in current.answers}
             existing.update({q.id:q for q in decision.questions})
@@ -395,3 +437,4 @@ async def act(project_id,body,actor):
                     current.requests[body.request_id]['error']=error.public_error()
                 save(c,current)
         raise
+

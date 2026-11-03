@@ -1,3 +1,4 @@
+from model_response_fixture import campaign_fixture
 from copy import deepcopy
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -11,7 +12,7 @@ from app.executor import execute
 
 NOW=datetime(2026,11,3,tzinfo=timezone.utc)
 def requirement(**changes):
-    return Requirement.model_validate(dict(id='row',name='测试计划',account_id='account',post_id='7701598778473630998',objective='followers',budget='50',budget_mode='lifetime',currency='USD',start_at='2027-01-01T00:00:00Z',end_at='2027-01-02T00:00:00Z',timezone='UTC',audience='HQ',identity_id='identity')|changes)
+    return campaign_fixture(**(dict(id='row',name='测试计划',account_id='account',post_id='7701598778473630998',objective='followers',budget='50',budget_mode='lifetime',currency='USD',start_at='2027-01-01T00:00:00Z',end_at='2027-01-02T00:00:00Z',timezone='UTC',audience='HQ',identity_id='identity')|changes))
 def draft(*rows):
     return BuildDraft(id='draft',project_id='project',requirements=list(rows or [requirement()]))
 
@@ -106,3 +107,4 @@ def test_valid_numeric_account_still_needs_project_binding_match():
     assert not p['can_confirm'] and any(i['code']=='account_binding' for i in p['issues'])
     d.requirements[0].account_id='7312345678901234567'
     assert build_preview(d,[],0,NOW,expected_account_id='7312345678901234567')['can_confirm']
+

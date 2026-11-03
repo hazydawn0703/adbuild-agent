@@ -1,3 +1,4 @@
+from model_response_fixture import row_bindings
 from io import BytesIO
 from datetime import datetime,timezone
 from decimal import Decimal
@@ -11,9 +12,9 @@ from app.rules import evaluate
 
 def test_mapping_direction_is_validated_before_parsing():
     with pytest.raises(ValidationError):
-        SheetMapping(sheet='需求',header_row=1,first_row=2,last_row=2,columns={'B':'business_no'})
+        SheetMapping(sheet='需求',header_row=1,first_row=2,last_row=2,bindings=row_bindings({'B':'business_no'}))
     with pytest.raises(ValidationError):
-        SheetMapping(sheet='需求',header_row=1,first_row=2,last_row=2,columns={'budget':'budget'})
+        SheetMapping(sheet='需求',header_row=1,first_row=2,last_row=2,bindings=row_bindings({'budget':'budget'}))
 
 
 def test_tiktok_dates_and_explicit_utc_offsets():
@@ -28,7 +29,7 @@ def test_merged_values_hyperlinks_and_errors_keep_source_cells():
     s.append(['目标','帖子','预算','时区','语言']);s.append(['page like买粉','点击帖子',50,'投放时区：UTC+0','英语']);s.append([None,'https://www.tiktok.com/@a/video/123','#DIV/0!','投放时区：UTC+0','英文'])
     s.merge_cells('A2:A3');s['B2'].hyperlink='https://www.tiktok.com/@a/video/456'
     stream=BytesIO();w.save(stream)
-    rows=parse_requirements(stream.getvalue(),'file',[SheetMapping(sheet='需求',header_row=1,first_row=2,last_row=3,columns={'objective':'A','post_url':'B','budget':'C','timezone':'D','language':'E'})])
+    rows=parse_requirements(stream.getvalue(),'file',[SheetMapping(sheet='需求',header_row=1,first_row=2,last_row=3,bindings=row_bindings({'objective':'A','post_url':'B','budget':'C','timezone':'D','language':'E'}))])
     assert len(rows)==2 and rows[0].post_id=='456' and rows[1].post_id=='123'
     assert rows[1].objective=='followers' and rows[1].sources['objective'].cell=='A2'
     assert rows[1].budget is None and any(i.code=='invalid_cell' for i in rows[1].issues)
@@ -44,3 +45,4 @@ def test_candidate_overlap_is_not_a_verified_duplicate_and_english_alias_is_equa
     assert not any(i.code=='language_conflict' for i in result.issues)
     assert {d['field'] for d in result.history[0]['differences']}=={'budget','start_at','end_at'}
     assert not evaluate(req,[dict(h,account_id='another')],datetime(2026,11,3,tzinfo=timezone.utc)).history
+

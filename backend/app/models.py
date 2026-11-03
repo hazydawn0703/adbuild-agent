@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal, Annotated
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, computed_field
 
 
 class Model(BaseModel):
@@ -16,15 +16,17 @@ class Objective(StrEnum):
 
 
 class SourceRef(Model):
-    file_id: str
+    file_id: str = Field(description='仅excel/history填写服务端真实文件ID；confirmed/template/project/calculated必须为空字符串，不能填message:或msg:前缀。')
     sheet: str
     cell: str
-    raw_value: str
-    kind: Literal["excel", "confirmed", "template", "history"] = "excel"
+    raw_value: str = Field(description='来源原值供说明；业务事实由服务端重新读取核实，消息来源填写该字段的规范值，不填写整段解释。')
+    kind: Literal["excel", "confirmed", "template", "history", "project", "calculated"] = "excel"
+    derived_from: list[str] = Field(default_factory=list)
     message_id: str | None = None
     context_version: int | None = None
     accepted_by: str | None = None
     accepted_at: datetime | None = None
+    transform: Literal['value','interval_start','interval_end','currency_code'] = 'value'
 
 
 class Issue(Model):
@@ -32,6 +34,7 @@ class Issue(Model):
     field: str
     message: str
     blocking: bool = True
+    target_id: str = ''
 
 
 class BudgetSpec(Model):
@@ -59,6 +62,9 @@ class GroupSpec(Model):
     name: str = ''
     audience: str | None = None
     language: str | None = None
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    timezone: str = ''
     budget: BudgetSpec | None = None
     ads: list[MaterialSpec] = Field(default_factory=list, max_length=50)
     sources: dict[str, SourceRef] = Field(default_factory=dict)
@@ -109,6 +115,7 @@ class BuildApproval(Model):
 class BuildDraft(Model):
     id: str
     project_id: str
+    protocol_version: Literal[3] = 3
     version: int = 1
     status: Literal["mapping", "draft", "approved", "queued", "executing", "complete", "attention"] = "draft"
     approval: BuildApproval | None = None
@@ -131,11 +138,12 @@ class ProjectPolicy(Model):
 
 
 InputField = Literal['platform','account_id','business_no','name','post_url','post_id','objective','budget','budget_mode','currency','start_at','end_at','timezone','audience','language','identity_id','cta','landing_url']
+MappingField = Literal['platform','account_id','business_no','name','post_url','post_id','objective','budget','budget_mode','currency','start_at','end_at','timezone','audience','language','identity_id','cta','landing_url','campaign_key','group_key','record_key','budget_level','campaign_budget','adgroup_budget']
 
 
 class Binding(Model):
-    kind: Literal['row','cell','header']
-    column: str = ''
+    kind: Literal['row','cell']
+    column: str = Field(default='',pattern=r'^(?:[A-Z]{1,3})?$')
     sheet: str = ''
     cell: str = ''
     transform: Literal['value','interval_start','interval_end','currency_code'] = 'value'
@@ -152,11 +160,8 @@ class SheetMapping(Model):
     header_row: int = Field(ge=1)
     first_row: int = Field(ge=1)
     last_row: int = Field(ge=1)
-    columns: dict[InputField, Annotated[str, Field(pattern=r'^[A-Z]{1,3}$')]] = Field(default_factory=dict, description='只包含真实存在的逐行列映射，值为Excel大写列字母。缺少来源的字段省略，不填空字符串、字段名或null占位。固定资料使用bindings。')
-    bindings: dict[InputField, Binding] = Field(default_factory=dict)
+    bindings: dict[MappingField, Binding] = Field(default_factory=dict,description='实际来源绑定，包括实体关系。campaign_key=计划身份，group_key=广告组身份，record_key=素材记录身份，budget_level=预算层级，campaign_budget=计划总额，adgroup_budget=组预算；识别到来源就必须实际输出这些键，不能只在explanation描述。每个键只有一种row/cell来源。')
     filters: list[RowFilter] = Field(default_factory=list)
-    # Defaults are explicitly accepted by a user, not instructions extracted from cells.
-    defaults: dict[InputField, str] = Field(default_factory=dict)
 
 
 class MappingProposal(Model):
@@ -168,6 +173,12 @@ class MappingProposal(Model):
     regions: list['RegionProposal'] = Field(default_factory=list)
     requested_ranges: list['RangeRequest'] = Field(default_factory=list)
 
+    @computed_field
+    @property
+    def status(self) -> Literal['ready','needs_input','incomplete']:
+        if not self.complete or self.pending_ranges or self.requested_ranges:return 'incomplete'
+        return 'ready' if self.mappings else 'needs_input'
+
 
 class DraftPatch(Model):
     expected_version: int
@@ -176,6 +187,7 @@ class DraftPatch(Model):
 
 class ChatEdit(Model):
     requirement_id: str
+    target_id: str = ''
     values: dict[InputField | Literal['included','structure'], Any]
     sources: dict[str, SourceRef] = Field(default_factory=dict)
 
@@ -198,6 +210,7 @@ class TaskScope(Model):
 class DemandCandidate(Model):
     values: dict[InputField, Any]
     sources: dict[str, SourceRef] = Field(default_factory=dict)
+    structure: StructureSpec | None = None
 
 
 class RequirementExpansion(Model):
@@ -250,6 +263,35 @@ class Clarification(Model):
     answer_type: Literal['text','choice','datetime','decimal'] = 'text'
     options: list[str] = Field(default_factory=list)
     blocking: bool = True
+    reason_code: Literal['semantic_review','missing','conflict','scope','unsupported','platform_check'] = Field(default='semantic_review',description='平台账户/受众/Spark权限核实属于platform_check，仅用于执行前核验，不阻断草稿预览；不能把授权码是否存在当作帖子权限结论。')
+    evidence_version: int = 0
+    target_ids: list[str] = Field(default_factory=list)
+
+
+class TaskQuestion(Clarification):
+    scope: Literal['task'] = 'task'
+    requirement_ids: list[str] = Field(default_factory=list, max_length=0)
+
+
+class CandidateDecision(Model):
+    answer: str
+    additions: list[DemandCandidate] = Field(default_factory=list)
+    questions: list[TaskQuestion] = Field(default_factory=list)
+
+
+class BudgetAllocation(Model):
+    requirement_id: str
+    total: Decimal = Field(gt=0,description='有明确输入依据的该计划总额，由服务端按分分配')
+    group_weights: dict[str,Decimal] = Field(description='当前计划全部真实广告组ID到正权重的映射，如1:1:1填写各组1；不能生成新组')
+    message_id: str = Field(description='明确规定分配比例的真实用户消息ID')
+
+
+class DraftDecision(Model):
+    answer: str
+    edits: list[ChatEdit] = Field(default_factory=list)
+    expansions: list[RequirementExpansion] = Field(default_factory=list)
+    allocations: list[BudgetAllocation] = Field(default_factory=list,description='总额与比例分配专用动作；服务端保留现有组排期、受众、素材和来源。不要为分配预算重写structure。')
+    questions: list[Clarification] = Field(default_factory=list)
 
 
 class ChangeProposal(Model):
@@ -304,3 +346,4 @@ MappingProposal.model_rebuild()
 
 DraftPatch.model_rebuild()
 ChatDecision.model_rebuild()
+

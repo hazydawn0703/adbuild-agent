@@ -75,6 +75,7 @@ class Run:
         self.raw=self.output/'raw';self.raw.mkdir(mode=0o700)
         self.lock=threading.Lock();self.secrets=[value for value in secrets_to_mask if value]
         self.ad_calls=0
+        self.provider_blocked=None
 
     def safe(self,value):
         text=str(value)
@@ -103,7 +104,7 @@ STAGE=contextvars.ContextVar('exposed_regression_stage',default='setup')
 RECORDER=contextvars.ContextVar('exposed_regression_recorder',default=None)
 
 
-async def main(args):
+async def main(args,after_analysis=None):
     if args.env_file:
         from dotenv import load_dotenv
         load_dotenv(args.env_file,override=True)
@@ -117,8 +118,11 @@ async def main(args):
     manifest=json.loads(Path(args.freeze).read_text(encoding='utf-8'))
     if manifest.get('commit')!=args.commit or manifest.get('model')!=cfg.llm_model or manifest.get('execution_enabled') is not False:
         raise ValueError('Commit, model configuration or execution flag differs from freeze')
+    business_time=datetime.fromisoformat(manifest['business_time'].replace('Z','+00:00'))
+    if business_time.tzinfo is None:raise ValueError('Business time requires an explicit timezone')
     mismatch=verify_sources(source_root,manifest)
     if mismatch:raise ValueError('Source files differ from freeze: '+repr(mismatch))
+    if after_analysis and 'backend/evals/run_acceptance.py' not in manifest['files']:raise ValueError('Acceptance workflow driver missing from freeze')
     inputs=Path(args.inputs).resolve();output=Path(args.output).resolve()
     if output==inputs or output.is_relative_to(inputs):raise ValueError('Output must be a new directory outside inputs')
     cases,contexts,input_hashes=validate_inputs(inputs)
@@ -127,8 +131,8 @@ async def main(args):
     os.environ['STORAGE_DIRECTORY']=str(output/'private-workbooks');settings.cache_clear()
     run.write('freeze.json',manifest)
     protocol={'label':'exposed_regression','run_id':args.run_id,'parent_run':args.parent_run,'started_at':now(),
-              'commit':args.commit,'cases':cases,'input_files':input_hashes,'model':cfg.llm_model,
-              'attempts_per_case':1,'max_analysis_actions':1,'max_unchanged_proposal_acceptances':1,
+              'commit':args.commit,'cases':cases,'input_files':input_hashes,'model':cfg.llm_model,'business_time':business_time.isoformat(),
+              'attempts_per_case':1,'max_analysis_actions':3 if after_analysis else 1,'max_unchanged_proposal_acceptances':2 if after_analysis else 1,
               'mapping_resume_actions':0,'extra_retries':0,'manual_mapping_changes':0,'manual_field_changes':0,
               'extra_answers':0,'final_confirmation':False,'execution_enabled':False,
               'workflow':['source-grounded account setup','upload unchanged export and brief','paste text verbatim before mapping',
@@ -137,6 +141,10 @@ async def main(args):
               'gold_in_model_inputs':False,'scoring':'Separate process only after outputs-seal.json is written',
               'limits':'No assisted completion is measured; file_error and unresolved scope are not successes',
               'dependency_versions':{p:importlib.metadata.version(p) for p in ('openpyxl','pydantic','fastapi','langgraph','langchain-openai','PyMySQL','aiomysql')}}
+    protocol['normal_answer_batches']=1 if after_analysis else 0
+    protocol['label']='normal_clarification_acceptance' if after_analysis else 'exposed_regression'
+    if after_analysis:
+        protocol['workflow'].append('Submit at most one batch of predeclared user facts; resolve scope and mapping only after new answers')
     run.write('protocol.json',protocol)
     from app.auth import password_hash
     from app.db import transaction
@@ -148,7 +156,13 @@ async def main(args):
     class Recorder(BaseCallbackHandler):
         def on_chat_model_start(self,serialized,messages,*,run_id,**kwargs):
             run.event('model_start',{'run_id':str(run_id),'messages':[[m.model_dump(mode='json') for m in seq] for seq in messages]})
-        def on_llm_end(self,response,*,run_id,**kwargs):run.event('model_end',{'run_id':str(run_id),'response':response.model_dump(mode='json')})
+        def on_llm_end(self,response,*,run_id,**kwargs):
+            from app.scope import redact_private
+            payload=response.model_dump(mode='json')
+            for i,generations in enumerate(response.generations):
+                for j,generation in enumerate(generations):
+                    if hasattr(generation,'message'):payload['generations'][i][j]['message']=redact_private(generation.message.model_dump(mode='json'))
+            run.event('model_end',{'run_id':str(run_id),'response':payload})
         def on_llm_error(self,error,*,run_id,**kwargs):run.event('model_error',{'run_id':str(run_id),'error_type':type(error).__name__,'message':run.safe(error)})
     register_configure_hook(RECORDER,True);RECORDER.set(Recorder())
     async def observed(scope,receive,send):
@@ -170,7 +184,7 @@ async def main(args):
         run.seal()
         raise
     try:
-        with patch('app.executor.call',run.forbidden_ad_call),patch('app.executor.call_binding',run.forbidden_ad_call),patch('app.main.connect',run.forbidden_ad_call):
+        with patch('app.executor.call',run.forbidden_ad_call),patch('app.executor.call_binding',run.forbidden_ad_call),patch('app.main.connect',run.forbidden_ad_call),patch('app.rules.business_now',lambda:business_time),patch('app.agent.business_now',lambda:business_time):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=observed,raise_app_exceptions=False),base_url='https://regression.invalid',timeout=210) as client:
                 login=await client.post('/auth/login',json={'email':email,'password':password})
                 if login.status_code!=200:raise RuntimeError('Test user authentication failed')
@@ -192,12 +206,18 @@ async def main(args):
                         if response.status_code>=400:summary['stage_errors'].append({'stage':stage,'status':response.status_code,'body_file':str(prefix)+'.body'})
                         try:body=response.json()
                         except ValueError:body=None
+                        if isinstance(body,dict) and body.get('upstream_status') in (401,402,403):
+                            run.provider_blocked={'stage':stage,'upstream_status':body['upstream_status'],'code':body.get('code'),'category':body.get('category')}
+                            raise RuntimeError('Provider account unavailable; preserve partial run without further model calls')
                         return response.status_code,body
                     try:
                         async with asyncio.timeout(650):
                             status,project=await call('create-project','POST','/projects',json={'tenant_id':tenant,'name':args.run_id+' '+case,'account_id':contexts[case]['account_id']})
                             if status!=200:raise RuntimeError('Project setup failed')
                             project_id=project['id'];summary['project_id']=project_id;summary['account_setup']=contexts[case]
+                            if contexts[case].get('project_context'):
+                                status,_=await call('setup-original-context','POST',f'/projects/{project_id}/context',json=contexts[case]['project_context'])
+                                if status!=200:raise RuntimeError('Project context setup failed')
                             status,task=await call('create-task','POST',f'/projects/{project_id}/tasks',json={'name':args.run_id+' '+case})
                             if status!=200:raise RuntimeError('Task setup failed')
                             task_id=task['id'];summary['task_id']=task_id;file_id=None
@@ -225,6 +245,8 @@ async def main(args):
                                             summary['normal_action_attempts'].append('accept-unchanged-proposal')
                                             status,_=await call('accept-unchanged-proposal','POST',f'/projects/{project_id}/chat',json={'task_id':task_id,'request_id':str(uuid4()),'expected_version':state['task']['version'],'expected_draft_version':state['draft']['version'],'action':'accept','proposal_id':pending['id']})
                                             if status==200:summary['normal_action_successes'].append('accept-unchanged-proposal')
+                            if after_analysis:
+                                await after_analysis(case,contexts[case],call,summary,task_id,project_id,file_id)
                             _,state=await call('sealed-task-state','GET','/tasks/'+task_id)
                             if state.get('draft'):
                                 status,preview=await call('final-preview','GET',f"/drafts/{state['draft']['id']}/preview")
@@ -243,13 +265,15 @@ async def main(args):
                         run.write(Path('raw')/case/'summary.json',summary);summaries.append(summary)
                         print(json.dumps({'case':case,'recorded':True,'selected':len(summary.get('selected_ids',[])),'stage_errors':len(summary['stage_errors'])}),flush=True)
                         if summary.get('safety_failure'):raise RuntimeError('Advertising safety observation failed')
-        run.write('run-complete.json',{'time':now(),'tenant_id':tenant,'cases':summaries,'execution_enabled':False,'label':'exposed_regression','run_id':args.run_id,'parent_run':args.parent_run})
+                        if run.provider_blocked:raise RuntimeError('Provider account unavailable; stop remaining cases without retry')
+        run.write('run-complete.json',{'time':now(),'tenant_id':tenant,'cases':summaries,'execution_enabled':False,'label':protocol['label'],'run_id':args.run_id,'parent_run':args.parent_run})
     finally:
         mismatch=verify_sources(source_root,manifest)
         input_mismatch=[p for p,h in input_hashes.items() if not (inputs/p).is_file() or digest(inputs/p)!=h]
         safety_failure=run.ad_calls!=0 or any(s.get('safety_failure') for s in summaries)
         run.write('run-audit.json',{'time':now(),'source_mismatches_after':mismatch,'input_mismatches_after':input_mismatch,
                   'advertising_calls':run.ad_calls,'cases_recorded':len(summaries),'cases_expected':len(cases),
+                  'provider_blocked':run.provider_blocked,
                   'complete':len(summaries)==len(cases) and not mismatch and not input_mismatch and not safety_failure})
         run.seal()
         if mismatch or input_mismatch:raise RuntimeError('Sources or inputs changed during regression')
@@ -266,3 +290,4 @@ if __name__=='__main__':
     parser.add_argument('--parent-run',required=True)
     parser.add_argument('--env-file')
     asyncio.run(main(parser.parse_args()))
+

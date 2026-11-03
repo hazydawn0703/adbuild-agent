@@ -1,3 +1,6 @@
+from model_response_fixture import row_bindings
+import pytest
+from model_response_fixture import model_response
 import asyncio,json
 from io import BytesIO
 from openpyxl import Workbook
@@ -17,8 +20,8 @@ def test_mapping_source_errors_are_repaired_inside_bounded_model_call(monkeypatc
     class Model:
         async def ainvoke(self,messages):
             calls.append(messages)
-            bad=Binding(kind='header',column='B') if len(calls)==1 else Binding(kind='header',cell='B1')
-            return MappingProposal(mappings=[SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,columns={'post_id':'A'},bindings={'currency':bad})],explanation='sources')
+            bad=Binding(kind='cell',column='B') if len(calls)==1 else Binding(kind='cell',cell='B1')
+            return model_response(MappingProposal(mappings=[SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,bindings={**row_bindings({'post_id':'A'}), **{'currency':bad}})],explanation='sources'))
     monkeypatch.setattr('app.agent.llm',lambda _:Model())
     result=asyncio.run(propose_mapping(inspect_workbook(data),data))
     assert len(calls)==2 and result.complete
@@ -26,16 +29,10 @@ def test_mapping_source_errors_are_repaired_inside_bounded_model_call(monkeypatc
     assert '固定来源' in calls[1][-1][1]
 
 
-def test_duplicate_column_binding_is_repaired_before_confirmation(monkeypatch):
-    w=Workbook();s=w.active;s.append(['Post','Account']);s.append(['7712345678901234567','7312345678901234567']);data=binary(w);calls=[]
-    class Model:
-        async def ainvoke(self,messages):
-            calls.append(1)
-            columns={'post_id':'A','account_id':'B'} if len(calls)==1 else {'post_id':'A'}
-            return MappingProposal(mappings=[SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,columns=columns,bindings={'account_id':Binding(kind='cell',cell='B2')})],explanation='sources')
-    monkeypatch.setattr('app.agent.llm',lambda _:Model())
-    result=asyncio.run(propose_mapping(inspect_workbook(data),data))
-    assert len(calls)==2 and result.mappings[0].columns=={'post_id':'A'}
+def test_removed_parallel_column_mapping_is_rejected():
+    with pytest.raises(ValueError):
+        SheetMapping.model_validate({'sheet':'Sheet','header_row':1,'first_row':2,'last_row':2,
+            'columns':{'account_id':'B'},'bindings':{'account_id':{'kind':'cell','cell':'B2'}}})
 
 
 def test_pending_range_resumes_saved_cursor_and_retains_all_page_evidence(monkeypatch):
@@ -48,7 +45,7 @@ def test_pending_range_resumes_saved_cursor_and_retains_all_page_evidence(monkey
             # First invocation reaches its two-page budget. Resume consumes a
             # saved page before this model is called, then finishes the range.
             needed=len(calls)<5
-            return MappingProposal(mappings=[],requested_ranges=[RangeRequest(sheet=s.title,range='A1:A3001',reason='read source')] if needed else [],explanation='read progress')
+            return model_response(MappingProposal(mappings=[],requested_ranges=[RangeRequest(sheet=s.title,range='A1:A3001',reason='read source')] if needed else [],explanation='read progress'))
     monkeypatch.setattr('app.agent.llm',lambda _:Model())
     first=asyncio.run(propose_mapping(inspection,data))
     assert not first.complete and first.pending_ranges
@@ -66,7 +63,7 @@ def test_repeated_completed_read_does_not_run_without_progress(monkeypatch):
     class Model:
         async def ainvoke(self,messages):
             calls.append(1)
-            return MappingProposal(mappings=[],requested_ranges=[RangeRequest(sheet=s.title,range='A1:A1',reason='same request')],explanation='read')
+            return model_response(MappingProposal(mappings=[],requested_ranges=[RangeRequest(sheet=s.title,range='A1:A1',reason='same request')],explanation='read'))
     monkeypatch.setattr('app.agent.llm',lambda _:Model())
     result=asyncio.run(propose_mapping(inspect_workbook(data),data))
     assert not result.complete and '没有新的补读进展' in result.explanation and len(calls)==2
@@ -82,7 +79,7 @@ def test_server_search_finds_deep_target_and_nearby_headers_without_leaking_code
     class Model:
         async def ainvoke(self,messages):
             messages_seen.extend(messages)
-            return MappingProposal(mappings=[],explanation='needs review')
+            return model_response(MappingProposal(mappings=[],explanation='needs review'))
     monkeypatch.setattr('app.agent.llm',lambda _:Model())
     result=asyncio.run(propose_mapping(inspect_workbook(data),data,task={'scope':{'selectors':[{'field':'post_id','values':['7712345678901234567']}]}}))
     search=result.read_state['search']
@@ -95,7 +92,7 @@ def test_server_search_finds_deep_target_and_nearby_headers_without_leaking_code
 def test_platform_field_or_reviewed_filter_keeps_its_real_source():
     w=Workbook();s=w.active;s.append(['Business','Platform']);s.append(['batch-target','TikTok']);data=binary(w)
     from app.models import RowFilter
-    mapping=SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,columns={'business_no':'A'},filters=[RowFilter(column='B',operator='eq',values=['TikTok'])])
+    mapping=SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,bindings=row_bindings({'business_no':'A'}),filters=[RowFilter(column='B',operator='eq',values=['TikTok'])])
     row=parse_requirements(data,'file',[mapping])[0]
     assert row.platform=='TikTok' and row.sources['platform'].cell=='B2'
     assert matches(row,{'field':'platform','values':['TikTok']})
@@ -112,10 +109,11 @@ def test_completed_read_is_saved_before_later_model_timeout(monkeypatch):
         async def ainvoke(self,messages):
             calls.append(1)
             if len(calls)>1:raise TimeoutError('model unavailable')
-            return MappingProposal(mappings=[],requested_ranges=[RangeRequest(sheet=sheet.title,range='A1:A2',reason='evidence')],explanation='read')
+            return model_response(MappingProposal(mappings=[],requested_ranges=[RangeRequest(sheet=sheet.title,range='A1:A2',reason='evidence')],explanation='read'))
     monkeypatch.setattr('app.agent.llm',lambda _:Model())
     with pytest.raises(TimeoutError):asyncio.run(propose_mapping(inspect_workbook(data),data,on_progress=lambda p:saved.append(p.model_dump(mode='json'))))
     latest=saved[-1]
     assert latest['read_state']['pages'][sheet.title+'!A1:A2']['complete']
     assert latest['read_state']['evidence'][0]['coverage']['read_cells']==2
     assert latest['complete'] is False
+

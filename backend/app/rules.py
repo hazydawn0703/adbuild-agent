@@ -133,43 +133,52 @@ def fingerprint(req: Requirement):
     return sha256(json.dumps(values).encode()).hexdigest()
 
 
+def business_now():
+    return datetime.now(timezone.utc)
+
+
 def evaluate(req: Requirement, history: list[dict], now=None):
-    now = now or datetime.now(timezone.utc)
+    now = now or business_now()
     req = req.model_copy(deep=True)
     req.issues = [i for i in req.issues if i.code.startswith("invalid_")]
     req.history = history_candidates(req,history)
-    for field in ("account_id", "post_id", "objective", "budget", "budget_mode", "currency", "start_at", "end_at", "timezone", "audience", "identity_id"):
-        if req.structure and field in ('post_id','identity_id','audience'):
+    for field in ("name", "account_id", "post_id", "objective", "budget", "budget_mode", "currency", "start_at", "end_at", "timezone", "audience", "identity_id"):
+        if req.structure and field in ('post_id','identity_id','audience','start_at','end_at','timezone'):
             continue
         if getattr(req, field) in (None, ""):
             req.issues.append(Issue(code="missing",field=field,message=f"缺少 {field}"))
     if req.budget is not None and (not req.budget.is_finite() or req.budget <= 0):
         req.issues.append(Issue(code="budget",field="budget",message="预算必须大于零"))
-    for field in ("start_at", "end_at"):
-        dt = getattr(req,field)
-        if dt and dt.tzinfo is None:
-            req.issues.append(Issue(code="timezone",field=field,message="排期缺少有效时区"))
-    if req.end_at and req.end_at.tzinfo and req.end_at <= now:
-        req.issues.append(Issue(code="expired",field="end_at",message="排期已经结束，不会自动平移"))
-    elif req.end_at is None and req.timezone and any(i.code=='invalid_date_precision' and i.field=='end_at' for i in req.issues):
-        source=req.sources.get('end_at')
-        if source:
-            try:
-                # A date-only Excel serial does not authorize a midnight schedule.
-                # Its entire calendar day can nevertheless be proved past in an
-                # explicit timezone without choosing any missing start/end time.
-                day=re.fullmatch(r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})',source.raw_value)
-                last_day=date(*(int(v) for v in day.groups())) if day else datetime.fromisoformat(source.raw_value).date()
-                if last_day<now.astimezone(zone_value(req.timezone)).date():
-                    req.issues.append(Issue(code='expired',field='end_at',message=f'原始结束日期 {last_day.isoformat()} 在 {req.timezone} 下已经过去；具体结束时刻仍缺失，不会自动补时或平移'))
-            except (ValueError,KeyError,TypeError):
-                pass
-    if req.start_at and req.end_at and bool(req.start_at.tzinfo) == bool(req.end_at.tzinfo) and req.start_at >= req.end_at:
-        req.issues.append(Issue(code="schedule",field="end_at",message="结束时间必须晚于开始时间"))
+    if not req.structure:
+        for field in ("start_at", "end_at"):
+            dt = getattr(req,field)
+            if dt and dt.tzinfo is None:
+                req.issues.append(Issue(code="timezone",field=field,message="排期缺少有效时区"))
+        if req.end_at and req.end_at.tzinfo and req.end_at <= now:
+            req.issues.append(Issue(code="expired",field="end_at",message="排期已经结束，不会自动平移"))
+        elif req.end_at is None and req.timezone and any(i.code=='invalid_date_precision' and i.field=='end_at' for i in req.issues):
+            source=req.sources.get('end_at')
+            if source:
+                try:
+                    # A date-only Excel serial does not authorize a midnight schedule.
+                    # Its entire calendar day can nevertheless be proved past in an
+                    # explicit timezone without choosing any missing start/end time.
+                    day=re.fullmatch(r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})',source.raw_value)
+                    last_day=date(*(int(v) for v in day.groups())) if day else datetime.fromisoformat(source.raw_value).date()
+                    if last_day<now.astimezone(zone_value(req.timezone)).date():
+                        req.issues.append(Issue(code='expired',field='end_at',message=f'原始结束日期 {last_day.isoformat()} 在 {req.timezone} 下已经过去；具体结束时刻仍缺失，不会自动补时或平移'))
+                except (ValueError,KeyError,TypeError):
+                    pass
+        if req.start_at and req.end_at and bool(req.start_at.tzinfo) == bool(req.end_at.tzinfo) and req.start_at >= req.end_at:
+            req.issues.append(Issue(code="schedule",field="end_at",message="结束时间必须晚于开始时间"))
     if not req.structure and req.objective == "traffic" and (not req.landing_url.startswith("https://") or not req.cta):
         req.issues.append(Issue(code="destination",field="landing_url",message="流量目标需要 HTTPS 落地页和 CTA"))
     from .structure import validate_structure
     req.issues.extend(validate_structure(req))
+    if req.structure:
+        for group in req.structure.groups:
+            if group.end_at and group.end_at.tzinfo and group.end_at <= now:
+                req.issues.append(Issue(code='expired',field='end_at',message=f'广告组 {group.name} 排期已经结束，不会自动平移',target_id=group.id))
     exact=[]
     for h in req.history:
         if h['classification'] in ('existing','config_change'):exact.append(h)
@@ -181,12 +190,32 @@ def evaluate(req: Requirement, history: list[dict], now=None):
         req.classification='change' if any(h['classification']=='config_change' for h in exact) else 'existing'
     else:
         req.classification='incomplete' if req.issues else 'new'
-    req.issues=list({(i.code,i.field,i.message):i for i in req.issues}.values())
+    if req.structure:
+        from .models import StructureSpec
+        states=[];candidates=[]
+        for group in req.structure.groups:
+            for ad in group.ads:
+                material=req.model_copy(update={'post_id':ad.post_id,'post_url':ad.post_url,
+                    'start_at':group.start_at,'end_at':group.end_at,'timezone':group.timezone,
+                    'structure':StructureSpec(budget_level=req.structure.budget_level,groups=[group])})
+                matches=history_candidates(material,history)
+                candidates.extend({**h,'target_id':ad.id} for h in matches)
+                exact=[h for h in matches if h['classification'] in ('existing','config_change')]
+                unknown=any(h['same_post'] and h['same_objective'] and h['classification']=='unverified' for h in matches)
+                states.append('change' if any(h['classification']=='config_change' for h in exact) else 'existing' if exact else 'unknown' if unknown else 'new')
+        req.history=candidates
+        if states and all(s in ('existing','change') for s in states):
+            req.classification='change' if 'change' in states else 'existing'
+        else:
+            if any(s in ('existing','change','unknown') for s in states):
+                req.issues.append(Issue(code='history_review',field='included',message='本计划包含已有投放或待核实素材，请按素材明确选择新增范围',target_id=req.id))
+            req.classification='incomplete' if req.issues else 'new'
+    req.issues=list({(i.code,i.field,i.message,i.target_id):i for i in req.issues}.values())
     return req
 
 
 def check_policy(req: Requirement, policy: ProjectPolicy, now=None):
-    now = now or datetime.now(timezone.utc)
+    now = now or business_now()
     failures = []
     if not policy.enabled or policy.valid_until.tzinfo is None or policy.valid_until <= now:
         failures.append("项目预授权未启用或已过期")
@@ -205,3 +234,4 @@ def check_policy(req: Requirement, policy: ProjectPolicy, now=None):
         if source.kind == "history" and field not in req.confirmed_fields:
             failures.append(f"{field} 的历史推断尚未确认")
     return failures
+

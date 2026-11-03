@@ -1,3 +1,6 @@
+from app.agent import ModelServiceError
+from model_response_fixture import row_bindings
+from model_response_fixture import model_response
 """Source transforms are checked before mapping review, with row-local errors."""
 import asyncio
 from contextlib import contextmanager
@@ -16,9 +19,9 @@ def binary(w):
 
 
 def interval_mapping(sheet,last_row=2):
-    return SheetMapping(sheet=sheet,header_row=1,first_row=2,last_row=last_row,columns={'post_id':'A','timezone':'C'},
-        bindings={'start_at':Binding(kind='row',column='B',transform='interval_start'),
-                  'end_at':Binding(kind='row',column='B',transform='interval_end')})
+    return SheetMapping(sheet=sheet,header_row=1,first_row=2,last_row=last_row,
+        bindings={**row_bindings({'post_id':'A','timezone':'C'}), **{'start_at':Binding(kind='row',column='B',transform='interval_start'),
+                  'end_at':Binding(kind='row',column='B',transform='interval_end')}})
 
 
 def test_single_iso_timestamps_need_explicit_bounded_model_correction(monkeypatch):
@@ -30,10 +33,10 @@ def test_single_iso_timestamps_need_explicit_bounded_model_correction(monkeypatc
         async def ainvoke(self,messages):
             calls.append(messages)
             bad=len(calls)==1
-            mapping=SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,columns={'post_id':'A','timezone':'D'},
-                bindings={'start_at':Binding(kind='row',column='B',transform='interval_start' if bad else 'value'),
-                          'end_at':Binding(kind='row',column='C',transform='interval_end' if bad else 'value')})
-            return MappingProposal(mappings=[mapping],explanation='explicit model proposal')
+            mapping=SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,
+                bindings={**row_bindings({'post_id':'A','timezone':'D'}), **{'start_at':Binding(kind='row',column='B',transform='interval_start' if bad else 'value'),
+                          'end_at':Binding(kind='row',column='C',transform='interval_end' if bad else 'value')}})
+            return model_response(MappingProposal(mappings=[mapping],explanation='explicit model proposal'))
     monkeypatch.setattr('app.agent.llm',lambda _:Model())
     proposal=asyncio.run(propose_mapping(inspect_workbook(data),data))
     assert len(calls)==2 and '没有非空来源支持 interval_start' in calls[1][-1][1]
@@ -50,9 +53,9 @@ def test_unsupported_transform_cannot_silently_downgrade_after_repair_budget(mon
     data=binary(w);calls=[]
     class Model:
         async def ainvoke(self,messages):
-            calls.append(1);return MappingProposal(mappings=[interval_mapping(s.title)],explanation='unsupported')
+            calls.append(1);return model_response(MappingProposal(mappings=[interval_mapping(s.title)],explanation='unsupported'))
     monkeypatch.setattr('app.agent.llm',lambda _:Model())
-    with pytest.raises(ProposalError,match='没有非空来源支持'):
+    with pytest.raises(ModelServiceError):
         asyncio.run(propose_mapping(inspect_workbook(data),data))
     assert len(calls)==2
 
@@ -81,8 +84,8 @@ def test_transform_support_must_come_from_filtered_selected_rows():
 @pytest.mark.parametrize('header',['Budget','USD / EUR',None,'#DIV/0!'])
 def test_invalid_fixed_currency_transform_is_rejected_before_review(header):
     w=Workbook();s=w.active;s.append(['Post',header]);s.append(['7712345678901234567',50])
-    mapping=SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,columns={'post_id':'A'},
-                         bindings={'currency':Binding(kind='header',cell='B1',transform='currency_code')})
+    mapping=SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,
+                         bindings={**row_bindings({'post_id':'A'}), **{'currency':Binding(kind='cell',cell='B1',transform='currency_code')}})
     with pytest.raises(ValueError,match='固定来源.*不支持 currency_code'):
         validate_mapping(mapping,read_workbook(binary(w)))
 
@@ -90,11 +93,20 @@ def test_invalid_fixed_currency_transform_is_rejected_before_review(header):
 def test_currency_transform_accepts_supported_rows_and_preserves_bad_row():
     w=Workbook();s=w.active;s.append(['Post','Currency evidence'])
     s.append(['7712345678901234567','Budget (USD)']);s.append(['7712345678901234568','unspecified'])
-    data=binary(w);mapping=SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=3,columns={'post_id':'A'},
-                                       bindings={'currency':Binding(kind='row',column='B',transform='currency_code')})
+    data=binary(w);mapping=SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=3,
+                                       bindings={**row_bindings({'post_id':'A'}), **{'currency':Binding(kind='row',column='B',transform='currency_code')}})
     rows=parse_requirements(data,'file',[mapping])
     assert rows[0].currency=='USD' and rows[1].currency=='' and len(rows)==2
     assert any(i.code=='invalid_transform' and i.field=='currency' for i in rows[1].issues)
+
+
+def test_invalid_fixed_transform_keeps_other_verified_fields_in_draft():
+    w=Workbook();s=w.active;s.append(['Post','Budget']);s.append(['7712345678901234567',50])
+    mapping=SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,
+        bindings={**row_bindings({'post_id':'A','budget':'B'}),'currency':Binding(kind='cell',cell='B1',transform='currency_code')})
+    rows=parse_requirements(binary(w),'file',[mapping])
+    assert rows[0].post_id=='7712345678901234567' and rows[0].budget==50
+    assert any(i.code=='invalid_transform' and i.field=='currency' for i in rows[0].issues)
 
 
 def template_with_changed_data():
@@ -128,7 +140,7 @@ def test_template_type_change_requests_new_proposal_and_explicit_review(monkeypa
     async def download(_):return data
     async def propose(*args,**kwargs):
         calls.append(1)
-        return MappingProposal(mappings=[SheetMapping(sheet='Sheet',header_row=1,first_row=2,last_row=2,columns={'post_id':'A','start_at':'B','timezone':'C'})],explanation='new mapping')
+        return MappingProposal(mappings=[SheetMapping(sheet='Sheet',header_row=1,first_row=2,last_row=2,bindings=row_bindings({'post_id':'A','start_at':'B','timezone':'C'}))],explanation='new mapping')
     monkeypatch.setattr(main,'transaction',transaction)
     monkeypatch.setattr(main,'project_access',lambda *args,**kwargs:{'id':'project'})
     monkeypatch.setattr('app.intake.access',lambda *args,**kwargs:(task,{'id':'project'}))
@@ -138,5 +150,6 @@ def test_template_type_change_requests_new_proposal_and_explicit_review(monkeypa
     result=asyncio.run(main.mapping_proposal('file',SimpleNamespace(user_id='user')))
     assert calls==[1] and result['template_review_required']
     assert '已确认模板无法通过' in result['explanation']
-    assert result['mappings'][0]['columns']['start_at']=='B'
+    assert result['mappings'][0]['bindings']['start_at']['column']=='B'
     assert task.analysis['mapping']['template_review_required']
+
