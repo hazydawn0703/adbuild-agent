@@ -15,7 +15,7 @@ Next.js + CopilotKit / AG-UI + FastAPI + LangGraph，使用服务器 MySQL 8.0�
 
 ## 使用
 
-登录 → 选择项目 → 导入 ExportAds → 上传需求 Excel → Agent 提议字段映射 → 人工确认映射 → 检查三层草稿及来源 → 项目预授权范围内执行。
+登录 → 选择项目 → 导入 ExportAds → 上传需求 Excel → Agent 提议字段映射 → 人工确认映射 → 检查三层草稿及来源 → 打开搭建前预览 → 勾选本次需求 → 补齐配置 → 人工确认指定版本。真实搭建当前暂停。
 
 金额、币种、预算类型、受众、素材身份和有效排期必须齐全。过期排期不自动平移；已有投放的变更只展示。重复上传按部署指纹去重。上传文件按租户/项目存储在私有目录，访问均经 API 权限检查。
 
@@ -30,3 +30,11 @@ DeepSeek 通过 OpenAI-compatible Chat Completions 和工具调用生成 Pydanti
 backend 目录运行 python -m pytest -q；ADBUILD_FIXTURE_DIR 指向样例文件所在目录即可运行原始 Excel 回归。前端执行 npm run typecheck 和 npm run build。
 
 服务器部署与服务路径见 docs/deployment.md。数据库、会话、模型和 TikTok 凭证只存服务器 /etc/adbuild-agent/runtime.env。初始管理员密码保存在用户指定的本地 .tmp/adbuild-login.txt，不会提交。
+
+## 搭建前人工确认
+
+右侧“搭建前预览与确认”展示计划/广告组/广告、预算按币种与类型汇总、排期、受众、素材和单元格来源。未选中、已有广告及已有广告变更不会进入本次新增。
+
+确认必须显式勾选核对声明，并提交服务端预览摘要与版本；后台记录确认人、时间及不可变快照。重复确认保持幂等。编辑任意配置、选择范围或项目授权变化后，原确认不再生效；历史确认快照保存在审计记录。
+
+真实执行由 EXECUTION_ENABLED 控制，默认 false；创建/编辑草稿、映射确认、Agent 修改确认和方案确认都不会自动入队或占用预算。当前服务器已停止任务消费者。未来开放执行仍需当前预览已确认、项目预授权和后台权限校验同时通过。

@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = "deepseek-flash"
     llm_base_url: str = "https://api.deepseek.com"
+    execution_enabled: bool = False
     app_origin: str = "http://localhost:3000"
     api_origin: str = "http://localhost:8000"
     tiktok_mcp_url: str = "https://business-api.tiktok.com/open_mcp/tt-ads-mcp-flat"

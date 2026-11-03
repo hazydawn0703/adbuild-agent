@@ -32,6 +32,7 @@ class Issue(Model):
 
 class Requirement(Model):
     id: str
+    included: bool = True
     account_id: str = ""
     business_no: str = ""
     name: str = ""
@@ -56,11 +57,20 @@ class Requirement(Model):
     issues: list[Issue] = Field(default_factory=list)
 
 
+class BuildApproval(Model):
+    version: int
+    digest: str
+    approved_by: str
+    approved_at: datetime
+    snapshot: dict[str, Any]
+
+
 class BuildDraft(Model):
     id: str
     project_id: str
     version: int = 1
-    status: Literal["mapping", "draft", "queued", "executing", "complete", "attention"] = "draft"
+    status: Literal["mapping", "draft", "approved", "queued", "executing", "complete", "attention"] = "draft"
+    approval: BuildApproval | None = None
     requirements: list[Requirement] = Field(default_factory=list)
     summary: dict[str, Any] = Field(default_factory=dict)
 
