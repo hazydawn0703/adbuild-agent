@@ -24,3 +24,5 @@
 以部署账号的临时 `SCHEMA_DATABASE_URL` 执行 `deploy/initialize-intake.py` 创建新表；应用账号继续只持 CRUD 权限。`install.sh` 检查新表可读和执行关闭后才切换服务，并停止禁用 Worker。
 
 运行后核对 `/config`、Worker 状态、原项目文件与草稿、执行批次及预算预占。错误发生在切换前即停止发布；不得以打开真实执行作为分析任务的恢复方法。
+
+共享 TLS 站点在主机配置阶段仅引用一次 `/etc/adbuild-agent/nginx.locations.conf`。日常发布只更新本应用的 include 文件并校验 Nginx，不改写共享站点，也不使用历史整站备份覆盖当前配置。
