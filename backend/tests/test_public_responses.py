@@ -113,7 +113,8 @@ def test_real_structure_proposal_response_hides_code_but_keeps_server_proposal(m
 
 def test_agui_state_and_answer_are_sanitized_together():
     d=draft();response={'answer':f'Private value {SECRET}','task':task(d),'draft':d}
-    snapshot=public_agent_state(response,d)
+    snapshot=public_agent_state(response,d,'request-17')
+    assert snapshot['response']['request_id']=='request-17'
     assert_private_absent(snapshot)
     assert '[私密凭证已隐藏]' in snapshot['response']['answer']
 

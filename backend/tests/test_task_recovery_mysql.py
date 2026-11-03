@@ -23,7 +23,7 @@ async def prepare_task(client,project,code):
     return task,draft,request
 
 
-def models(monkeypatch,code,failures=1):
+def models(monkeypatch,code,failures=1,error_factory=None):
     calls={'scope':0,'fields':0}
     class Scope:
         async def ainvoke(self,messages):
@@ -34,7 +34,7 @@ def models(monkeypatch,code,failures=1):
     class Fields:
         async def ainvoke(self,_):
             calls['fields']+=1
-            if calls['fields']<=failures:raise TimeoutError('injected field timeout')
+            if calls['fields']<=failures:raise error_factory() if error_factory else TimeoutError('injected field timeout')
             return ChatDecision(answer='从保存的执行位置恢复')
     monkeypatch.setattr('app.agent.llm',lambda schema:Scope() if schema is TaskScope else Fields())
     return calls
@@ -100,4 +100,41 @@ def test_failed_task_without_versioned_checkpoint_does_not_use_legacy_resume(dat
                 c.execute('update intake_tasks set data=%s where id=%s',(db.json_value(row),task['id']))
             response=await client.post(f'/projects/{database}/chat',json={'task_id':task['id'],'request_id':str(uuid4()),'expected_version':task['version'],'action':'resume'})
             assert response.status_code==409 and '重新分析' in response.text
+    asyncio.run(scenario())
+
+
+def test_sdk_service_503_retains_same_checkpoint_and_can_resume_after_provider_recovers(database,monkeypatch):
+    from openai import InternalServerError
+    private='private-upstream-body-and-key'
+    def unavailable():
+        request=httpx.Request('POST','https://model.invalid',headers={'Authorization':'Bearer '+private})
+        return InternalServerError(private,response=httpx.Response(503,request=request),body={'private':private})
+    code='recover-'+uuid4().hex[:8];calls=models(monkeypatch,code,error_factory=unavailable)
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app,raise_app_exceptions=False),base_url='http://test') as client:
+            task,draft,original=await prepare_task(client,database,code)
+            failed=await client.post(f'/projects/{database}/chat',json=original)
+            assert failed.status_code==503 and failed.json()['retryable'] is True,failed.text
+            assert private not in failed.text
+            state=(await client.get('/tasks/'+task['id'])).json()
+            assert state['task']['analysis']['error']['upstream_status']==503
+            assert state['task']['analysis']['checkpoint_request_id']==original['request_id']
+            assert state['draft']['requirements'][0]['included'] is False
+            with db.transaction() as c:
+                stored=c.execute('select data from intake_tasks where id=%s',(task['id'],)).fetchone()['data']
+                assert private not in json.dumps(stored)
+                assert stored['requests'][original['request_id']]['error']['retryable'] is True
+            request={'task_id':task['id'],'request_id':str(uuid4()),'expected_version':state['task']['version'],
+                     'expected_draft_version':state['draft']['version'],'action':'resume'}
+            response=await client.post(f'/projects/{database}/chat',json=request)
+            assert response.status_code==200,response.text
+            assert (await client.post(f'/projects/{database}/chat',json=request)).json()==response.json()
+            final=(await client.get('/tasks/'+task['id'])).json()
+            assert final['task']['analysis']['checkpoint_request_id']==original['request_id']
+            assert 'error' not in final['task']['analysis']
+            assert calls=={'scope':1,'fields':2}
+            assert not final['task']['proposal'] and final['task']['analysis']['resume_available'] is False
+            with db.transaction() as c:
+                for table in ('runs','deployments'):
+                    assert c.execute('select count(*) n from '+table+' where project_id=%s',(database,)).fetchone()['n']==0
     asyncio.run(scenario())

@@ -13,7 +13,7 @@ from .excel import inspect_workbook, parse_export, parse_requirements, rebind_ma
 from .rules import evaluate
 from .service import history_for, edit_draft, submit_approved_draft, pending_questions
 from . import storage
-from .agent import propose_mapping, conversation_graph
+from .agent import propose_mapping, conversation_graph, ModelServiceError
 import asyncio
 import os
 from urllib.parse import urlsplit
@@ -100,6 +100,12 @@ def error_detail(error):
 async def invalid(_,exc):
     from fastapi.responses import JSONResponse
     return JSONResponse(status_code=422,content={'detail':error_detail(exc)})
+
+
+@app.exception_handler(ModelServiceError)
+async def model_service_error(_,exc):
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=exc.status_code,content={'detail':exc.safe_message,**exc.public_error()})
 
 
 @app.get('/health')
@@ -504,7 +510,7 @@ async def chat(project_id:str,body:ChatBody,actor:Actor=Depends(authenticate)):
     try:
         return await asyncio.wait_for(act(project_id,body,actor),180)
     except TimeoutError:
-        raise HTTPException(504,'分析超时，已有结果已保留，请刷新任务后继续分析') from None
+        raise ModelServiceError('analysis_timeout',retryable=True) from None
 
 
 @app.post('/projects/{project_id}/agent')
@@ -528,7 +534,7 @@ async def agent_stream(project_id:str,request:Request,actor:Actor=Depends(authen
         result=await chat(project_id,body,actor)
         with transaction() as c:
             current={'data':result.get('draft')}
-        safe=public_agent_state(result,current['data'])
+        safe=public_agent_state(result,current['data'],body.request_id)
         return {'messages':[AIMessage(content=safe['response']['answer'])],**safe}
     builder=StateGraph(TransportState)
     builder.add_node('process',process);builder.add_edge(START,'process');builder.add_edge('process',END)

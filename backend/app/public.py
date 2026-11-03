@@ -21,5 +21,5 @@ def public_business(value):
     return project(original,masked)
 
 
-def public_agent_state(response,draft):
-    return public_business({'response':response,'draft':draft})
+def public_agent_state(response,draft,request_id):
+    return public_business({'response':{**response,'request_id':request_id},'draft':draft})

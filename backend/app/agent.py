@@ -4,6 +4,40 @@ from langgraph.graph import StateGraph, START, END
 from langchain_openai import ChatOpenAI
 from .models import MappingProposal, ChatDecision, TaskScope, Clarification, SourceRef
 from .settings import settings
+from openai import APIError,APIConnectionError,APITimeoutError,APIStatusError
+
+
+class ModelServiceError(RuntimeError):
+    """Public model availability facts; no provider body, request or credentials."""
+    def __init__(self,category,*,retryable,upstream_status=None):
+        self.category=category
+        self.retryable=retryable
+        self.upstream_status=upstream_status
+        self.status_code=504 if category=='analysis_timeout' else 503 if retryable or category=='configuration' else 502
+        self.code='analysis_timeout' if category=='analysis_timeout' else 'model_service_unavailable' if self.status_code==503 else 'model_service_rejected'
+        if category=='analysis_timeout':
+            self.safe_message='分析超时，输入和已完成进度已保留，请稍后恢复未完成分析。'
+        elif retryable:
+            self.safe_message='模型服务暂时不可用，输入和已完成进度已保留，请稍后继续分析。'
+        else:
+            self.safe_message='模型服务未能接受当前请求，任务已保留，请联系管理员检查模型配置后再继续。'
+        super().__init__(self.safe_message)
+
+    @classmethod
+    def from_provider(cls,error):
+        if isinstance(error,APITimeoutError):return cls('timeout',retryable=True)
+        if isinstance(error,APIConnectionError):return cls('connection',retryable=True)
+        status=getattr(error,'status_code',None)
+        if isinstance(error,APIStatusError):
+            retryable=status in (408,409,429) or status>=500
+            category='rate_limit' if status==429 else 'upstream_server' if retryable else 'configuration' if status in (401,403,404) else 'request_rejected'
+            return cls(category,retryable=retryable,upstream_status=status)
+        return cls('invalid_response',retryable=False,upstream_status=status if isinstance(status,int) else None)
+
+    def public_error(self):
+        data={'code':self.code,'category':self.category,'message':self.safe_message,'retryable':self.retryable}
+        if self.upstream_status is not None:data['upstream_status']=self.upstream_status
+        return data
 
 
 def llm(schema):
@@ -131,6 +165,10 @@ async def structured(schema,messages,validator=None):
             if validator: validator(result)
             logging.getLogger('adbuild.analysis').info('model_stage schema=%s prompt=%s duration=%.3f attempt=%d',schema.__name__,PROMPT_HASH,time.monotonic()-started,attempt+1)
             return result
+        except APIError as error:
+            # Availability failures are not malformed business proposals. Never spend
+            # the schema-repair attempt retrying an unavailable provider implicitly.
+            raise ModelServiceError.from_provider(error) from None
         except (ValidationError,OutputParserException,ProposalError) as error:
             if attempt: raise
             messages=[*messages,('system','结构校验失败，请修正字段结构，不补造业务值：'+str(error))]

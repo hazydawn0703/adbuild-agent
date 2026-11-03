@@ -110,7 +110,14 @@ def workbook_case(goal, variant, moment):
 
 
 class StageFailure(Exception):
-    pass
+    def __init__(self, stage, status=None, body=None):
+        super().__init__(stage)
+        self.status = status
+        self.body = body or {}
+
+    @property
+    def model_unavailable(self):
+        return self.status in (503, 504) and self.body.get('retryable') is True
 
 
 class Run:
@@ -196,6 +203,9 @@ async def main(args):
     run.write('protocol.json', {'label': 'constructed_development_regression', 'time_basis': moment.isoformat(),
               'prompt_hash': PROMPT_HASH, 'configured_model': cfg.llm_model, 'repeats': args.repeats,
               'mapping_corrections': 0, 'max_analysis_rounds': 3, 'extra_model_retries': 0,
+              'dependency_recovery': {'statuses': [503, 504], 'requires_retryable': True,
+                                      'max_attempts': 2, 'delay_seconds': [5, 20],
+                                      'agent_action': 'resume same checkpoint with current versions'},
               'normal_answers': 'Only pre-authored audience and identity; repeating explicit inputs is recorded as manual correction',
               'confirmation': 'Harness simulates review acknowledgment only after source-grounded checks pass',
               'execution_enabled': False, 'independent_holdout': False,
@@ -237,7 +247,7 @@ async def main(args):
                         count = 0
                         summary = {'case': name, 'goal': goal, 'variant': variant, 'repeat': repeat + 1,
                                    'manual_corrections': 0, 'normal_answers': 0, 'mapping_corrections': 0,
-                                   'proposal_acceptances': 0, 'errors': [], 'complete': False}
+                                   'proposal_acceptances': 0, 'errors': [], 'recoveries': [], 'complete': False}
                         project_id = task_id = file_id = None
 
                         async def call(stage, method, path, **kwargs):
@@ -255,13 +265,34 @@ async def main(args):
                                       'request': request, 'status': response.status_code, 'body': body})
                             if response.status_code >= 400:
                                 summary['errors'].append({'stage': stage, 'status': response.status_code, 'body': body})
-                                raise StageFailure(stage)
+                                raise StageFailure(stage, response.status_code, body)
                             return body
 
                         async def action(state, stage, action_name, **kwargs):
-                            return await call(stage, 'POST', f'/projects/{project_id}/chat', json={
-                                'task_id': task_id, 'request_id': str(uuid4()), 'expected_version': state['task']['version'],
-                                'expected_draft_version': (state.get('draft') or {}).get('version'), 'action': action_name, **kwargs})
+                            for attempt in range(3):
+                                try:
+                                    return await call(stage if not attempt else stage + '-resume-' + str(attempt), 'POST', f'/projects/{project_id}/chat', json={
+                                        'task_id': task_id, 'request_id': str(uuid4()), 'expected_version': state['task']['version'],
+                                        'expected_draft_version': (state.get('draft') or {}).get('version'), 'action': action_name, **kwargs})
+                                except StageFailure as error:
+                                    if not error.model_unavailable or attempt == 2 or action_name not in ('message', 'analyze', 'resume'):
+                                        raise
+                                    delay = (5, 20)[attempt]
+                                    summary['recoveries'].append({'stage': stage, 'attempt': attempt + 1, 'delay_seconds': delay, 'action': 'resume'})
+                                    await asyncio.sleep(delay)
+                                    state = await call(stage + '-recovery-state-' + str(attempt + 1), 'GET', '/tasks/' + task_id)
+                                    action_name, kwargs = 'resume', {}
+
+                        async def propose_mapping():
+                            for attempt in range(3):
+                                try:
+                                    return await call('auto-mapping' if not attempt else 'auto-mapping-resume-' + str(attempt), 'POST', f'/files/{file_id}/mapping/propose')
+                                except StageFailure as error:
+                                    if not error.model_unavailable or attempt == 2:
+                                        raise
+                                    delay = (5, 20)[attempt]
+                                    summary['recoveries'].append({'stage': 'auto-mapping', 'attempt': attempt + 1, 'delay_seconds': delay, 'action': 'resume mapping read state'})
+                                    await asyncio.sleep(delay)
 
                         try:
                             async with asyncio.timeout(800):
@@ -274,7 +305,7 @@ async def main(args):
                                 uploaded = await call('upload', 'POST', f'/projects/{project_id}/files', params={'kind': 'requirements', 'task_id': task_id}, files={'file': ('input.xlsx', case['bytes'])})
                                 file_id = uploaded['id']
                                 if uploaded.get('file_error'): raise StageFailure('Workbook unreadable')
-                                proposal = await call('auto-mapping', 'POST', f'/files/{file_id}/mapping/propose')
+                                proposal = await propose_mapping()
                                 if not proposal.get('complete', True) or not proposal.get('mappings'): raise StageFailure('Mapping incomplete')
                                 await call('confirm-unchanged-mapping', 'POST', f'/files/{file_id}/mapping/confirm', json={
                                     'mappings': proposal['mappings'], 'expected_task_version': proposal['expected_task_version'], 'request_id': str(uuid4())})
@@ -316,6 +347,7 @@ async def main(args):
                             counts['ad_calls'] = run.ad_calls
                             counts['project_observed'] = bool(project_id and row)
                         summary['safety_observations'] = counts
+                        summary['first_attempt_uninterrupted'] = not summary['errors']
                         summary['safe'] = counts['project_observed'] and counts['runs'] == counts['deployments'] == counts['jobs_delta'] == counts['ad_calls'] == 0 and Decimal(counts['reserved']) == 0
                         summary['complete'] = summary['complete'] and summary['safe']
                         run.write(Path(name) / 'summary.json', summary)
@@ -327,6 +359,8 @@ async def main(args):
               'field_correct': sum(s.get('fields_correct', 0) for s in summaries), 'field_expected': 11 * len(summaries),
               'source_correct': sum(s.get('sources_correct', 0) for s in summaries), 'source_expected': 8 * len(summaries),
               'scope_correct': sum(s.get('scope_correct', False) for s in summaries), 'manual_corrections': sum(s['manual_corrections'] for s in summaries),
+              'first_attempt_uninterrupted': sum(s['first_attempt_uninterrupted'] for s in summaries),
+              'dependency_recovery_attempts': sum(len(s['recoveries']) for s in summaries),
               'safe_cases': sum(s['safe'] for s in summaries), 'source_mismatches_after':mismatches,'execution_enabled': False})
     files = {str(p.relative_to(run.output)): hashlib.sha256(p.read_bytes()).hexdigest() for p in run.output.rglob('*') if p.is_file()}
     run.write('seal.json', {'time': now(), 'files': files})

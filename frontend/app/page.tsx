@@ -2,6 +2,7 @@
 import {useState,useEffect,useCallback,useMemo,useRef} from 'react';
 import {Layers3, Plus, ArrowUp, Paperclip, ChevronRight, ShieldCheck, Circle, Search, Settings2, ExternalLink, FileSpreadsheet, X, Check, LoaderCircle, PanelRightClose, Radio, LogOut} from 'lucide-react';
 import {api,origin} from '../lib/api';
+import {runTaskAgent} from '../lib/agent';
 import BuildReview from './BuildReview';
 import Clarifications from './Clarifications';
 import MappingReview from './MappingReview';
@@ -38,7 +39,14 @@ export default function Page(){
  async function action(name:string,fn:()=>Promise<void>){setBusy(name);setNotice('');try{await fn()}catch(e){setNotice(e instanceof Error?e.message:'操作失败')}finally{setBusy('')}}
  async function upload(file:File,kind:string){await action('上传文件',async()=>{const form=new FormData();form.append('file',file);const current=task||await newTask();const result=await api(`/projects/${selected}/files?kind=${kind}&task_id=${current.id}`,token,{method:'POST',body:form});await load(selected);setNotice(result.file_error?result.file_error.message:kind==='export'?'历史广告已导入。':'需求文件已上传，请确认字段映射。')})}
  async function mapping(id:string){const projectId=selected,taskId=scope.current.task;await action('识别字段',async()=>{const r=await api(`/files/${id}/mapping/propose`,token,{method:'POST'});if(scope.current.project!==projectId||scope.current.task!==taskId)return;setMappingComplete(r.complete!==false);setFileId(id);setJson(JSON.stringify({mappings:r.mappings,expected_task_version:r.expected_task_version,request_id:crypto.randomUUID()},null,2));setSource(r.explanation);if(r.reused){await api(`/files/${id}/mapping/confirm`,token,{method:'POST',body:JSON.stringify({mappings:r.mappings,expected_task_version:r.expected_task_version,request_id:crypto.randomUUID()})});await load(selected);}else setModal('mapping')})}
- async function send(confirm?:boolean){await action('Agent 正在分析',async()=>{const current=task||await newTask();const projectId=selected;const taskId=current.id;await transport.runAgent({forwardedProps:{task_id:taskId,request_id:crypto.randomUUID(),expected_version:current.version,expected_draft_version:draft?.version??null,action:confirm===undefined?'message':confirm?'accept':'reject',message:confirm===undefined?message:'',proposal_id:current.proposal?.id??null}});if(scope.current.project!==projectId||scope.current.task!==taskId)return;const r=transport.state.response as {answer:string};if(!r)throw new Error('Agent 未返回有效结果');setMessage('');await load(selected)})}
+ async function send(confirm?:boolean){await action('Agent 正在分析',async()=>{
+  const current=task||await newTask();const projectId=selected;const taskId=current.id;const submitted=message;
+  try{await runTaskAgent(transport,projectId,{task_id:taskId,request_id:crypto.randomUUID(),expected_version:current.version,expected_draft_version:draft?.version??null,action:confirm===undefined?'message':confirm?'accept':'reject',message:confirm===undefined?submitted:'',proposal_id:current.proposal?.id??null})}
+  catch(error){if(scope.current.project!==projectId||scope.current.task!==taskId)return;await load(projectId).catch(()=>{});throw error}
+  if(scope.current.project!==projectId||scope.current.task!==taskId)return;
+  if(confirm===undefined)setMessage(text=>text===submitted?'':text);
+  await load(projectId)
+ })}
  async function analyzeTask(forceNew=false){if(!task)return;const resume=!forceNew&&task.stage==='attention'&&task.analysis?.phase==='attention';await action(resume?'恢复未完成分析':'分析本批资料',async()=>{try{await api(`/projects/${selected}/chat`,token,{method:'POST',body:JSON.stringify({task_id:task.id,request_id:crypto.randomUUID(),expected_version:task.version,expected_draft_version:draft?.version??null,action:resume?'resume':'analyze'})})}finally{await load(selected)}})}
  async function answerQuestions(){if(!task)return;await action('保存回答',async()=>{await api(`/projects/${selected}/chat`,token,{method:'POST',body:JSON.stringify({task_id:task.id,request_id:crypto.randomUUID(),expected_version:task.version,expected_draft_version:draft?.version,action:'answer',answers})});setAnswers({});await load(selected)})}
 

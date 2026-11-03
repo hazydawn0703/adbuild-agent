@@ -236,6 +236,7 @@ async def act(project_id,body,actor):
             task.lease={'request_id':body.request_id,'until':(now+timedelta(seconds=210)).isoformat()}
             task.analysis.update({'checkpoint_request_id':checkpoint_request_id,'base_task_version':base_task_version,
                                   'base_draft_version':base_draft_version,'phase':'running','resume_available':False})
+            task.analysis.pop('error',None);task.analysis.pop('error_type',None)
             save(c,task)
         else: raise HTTPException(422,'不支持的动作')
         if body.action in ('accept','reject','answer'):
@@ -318,5 +319,9 @@ async def act(project_id,body,actor):
                 current.analysis.update({'request_id':body.request_id,'phase':'attention','error_type':type(error).__name__,'resume_available':True,
                                          'checkpoint_request_id':checkpoint_request_id,'base_task_version':base_task_version,'base_draft_version':base_draft_version})
                 current.requests[body.request_id]={'digest':digest,'status':'failed','error_type':type(error).__name__}
+                from .agent import ModelServiceError
+                if isinstance(error,ModelServiceError):
+                    current.analysis['error']=error.public_error()
+                    current.requests[body.request_id]['error']=error.public_error()
                 save(c,current)
         raise
