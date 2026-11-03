@@ -10,7 +10,7 @@ from .db import transaction, json_value
 from .models import SheetMapping, BuildDraft, DraftPatch, ProjectPolicy, Model, SourceRef, Requirement
 from .excel import inspect_workbook, parse_export, parse_requirements, rebind_mapping
 from .rules import evaluate
-from .service import history_for, edit_draft, submit_approved_draft
+from .service import history_for, edit_draft, submit_approved_draft, pending_questions
 from . import storage
 from .agent import propose_mapping, conversation_graph
 import asyncio
@@ -167,12 +167,13 @@ async def mapping_proposal(file_id:str,actor:Actor=Depends(authenticate)):
         project_access(c,row['project_id'],actor,write=True)
         templates=c.execute("select data from mapping_templates where project_id=%s and JSON_TYPE(data)='OBJECT'",(row['project_id'],)).fetchall()
     from .templates import reuse
-    matches=[m for t in templates if (m:=reuse(t['data'],row['inspection']))]
+    data=await storage.download(row['storage_path'])
+    matches=[m for t in templates if (m:=reuse(t['data'],row['inspection'],data))]
     unique={json.dumps([m.model_dump() for m in group],sort_keys=True):group for group in matches}
     if len(unique)==1:
         maps=next(iter(unique.values()))
         return {'mappings':[m.model_dump() for m in maps],'explanation':'已按确认过的表头语义复用列，并重新检测数据范围。','reused':True}
-    return await propose_mapping(row['inspection'])
+    return await asyncio.wait_for(propose_mapping(row['inspection'],data),180)
 
 
 def signature(inspection):
@@ -225,7 +226,7 @@ async def confirm_mapping(file_id:str,body:MappingConfirmation,actor:Actor=Depen
             c.execute("insert into drafts(id,tenant_id,project_id,version,data) values(%s,%s,%s,%s,%s)",(draft.id,project['tenant_id'],project['id'],draft.version,json_value(draft)))
         task.draft_id=draft.id;task.version+=1;task.proposal=None;refresh(task,draft);save(c,task)
         from .templates import capture
-        try: maps=capture(body.mappings,row['inspection'])
+        try: maps=capture(body.mappings,row['inspection'],data)
         except ValueError: maps=None
         c.execute("update files set mapping=%s where id=%s",(json_value([m.model_dump() for m in body.mappings]),file_id))
         if maps:
@@ -238,6 +239,15 @@ def patch_draft(draft_id:str,body:DraftPatch,actor:Actor=Depends(authenticate)):
     with transaction() as c:
         draft=edit_draft(c,draft_id,actor,body.expected_version,[e.model_dump() for e in body.edits])
         project=project_access(c,draft.project_id,actor,write=True)
+        linked=c.execute('select id from intake_tasks where draft_id=%s',(draft_id,)).fetchone()
+        if linked:
+            from .intake import access,save,refresh
+            task,_=access(c,linked['id'],actor,write=True)
+            task.version+=1;task.proposal=None;task.lease=None
+            changed={(e.requirement_id,f) for e in body.edits for f in e.values}
+            task.semantic_questions=[q for q in task.semantic_questions if not any((rid,q.field) in changed for rid in q.requirement_ids)]
+            task.messages.append({'id':str(uuid4()),'role':'user','content':'人工明确修改草稿：'+json.dumps([e.model_dump() for e in body.edits],ensure_ascii=False)})
+            refresh(task,draft);save(c,task)
         return draft
 
 
@@ -252,7 +262,7 @@ def preview_draft(draft_id:str,actor:Actor=Depends(authenticate)):
     from .preview import build_preview
     with transaction() as c:
         draft,project=draft_access(c,draft_id,actor)
-        result=build_preview(draft,history_for(c,project),project['policy_version'])
+        result=build_preview(draft,history_for(c,project),project['policy_version'],pending_questions=pending_questions(c,draft.id))
         result['confirmation_history']=[r['data'] for r in c.execute("select data from audit where project_id=%s and event='build_confirmed' and JSON_UNQUOTE(JSON_EXTRACT(data,'$.draft_id'))=%s order by id desc",(project['id'],draft_id))]
     return result
 
@@ -266,7 +276,7 @@ def confirm_build(draft_id:str,body:BuildConfirmation,actor:Actor=Depends(authen
     from .preview import build_preview,approve_preview
     with transaction() as c:
         draft,project=draft_access(c,draft_id,actor,write=True)
-        preview=build_preview(draft,history_for(c,project),project['policy_version'])
+        preview=build_preview(draft,history_for(c,project),project['policy_version'],pending_questions=pending_questions(c,draft.id))
         previous=draft.approval
         approve_preview(draft,preview,actor.user_id,body.expected_version,body.digest,body.acknowledged)
         c.execute('update drafts set data=%s where id=%s',(json_value(draft),draft_id))
@@ -279,7 +289,7 @@ def execute_build(draft_id:str,body:BuildConfirmation,actor:Actor=Depends(authen
     from .preview import build_preview
     with transaction() as c:
         draft,project=draft_access(c,draft_id,actor,write=True)
-        preview=build_preview(draft,history_for(c,project),project['policy_version'])
+        preview=build_preview(draft,history_for(c,project),project['policy_version'],pending_questions=pending_questions(c,draft.id))
         if draft.version!=body.expected_version or preview['digest']!=body.digest or not body.acknowledged:
             raise HTTPException(409,'预览已变化，请重新确认')
         run_id=submit_approved_draft(c,draft,project)

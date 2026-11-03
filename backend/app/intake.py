@@ -1,5 +1,6 @@
 """Task-scoped interaction state. Draft values remain in drafts, never in checkpoints."""
 import json
+import asyncio
 from hashlib import sha256
 from uuid import uuid4
 from datetime import datetime, timezone, timedelta
@@ -9,7 +10,8 @@ from .auth import Actor, authenticate, project_access
 from .db import transaction, json_value
 from .models import (Model, IntakeTask, ProjectContext, BuildDraft, FieldEvidence, EvidenceRef,
                      Clarification, ChangeProposal, ChatDecision, ChatEdit)
-from .service import edit_draft, EDITABLE
+from .service import edit_draft, EDITABLE, history_for
+from .rules import evaluate
 
 router=APIRouter()
 
@@ -33,11 +35,13 @@ def refresh(task,draft):
             source=req.sources.get(field)
             value=getattr(req,field)
             state='missing' if value in (None,'') else 'inferred' if source and source.kind=='history' and field not in req.confirmed_fields else 'explicit'
+            conflicts=[q for q in task.semantic_questions if q.field==field and req.id in q.requirement_ids]
+            if conflicts and state!='missing': state='conflict'
             refs=[]
             if source:
                 kind={'confirmed':'message','template':'template','history':'history','excel':'excel'}[source.kind]
                 refs=[EvidenceRef(kind=kind,ref_id=f'{source.file_id}:{source.sheet}:{source.cell}',detail=source.model_dump())]
-            evidence.append(FieldEvidence(requirement_id=req.id,field=field,state=state,sources=refs))
+            evidence.append(FieldEvidence(requirement_id=req.id,field=field,state=state,sources=refs,reason=conflicts[0].question if conflicts else ''))
         if req.included and req.classification not in ('existing','change','ignored'):
             for issue in req.issues:
                 if issue.blocking:
@@ -45,6 +49,7 @@ def refresh(task,draft):
     task.evidence=evidence
     task.questions=[Clarification(id=sha256(f'{draft.version}:{f}:{code}'.encode()).hexdigest()[:20],field=f,
         requirement_ids=list(dict.fromkeys(v['ids'])),question=v['message']) for (f,code),v in grouped.items()]
+    task.questions.extend(task.semantic_questions)
     task.stage='clarifying' if task.questions else 'preview'
 
 
@@ -79,7 +84,9 @@ def get_task(task_id:str,actor:Actor=Depends(authenticate)):
         draft=None;preview=None
         if task.draft_id:
             draft=BuildDraft.model_validate(c.execute('select data from drafts where id=%s',(task.draft_id,)).fetchone()['data'])
-            preview=build_preview(draft,history_for(c,p),p['policy_version'])
+            history=history_for(c,p)
+            draft.requirements=[evaluate(r,history) for r in draft.requirements]
+            preview=build_preview(draft,history,p['policy_version'],pending_questions=[q.model_dump() for q in task.semantic_questions])
             refresh(task,draft)
         return {'task':task.model_dump(mode='json',exclude={'requests','lease'}),'draft':draft,'preview':preview}
 
@@ -127,13 +134,16 @@ async def act(project_id,body,actor):
         previous=task.requests.get(body.request_id)
         if previous:
             if previous['digest']!=digest: raise HTTPException(409,'请求 ID 已用于不同内容')
-            return previous['result']
+            if 'result' in previous: return previous['result']
         if task.version!=body.expected_version: raise HTTPException(409,'任务已变化，请刷新')
         if task.lease and datetime.fromisoformat(task.lease['until'])>now: raise HTTPException(409,'任务正在分析')
         draft=None
         if task.draft_id:
             draft=BuildDraft.model_validate(c.execute('select data from drafts where id=%s',(task.draft_id,)).fetchone()['data'])
             if draft.version!=body.expected_draft_version: raise HTTPException(409,'草稿已变化，请刷新')
+            history=history_for(c,p)
+            draft.requirements=[evaluate(r,history) for r in draft.requirements]
+            refresh(task,draft)
         if body.action in ('accept','reject'):
             proposal=task.proposal
             if not proposal or proposal.id!=body.proposal_id or proposal.status!='pending' or not draft or proposal.draft_version!=draft.version:
@@ -151,9 +161,11 @@ async def act(project_id,body,actor):
             if not edits: raise HTTPException(422,'请填写答案')
             draft=edit_draft(c,draft.id,actor,draft.version,edits)
             task.proposal=None
+            task.semantic_questions=[q for q in task.semantic_questions if q.id not in body.answers]
         elif body.action in ('message','analyze','resume'):
-            if body.message:
-                task.messages.append({'id':str(uuid4()),'role':'user','content':body.message,'created_at':now.isoformat()})
+            if body.message and not any(m.get('request_id')==body.request_id for m in task.messages):
+                task.messages.append({'id':str(uuid4()),'request_id':body.request_id,'role':'user','content':body.message,'created_at':now.isoformat()})
+            task.requests[body.request_id]={'digest':digest,'status':'processing'}
             task.lease={'request_id':body.request_id,'until':(now+timedelta(seconds=210)).isoformat()}
             save(c,task)
         else: raise HTTPException(422,'不支持的动作')
@@ -163,7 +175,18 @@ async def act(project_id,body,actor):
             task.requests[body.request_id]={'digest':digest,'result':result};save(c,task)
             return result
     try:
-        decision=await structured(ChatDecision,[('system',COMMON+INTENT+HISTORY+CLARIFY),('user',json.dumps({'messages':task.messages[-20:],'draft':draft.model_dump(mode='json') if draft else None,'context':task.context.model_dump(mode='json')},ensure_ascii=False))])
+        from langgraph.checkpoint.mysql.aio import AIOMySQLSaver
+        from .agent import conversation_graph
+        from .settings import settings
+        async with AIOMySQLSaver.from_conn_string(settings().database_url.replace('mysql+pymysql://','mysql://')) as saver:
+            graph=conversation_graph(saver)
+            config={'configurable':{'thread_id':f"{p['tenant_id']}:{task.id}:{body.request_id}"}}
+            checkpoint=await graph.aget_state(config)
+            if checkpoint.values.get('decision') and not checkpoint.next:
+                output=checkpoint.values
+            else:
+                output=await graph.ainvoke({'messages':task.messages,'draft':draft.model_dump(mode='json') if draft else None,'context':task.context.model_dump(mode='json')},config)
+            decision=ChatDecision.model_validate(output['decision'])
         if decision.edits and not draft: raise ValueError('尚无草稿，不能修改字段')
         if draft:
             ids={r.id for r in draft.requirements}
@@ -175,6 +198,11 @@ async def act(project_id,body,actor):
                 version=c.execute('select version from drafts where id=%s for update',(draft.id,)).fetchone()['version']
                 if version!=draft.version: raise HTTPException(409,'分析期间草稿已变化')
             current.lease=None
+            for question in decision.questions:
+                if question.field not in EDITABLE or not draft or not set(question.requirement_ids)<={r.id for r in draft.requirements}:
+                    raise ValueError('澄清包含无效字段或范围')
+                question.id=str(uuid4())
+            current.semantic_questions=decision.questions
             current.messages.append({'id':str(uuid4()),'role':'assistant','content':decision.answer,'created_at':datetime.now(timezone.utc).isoformat()})
             if decision.edits:
                 current.proposal=ChangeProposal(id=str(uuid4()),draft_version=draft.version,edits=decision.edits,reason=decision.answer)
@@ -183,7 +211,7 @@ async def act(project_id,body,actor):
             result={'answer':decision.answer,'project_id':project_id,'task_id':current.id,'task':current.model_dump(mode='json',exclude={'requests'}),'draft':draft.model_dump(mode='json') if draft else None}
             current.requests[body.request_id]={'digest':digest,'result':result};save(c,current)
             return result
-    except Exception:
+    except (Exception,asyncio.CancelledError):
         with transaction() as c:
             current,_=access(c,task.id,actor,write=True)
             if current.lease and current.lease['request_id']==body.request_id:

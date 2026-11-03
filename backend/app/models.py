@@ -106,6 +106,7 @@ class MappingProposal(Model):
     mappings: list[SheetMapping]
     explanation: str
     regions: list['RegionProposal'] = Field(default_factory=list)
+    requested_ranges: list['RangeRequest'] = Field(default_factory=list)
 
 
 class DraftPatch(Model):
@@ -115,18 +116,25 @@ class DraftPatch(Model):
 
 class ChatEdit(Model):
     requirement_id: str
-    values: dict[str, Any]
+    values: dict[InputField | Literal['included'], Any]
 
 
 class ChatDecision(Model):
     answer: str
     edits: list[ChatEdit] = Field(default_factory=list)
+    questions: list['Clarification'] = Field(default_factory=list)
 
 
 class RegionProposal(Model):
     sheet: str
     range: str
     role: Literal['requirements','history','instructions','account','statistics','unknown']
+    reason: str
+
+
+class RangeRequest(Model):
+    sheet: str
+    range: str
     reason: str
 
 
@@ -146,7 +154,7 @@ class FieldEvidence(Model):
 
 class Clarification(Model):
     id: str
-    field: str
+    field: InputField | Literal['included']
     requirement_ids: list[str]
     question: str
     answer_type: Literal['text','choice','datetime','decimal'] = 'text'
@@ -188,6 +196,7 @@ class IntakeTask(Model):
     messages: list[dict[str, Any]] = Field(default_factory=list)
     evidence: list[FieldEvidence] = Field(default_factory=list)
     questions: list[Clarification] = Field(default_factory=list)
+    semantic_questions: list[Clarification] = Field(default_factory=list)
     proposal: ChangeProposal | None = None
     context: ProjectContext = Field(default_factory=ProjectContext)
     requests: dict[str, dict[str, Any]] = Field(default_factory=dict)
@@ -197,3 +206,4 @@ class IntakeTask(Model):
 MappingProposal.model_rebuild()
 
 DraftPatch.model_rebuild()
+ChatDecision.model_rebuild()
