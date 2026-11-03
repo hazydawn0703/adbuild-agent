@@ -4,7 +4,7 @@ from langchain_core.messages import AIMessage
 
 def model_response(parsed):
     if hasattr(parsed,'model_dump'):
-        parsed=parsed.model_dump(mode='json',exclude_defaults=True)
+        parsed=parsed.model_dump(mode='json',exclude_defaults=True,exclude_computed_fields=True)
     return {'raw':AIMessage(content=''), 'parsed':parsed, 'parsing_error':None}
 
 

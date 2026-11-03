@@ -41,7 +41,7 @@ def match_history_reference(ref,field,value,history,tz=''):
 def _budget_values(text):
     found=[]
     for clause in re.split(r'[，,；;\n]',text):
-        anchor=re.search(r'预算|\bbudget\b',clause,re.I)
+        anchor=re.search(r'预算|总额|合计(?:预算|金额)|\bbudget\b',clause,re.I)
         if not anchor:continue
         tail=clause[anchor.end():]
         assignment=list(re.finditer(r'改为|改成|设为|设置为|调至|调到|调整为|调整到|统一为|降到|升到|\bto\b|[:：=]',tail,re.I))
@@ -49,6 +49,24 @@ def _budget_values(text):
         amount=re.search(r'(?<![0-9])([0-9]+(?:\.[0-9]+)?)(?![0-9])',tail[:35])
         if amount:found.append(Decimal(amount[1]))
     return found
+
+
+def allocation_message(state,weights):
+    from fractions import Fraction
+    if not weights or any(w is None or not w.is_finite() or w<=0 for w in weights):return None
+    expected=[Fraction(w)/sum(Fraction(v) for v in weights) for w in weights]
+    for message in reversed(state.get('messages',[])):
+        text=str(message.get('content',''))
+        if message.get('role')!='user' or not re.search(r'分配|占比|比例|按表顺序|allocation',text,re.I):continue
+        vectors=[re.split(r'\s*[:：]\s*',v) for v in re.findall(r'(?<![\d:：])\d+(?:\.\d+)?(?:\s*[:：]\s*\d+(?:\.\d+)?)+(?![\d:：])',text)]
+        percentages=re.findall(r'(\d+(?:\.\d+)?)\s*%',text)
+        if percentages:vectors.append(percentages)
+        for vector in vectors:
+            values=[Fraction(v) for v in vector]
+            if len(values)==len(expected) and all(v>0 for v in values) and [v/sum(values) for v in values]==expected:return message
+        # A newer allocation instruction cannot be replaced by an older one.
+        return None
+    return None
 
 
 def message_supports(field,value,text,tz=''):
@@ -159,6 +177,15 @@ def validate_proposal_evidence(state,decision):
                 structure=StructureSpec.model_validate(value)
                 existing=row.get('structure') or {}
                 if structure.model_dump(mode='json')==existing:continue
+                weighted=[g for g in structure.groups if g.budget and g.budget.allocation_ratio is not None]
+                ratio_message=None
+                if weighted:
+                    if len(weighted)!=len(structure.groups):raise ValueError('预算分配权重必须覆盖全部广告组')
+                    prior_order=[g['id'] for g in existing.get('groups',[])]
+                    by_id={g.id:g for g in weighted}
+                    if set(prior_order)!=set(by_id):raise ValueError('比例分配需要先核实全部广告组身份')
+                    ratio_message=allocation_message(state,[by_id[key].budget.allocation_ratio for key in prior_order])
+                    if ratio_message is None:raise ValueError('广告组预算比例缺少明确用户依据')
                 for group in structure.groups:
                     old=next((g for g in existing.get('groups',[]) if g['id']==group.id),{})
                     child={**row,**{key:old[key] for key in ('audience','language') if old.get(key) not in (None,'')},'sources':{**row.get('sources',{}),**old.get('sources',{})}}
@@ -168,10 +195,8 @@ def validate_proposal_evidence(state,decision):
                                 child[target]=(old.get('budget') or {}).get({'budget':'amount','budget_mode':'mode','currency':'currency'}[target])
                                 group.sources[target]=supported_source(state,child,target,new_value,group.sources.get(target))
                         if group.budget.allocation_ratio is not None:
-                            ratio=group.budget.allocation_ratio
-                            if not any(re.search(r'(?<![0-9])'+re.escape(str(ratio*100).rstrip('0').rstrip('.') if '.' in str(ratio*100) else str(ratio*100))+r'\s*%',str(m.get('content',''))) for m in state.get('messages',[]) if m.get('role')=='user'):
-                                raise ValueError('广告组预算比例缺少明确用户依据')
-                    for target in ('audience','language'):
+                            group.sources['allocation_ratio']=SourceRef(kind='confirmed',file_id='',sheet='',cell='',raw_value=str(group.budget.allocation_ratio),message_id=ratio_message['id'])
+                    for target in ('audience','language','start_at','end_at','timezone'):
                         new_value=getattr(group,target)
                         if new_value not in (None,''):group.sources[target]=supported_source(state,child,target,new_value,group.sources.get(target))
                     for ad in group.ads:
@@ -184,6 +209,20 @@ def validate_proposal_evidence(state,decision):
                             if not any(ad.authorization_code in str(m.get('content','')) for m in state.get('messages',[]) if m.get('role')=='user'):
                                 raise ValueError('素材授权码缺少用户提供的依据')
                 edit.values['structure']=structure.model_dump(mode='json')
+
+
+def validate_candidate_structure(state,values,sources,structure):
+    from .models import Requirement,ChatDecision,ChatEdit
+    if structure is None:return None
+    text='\n'.join(str(m.get('content','')) for m in state.get('messages',[]) if m.get('role')=='user')
+    for group in structure.groups:
+        explicit_name=bool(group.name and message_supports('name',group.name,text))
+        explicit_single=len(structure.groups)==1 and bool(re.search(r'(?:一个|1\s*个|单个)\s*广告组',text))
+        if not explicit_name and not explicit_single:raise ValueError('新增广告组的身份或数量缺少用户依据')
+    row=Requirement(id='candidate',**values,sources=sources)
+    decision=ChatDecision(answer='',edits=[ChatEdit(requirement_id=row.id,values={'structure':structure.model_dump(mode='json')})])
+    validate_proposal_evidence({**state,'draft':{'requirements':[row.model_dump(mode='json')]}},decision)
+    return structure.model_validate(decision.edits[0].values['structure'])
 
 
 def verified_history_file(conn,project_id,ref,field,value,tz=''):

@@ -33,9 +33,13 @@ def build_preview(draft: BuildDraft, history: list[dict], policy_version: int, n
                 issues.append({'requirement_id':req.id,'code':'account_binding','field':'account_id','message':'需求账户与本项目绑定账户不一致，请核对来源或切换对应项目','blocking':True})
             # Multiple groups in one requirement are intentional; separate duplicate
             # requirements cannot evade checking by changing group names or budgets.
-            identities=sorted({(a['material_kind'],a['post_id']) for g in tree['adgroups'] for a in g['ads']})
+            def instant(value):
+                if not value:return ''
+                dt=datetime.fromisoformat(value.replace('Z','+00:00'))
+                return dt.astimezone(timezone.utc).isoformat() if dt.tzinfo else value
+            identities=sorted({(a['material_kind'],a['post_id'],instant(g['start_at']),instant(g['end_at'])) for g in tree['adgroups'] for a in g['ads']})
             private_codes=sorted({sha256(a.authorization_code.encode()).hexdigest() for g in req.structure.groups for a in g.ads if a.kind=='authorization_code'}) if req.structure else []
-            key=sha256(json.dumps([req.account_id,req.objective,str(req.start_at),str(req.end_at),identities,private_codes],sort_keys=True).encode()).hexdigest()
+            key=sha256(json.dumps([req.account_id,req.objective,identities,private_codes],sort_keys=True).encode()).hexdigest()
             if key in seen:
                 issues.append({'requirement_id':req.id,'code':'duplicate','field':'included','message':'所选需求中存在相同账户、帖子、目标及排期，请只保留一条','blocking':True})
             seen.add(key)
@@ -76,3 +80,4 @@ def approve_preview(draft,preview,actor_id,expected_version,digest,acknowledged)
                                 approved_at=datetime.now(timezone.utc),snapshot=snapshot)
     draft.status='approved'
     return draft
+

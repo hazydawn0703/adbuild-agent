@@ -24,6 +24,7 @@ def redact_private(value):
             result={}
             for key,val in item.items():
                 if sensitive.fullmatch(key):
+                    if key=='authorization_code' and item.get('kind')=='post':continue
                     result['authorization_present' if key=='authorization_code' else key+'_present']=bool(val)
                 else: result[key]=sanitize(val)
             return result
@@ -106,6 +107,8 @@ def select_requirements(requirements, scope, messages):
             for group in req.structure.groups:
                 group.ads=[ad for ad in group.ads if (not included_posts or ad.post_id in included_posts) and ad.post_id not in excluded_posts]
             req.structure.groups=[g for g in req.structure.groups if g.ads]
+            active={req.id,*[g.id for g in req.structure.groups],*[ad.id for g in req.structure.groups for ad in g.ads]}
+            req.issues=[issue for issue in req.issues if not issue.target_id or issue.target_id in active]
             if req.structure.budget_level=='adgroup' and req.sources.get('budget') and req.sources['budget'].kind=='calculated' and all(g.budget and g.budget.amount is not None for g in req.structure.groups):
                 from decimal import Decimal
                 req.budget=sum((g.budget.amount for g in req.structure.groups),Decimal(0))

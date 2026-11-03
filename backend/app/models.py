@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal, Annotated
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, computed_field
 
 
 class Model(BaseModel):
@@ -173,6 +173,12 @@ class MappingProposal(Model):
     regions: list['RegionProposal'] = Field(default_factory=list)
     requested_ranges: list['RangeRequest'] = Field(default_factory=list)
 
+    @computed_field
+    @property
+    def status(self) -> Literal['ready','needs_input','incomplete']:
+        if not self.complete or self.pending_ranges or self.requested_ranges:return 'incomplete'
+        return 'ready' if self.mappings else 'needs_input'
+
 
 class DraftPatch(Model):
     expected_version: int
@@ -204,6 +210,7 @@ class TaskScope(Model):
 class DemandCandidate(Model):
     values: dict[InputField, Any]
     sources: dict[str, SourceRef] = Field(default_factory=dict)
+    structure: StructureSpec | None = None
 
 
 class RequirementExpansion(Model):
@@ -256,7 +263,7 @@ class Clarification(Model):
     answer_type: Literal['text','choice','datetime','decimal'] = 'text'
     options: list[str] = Field(default_factory=list)
     blocking: bool = True
-    reason_code: str = 'semantic_review'
+    reason_code: Literal['semantic_review','missing','conflict','scope','unsupported','platform_check'] = Field(default='semantic_review',description='平台账户/受众/Spark权限核实属于platform_check，仅用于执行前核验，不阻断草稿预览；不能把授权码是否存在当作帖子权限结论。')
     evidence_version: int = 0
     target_ids: list[str] = Field(default_factory=list)
 

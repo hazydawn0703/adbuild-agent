@@ -20,9 +20,10 @@ def assemble(rows):
     for key, entries in campaigns.items():
         req = entries[0][0].model_copy(deep=True)
         req.id = identity('campaign', key)
-        req.issues = [issue for row, _, _ in entries for issue in row.issues]
+        req.issues = []
+        conflict_target=req.id
         def conflict(field, message):
-            req.issues.append(Issue(code='invalid_structure', field=field, message=message))
+            req.issues.append(Issue(code='invalid_structure', field='structure' if field=='budget_level' else field, message=message,target_id=conflict_target))
         def unique(field, values):
             found = {v for v in values if v not in (None, '')}
             if len(found) > 1:
@@ -43,6 +44,7 @@ def assemble(rows):
         for group_key, members in grouped.items():
             first = members[0][0]
             group_id = identity(req.id, group_key)
+            conflict_target=group_id
             attributes = {f: unique(f, [getattr(row, f) for row, _, _ in members])
                           for f in ('audience', 'language', 'start_at', 'end_at', 'timezone')}
             attributes['timezone'] = attributes['timezone'] or ''
@@ -51,19 +53,24 @@ def assemble(rows):
             seen = {}
             for row, entity, refs in members:
                 material_key = entity.get('record_key') or row.post_id or row.id
+                material_id=identity(group_id,material_key)
+                for issue in row.issues:
+                    target=material_id if issue.field in ('post_id','post_url','identity_id','cta','landing_url') else group_id if issue.field in ('audience','language','start_at','end_at','timezone') or issue.field=='budget' and level=='adgroup' else req.id
+                    req.issues.append(issue.model_copy(update={'target_id':target}))
                 values = {f: getattr(row, f) for f in ('post_id', 'post_url', 'identity_id', 'cta', 'landing_url')}
                 if material_key in seen:
                     if seen[material_key] != values:
                         conflict('structure', '同一素材标识包含冲突配置')
                     continue
                 seen[material_key] = values
-                ads.append(MaterialSpec(id=identity(group_id, material_key), **values,
+                ads.append(MaterialSpec(id=material_id, **values,
                     sources={f: row.sources[f] for f in values if f in row.sources}))
             group_sources={**first.sources, **members[0][2]}
             if 'adgroup_budget' in group_sources:group_sources['budget']=group_sources['adgroup_budget']
             groups.append(GroupSpec(id=group_id, name=str(group_key), **attributes,
                 budget=BudgetSpec(amount=amount, currency=req.currency, mode=req.budget_mode) if level == 'adgroup' else None,
                 ads=ads, sources=group_sources))
+        conflict_target=req.id
         total = unique('budget', [e.get('campaign_budget') for _, e, _ in entries])
         if level == 'adgroup':
             amounts = [g.budget.amount for g in groups]

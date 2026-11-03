@@ -245,7 +245,7 @@ async def mapping_proposal(file_id:str,actor:Actor=Depends(authenticate)):
     unique={json.dumps([m.model_dump() for m in group],sort_keys=True):group for group in matches}
     if len(unique)==1:
         maps=next(iter(unique.values()))
-        return {'mappings':[m.model_dump() for m in maps],'explanation':'已按确认过的表头语义复用列，并重新检测数据范围。','reused':True,'expected_task_version':task_version}
+        return {'mappings':[m.model_dump() for m in maps],'explanation':'已按确认过的表头语义复用列，并重新检测数据范围。','status':'ready','complete':True,'reused':True,'expected_task_version':task_version}
     template_review_required=bool(templates)
     from datetime import datetime,timezone,timedelta
     from .intake import save

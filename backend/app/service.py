@@ -241,7 +241,10 @@ def apply_additions(conn,draft,project,actor,additions,message_id,task):
             values['account_id']=normalize_value('account_id',project['account_id'])
             sources['account_id']=SourceRef(file_id='',sheet='',cell='',raw_value=project['account_id'],kind='project')
         for ref in sources.values(): ref.accepted_by=actor.user_id;ref.accepted_at=datetime.now(timezone.utc)
-        added.append(Requirement(id=str(uuid4()),**values,sources=sources,confirmed_fields=list(sources)))
+        from .provenance import validate_candidate_structure
+        try:structure=validate_candidate_structure(state,values,sources,candidate.structure)
+        except ValueError as error:raise HTTPException(422,str(error)) from None
+        added.append(Requirement(id=str(uuid4()),**values,sources=sources,structure=structure,confirmed_fields=list(sources)))
     if not added: raise HTTPException(422,'没有可采纳的新需求')
     current=list(draft.requirements) if draft else []
     seen={fingerprint(r) for r in current}

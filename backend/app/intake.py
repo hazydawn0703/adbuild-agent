@@ -44,6 +44,7 @@ def reconcile_questions(task,draft):
     unresolved=[]
     for question in task.semantic_questions:
         if question.id in task.answers:continue
+        if question.reason_code=='platform_check':continue
         if draft is not None and question.scope!='task':
             selected=[r for r in draft.requirements if r.included and r.id in question.requirement_ids]
             if not selected:continue

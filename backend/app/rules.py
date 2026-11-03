@@ -145,27 +145,28 @@ def evaluate(req: Requirement, history: list[dict], now=None):
             req.issues.append(Issue(code="missing",field=field,message=f"缺少 {field}"))
     if req.budget is not None and (not req.budget.is_finite() or req.budget <= 0):
         req.issues.append(Issue(code="budget",field="budget",message="预算必须大于零"))
-    for field in ("start_at", "end_at"):
-        dt = getattr(req,field)
-        if dt and dt.tzinfo is None:
-            req.issues.append(Issue(code="timezone",field=field,message="排期缺少有效时区"))
-    if req.end_at and req.end_at.tzinfo and req.end_at <= now:
-        req.issues.append(Issue(code="expired",field="end_at",message="排期已经结束，不会自动平移"))
-    elif req.end_at is None and req.timezone and any(i.code=='invalid_date_precision' and i.field=='end_at' for i in req.issues):
-        source=req.sources.get('end_at')
-        if source:
-            try:
-                # A date-only Excel serial does not authorize a midnight schedule.
-                # Its entire calendar day can nevertheless be proved past in an
-                # explicit timezone without choosing any missing start/end time.
-                day=re.fullmatch(r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})',source.raw_value)
-                last_day=date(*(int(v) for v in day.groups())) if day else datetime.fromisoformat(source.raw_value).date()
-                if last_day<now.astimezone(zone_value(req.timezone)).date():
-                    req.issues.append(Issue(code='expired',field='end_at',message=f'原始结束日期 {last_day.isoformat()} 在 {req.timezone} 下已经过去；具体结束时刻仍缺失，不会自动补时或平移'))
-            except (ValueError,KeyError,TypeError):
-                pass
-    if req.start_at and req.end_at and bool(req.start_at.tzinfo) == bool(req.end_at.tzinfo) and req.start_at >= req.end_at:
-        req.issues.append(Issue(code="schedule",field="end_at",message="结束时间必须晚于开始时间"))
+    if not req.structure:
+        for field in ("start_at", "end_at"):
+            dt = getattr(req,field)
+            if dt and dt.tzinfo is None:
+                req.issues.append(Issue(code="timezone",field=field,message="排期缺少有效时区"))
+        if req.end_at and req.end_at.tzinfo and req.end_at <= now:
+            req.issues.append(Issue(code="expired",field="end_at",message="排期已经结束，不会自动平移"))
+        elif req.end_at is None and req.timezone and any(i.code=='invalid_date_precision' and i.field=='end_at' for i in req.issues):
+            source=req.sources.get('end_at')
+            if source:
+                try:
+                    # A date-only Excel serial does not authorize a midnight schedule.
+                    # Its entire calendar day can nevertheless be proved past in an
+                    # explicit timezone without choosing any missing start/end time.
+                    day=re.fullmatch(r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})',source.raw_value)
+                    last_day=date(*(int(v) for v in day.groups())) if day else datetime.fromisoformat(source.raw_value).date()
+                    if last_day<now.astimezone(zone_value(req.timezone)).date():
+                        req.issues.append(Issue(code='expired',field='end_at',message=f'原始结束日期 {last_day.isoformat()} 在 {req.timezone} 下已经过去；具体结束时刻仍缺失，不会自动补时或平移'))
+                except (ValueError,KeyError,TypeError):
+                    pass
+        if req.start_at and req.end_at and bool(req.start_at.tzinfo) == bool(req.end_at.tzinfo) and req.start_at >= req.end_at:
+            req.issues.append(Issue(code="schedule",field="end_at",message="结束时间必须晚于开始时间"))
     if not req.structure and req.objective == "traffic" and (not req.landing_url.startswith("https://") or not req.cta):
         req.issues.append(Issue(code="destination",field="landing_url",message="流量目标需要 HTTPS 落地页和 CTA"))
     from .structure import validate_structure
@@ -173,7 +174,7 @@ def evaluate(req: Requirement, history: list[dict], now=None):
     if req.structure:
         for group in req.structure.groups:
             if group.end_at and group.end_at.tzinfo and group.end_at <= now:
-                req.issues.append(Issue(code='expired',field='end_at',message=f'广告组 {group.name} 排期已经结束，不会自动平移'))
+                req.issues.append(Issue(code='expired',field='end_at',message=f'广告组 {group.name} 排期已经结束，不会自动平移',target_id=group.id))
     exact=[]
     for h in req.history:
         if h['classification'] in ('existing','config_change'):exact.append(h)

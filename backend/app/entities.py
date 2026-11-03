@@ -51,5 +51,6 @@ def edit_entity(req,target_id,patch,message_id,actor_id,sources=None):
     elif node.post_url:
         linked=post_id_from_url(node.post_url)
         if not linked or node.post_id and linked!=node.post_id:raise ValueError('素材帖子 ID 与链接不一致')
+    req.issues=[issue for issue in req.issues if not (issue.target_id==target_id and issue.field in patch)]
     return Requirement.model_validate(req.model_dump())
 

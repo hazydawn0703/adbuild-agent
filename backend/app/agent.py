@@ -37,7 +37,7 @@ class ModelServiceError(RuntimeError):
         return cls('invalid_response',retryable=False,upstream_status=status if isinstance(status,int) else None)
 
     def public_error(self):
-        data={'code':self.code,'category':self.category,'message':self.safe_message,'retryable':self.retryable}
+        data={'status':'failed','code':self.code,'category':self.category,'message':self.safe_message,'retryable':self.retryable}
         if self.upstream_status is not None:data['upstream_status']=self.upstream_status
         return data
 
@@ -354,6 +354,10 @@ def validate_decision(state,decision):
                 addition.sources[field]=supported_source(state,values,field,normalized,addition.sources.get(field))
                 addition.values[field]=normalized
         except ValueError as error:raise ProposalError('新增候选证据无效：'+str(error)) from None
+        if addition.structure:
+            from .provenance import validate_candidate_structure
+            try:addition.structure=validate_candidate_structure(state,addition.values,addition.sources,addition.structure)
+            except ValueError as error:raise ProposalError(str(error)) from None
     for edit in decision.edits:
         if edit.requirement_id not in ids or set(edit.values)-EDITABLE:
             raise ProposalError('提案包含未知需求或不允许的字段')
