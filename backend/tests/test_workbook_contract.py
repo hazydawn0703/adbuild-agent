@@ -142,3 +142,16 @@ def test_export_preserves_budget_levels_without_collapsing_them():
     row=parse_export(binary(w))[0]
     assert row['campaign_budget']=='100' and row['adgroup_budget']=='40'
     assert row['campaign_budget_mode']=='lifetime' and row['adgroup_budget_mode']=='daily'
+
+
+def test_one_row_can_map_to_independent_goals_without_shared_requirement_ids():
+    w=Workbook();s=w.active;s.append(['Post','Followers','Video views']);s.append(['https://www.tiktok.com/@x/video/7712345678901234567',50,100])
+    maps=[SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,columns={'post_url':'A','budget':col},bindings={'objective':Binding(kind='header',cell=col+'1')}) for col in ('B','C')]
+    rows=parse_requirements(binary(w),'file',maps)
+    assert len(rows)==2 and len({r.id for r in rows})==2
+    assert {(r.objective,str(r.budget)) for r in rows}=={('followers','50'),('video_views','100')}
+
+
+def test_budget_separator_ambiguity_is_not_silently_changed():
+    with pytest.raises(ValueError,match='分隔符'):normalize_value('budget','1,00')
+    assert str(normalize_value('budget','1,000.25'))=='1000.25'

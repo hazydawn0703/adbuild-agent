@@ -34,7 +34,7 @@ test('task selection and questions survive refresh without execution',async({pag
 test('pending proposal restores and unresolved conflict disables final confirmation',async({page})=>{
  const row={id:'r',business_no:'101',included:true,name:'测试计划',account_id:'account',post_id:'123',post_url:'https://www.tiktok.com/@a/video/123',objective:'followers',budget:'50',budget_mode:'lifetime',currency:'USD',start_at:'2027-01-01T10:00:00Z',end_at:'2027-01-04T10:00:00Z',timezone:'UTC',audience:'HQ',language:'en',identity_id:'identity',cta:'',landing_url:'',sources:{budget:{file_id:'f',sheet:'Sheet',cell:'B2',raw_value:'50',kind:'excel'}},classification:'new',history:[],issues:[]};
  const draft={id:'d',project_id:'p',version:1,status:'draft',requirements:[row],summary:{}};
- const task={id:'t',name:'待采纳批次',version:2,draft_id:'d',questions:[],messages:[],proposal:{id:'proposal',draft_version:1,status:'pending',reason:'仅修改本条预算',edits:[{requirement_id:'r',values:{budget:'40'}}]}};
+ const task={id:'t',name:'待采纳批次',version:2,draft_id:'d',questions:[],messages:[],proposal:{id:'proposal',draft_version:1,status:'pending',reason:'仅修改本条预算',edits:[{requirement_id:'r',values:{budget:'40'}}],additions:[{values:{post_id:'7800000000000000044',objective:'video_views',budget:'70',currency:'USD'},sources:{post_id:{},objective:{},budget:{}}}]}};
  const project={id:'p',name:'项目',tenant_id:'tenant',role:'admin',account_id:'account',policy:null,reserved:'0'};
  const campaign={id:'campaign',name:'测试计划',budget_level:'campaign',planned_total:'50',budget:{amount:'50',currency:'USD',mode:'lifetime'},adgroups:[{id:'group',name:'广告组',audience:'HQ',language:'en',timezone:'UTC',budget:null,ads:[{id:'ad',name:'广告',material_kind:'post',post_id:'123',authorization_present:false}]}]};
  const preview={draft_id:'d',version:1,digest:'digest',rows:[{...row,action:'create',campaign_name:'测试计划',campaign,field_states:{currency:'conflict'}}],counts:{campaigns:1,adgroups:1,ads:1,skipped:0},totals:[],issues:[{requirement_id:'r',message:'币种存在冲突'}],can_confirm:false,approval_valid:false,approval:null,confirmation_history:[],platform_checks:[{item:'账户能力',status:'unverified'}]};
@@ -46,6 +46,8 @@ test('pending proposal restores and unresolved conflict disables final confirmat
  });
  await page.goto('/apps/adbuild-agent');await page.waitForLoadState('networkidle');
  await expect(page.getByRole('button',{name:'确认修改',exact:true})).toBeVisible();
+ await expect(page.getByText('待新增候选（采纳后才写入草稿）',{exact:true})).toBeVisible();
+ await expect(page.getByRole('cell',{name:'7800000000000000044',exact:true})).toBeVisible();
  await page.reload();await page.waitForLoadState('networkidle');
  await expect(page.getByRole('button',{name:'确认修改',exact:true})).toBeVisible();
  await page.getByRole('button',{name:'搭建前预览与确认',exact:true}).click();

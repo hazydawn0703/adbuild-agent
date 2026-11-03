@@ -28,7 +28,32 @@ def save(c,task):
               (task.version,task.draft_id,json_value(task),task.id))
 
 
+def question_observation(question,draft):
+    rows=[] if draft is None else [r for r in draft.requirements if r.included and (question.scope=='task' or r.id in question.requirement_ids)]
+    return {r.id:sha256(json.dumps({'value':str(getattr(r,question.field,'')),
+        'source':r.sources[question.field].model_dump(mode='json') if question.field in r.sources else None},sort_keys=True,ensure_ascii=False).encode()).hexdigest() for r in rows}
+
+
+def reconcile_questions(task,draft):
+    """Resolve old questions only when new verified evidence changes their field."""
+    basis=task.analysis.setdefault('question_basis',{})
+    unresolved=[]
+    for question in task.semantic_questions:
+        if question.id in task.answers:continue
+        current=question_observation(question,draft)
+        old=basis.get(question.id)
+        if question.field=='scope':
+            if task.scope.status=='resolved' and (draft is None or any(r.included for r in draft.requirements)):continue
+        elif old is not None and current and current!=old and draft is not None:
+            targets=[r for r in draft.requirements if r.id in current]
+            if all(getattr(r,question.field,None) not in (None,'') and r.sources.get(question.field)
+                   and not any(i.field==question.field and i.blocking for i in r.issues) for r in targets):continue
+        unresolved.append(question)
+    task.semantic_questions=unresolved
+
+
 def refresh(task,draft):
+    reconcile_questions(task,draft)
     if draft is None:
         task.questions=list(task.semantic_questions)
         task.stage='clarifying' if task.questions else 'intake'
@@ -154,14 +179,19 @@ async def act(project_id,body,actor):
             if document: documents.append(document)
         if body.action in ('accept','reject'):
             proposal=task.proposal
-            if not proposal or proposal.id!=body.proposal_id or proposal.status!='pending' or not draft or proposal.draft_version!=draft.version:
+            if not proposal or proposal.id!=body.proposal_id or proposal.status!='pending' or proposal.draft_version!=(draft.version if draft else 0):
                 raise HTTPException(409,'提案已过期或已处理')
+            if not draft and (proposal.edits or proposal.expansions):raise HTTPException(409,'修改或拆分提案需要已有草稿')
             if body.action=='accept':
                 if proposal.edits:
                     draft=edit_draft(c,draft.id,actor,draft.version,[{**e.model_dump(),'source_message_id':proposal.message_id} for e in proposal.edits])
                 if proposal.expansions:
                     from .service import apply_expansions
                     draft=apply_expansions(c,draft,actor,proposal.expansions,proposal.message_id)
+                if proposal.additions:
+                    from .service import apply_additions
+                    draft=apply_additions(c,draft,p,actor,proposal.additions,proposal.message_id,task)
+                    task.draft_id=draft.id
             proposal.status='accepted' if body.action=='accept' else 'rejected'
         elif body.action=='answer':
             edits=[];message_id=str(uuid4())
@@ -170,6 +200,10 @@ async def act(project_id,body,actor):
                 q=next((q for q in task.questions if q.id==qid),None)
                 if not q or not value.strip(): raise HTTPException(422,'问题已过期或答案为空')
                 if q.scope=='task':
+                    if q.field!='scope':
+                        from .excel import normalize_value
+                        try:normalize_value(q.field,value,'')
+                        except (ValueError,TypeError,KeyError):raise HTTPException(422,'任务答案格式无效，请按字段要求填写') from None
                     task.answers[qid]={'field':q.field,'value':value,'question':q.question,'message_id':message_id}
                 elif not draft or q.field not in EDITABLE:
                     raise HTTPException(422,'问题需要当前草稿与有效字段')
@@ -207,7 +241,7 @@ async def act(project_id,body,actor):
                 output=await graph.ainvoke({'messages':task.messages,'draft':draft.model_dump(mode='json') if draft else None,'context':task.context.model_dump(mode='json'),'documents':documents,'scope':task.scope.model_dump(mode='json')},config)
             decision=ChatDecision.model_validate(output['decision'])
             from .agent import validate_decision
-            validate_decision({'messages':task.messages,'draft':draft.model_dump(mode='json') if draft else None},decision)
+            validate_decision({'messages':task.messages,'draft':draft.model_dump(mode='json') if draft else None,'context':task.context.model_dump(mode='json'),'documents':documents},decision)
         if (decision.edits or decision.expansions) and not draft: raise ValueError('尚无草稿，不能修改字段')
         if draft:
             ids={r.id for r in draft.requirements}
@@ -225,6 +259,8 @@ async def act(project_id,body,actor):
             existing={q.id:q for q in current.semantic_questions if q.id not in current.answers}
             existing.update({q.id:q for q in decision.questions})
             current.semantic_questions=list(existing.values())
+            for question in decision.questions:
+                current.analysis.setdefault('question_basis',{}).setdefault(question.id,question_observation(question,draft))
             if decision.scope is not None:
                 current.scope=decision.scope
                 if draft and decision.scope.status=='resolved' and decision.scope.action in ('new','repost'):
@@ -238,9 +274,9 @@ async def act(project_id,body,actor):
                     current.semantic_questions=[q for q in current.semantic_questions if not (q.scope=='task' and q.field=='scope' and decision.scope.status=='resolved')]
             current.analysis.update({'request_id':body.request_id,'phase':'complete','progress':output.get('progress',{}),'completed_at':datetime.now(timezone.utc).isoformat()})
             current.messages.append({'id':str(uuid4()),'role':'assistant','content':decision.answer,'created_at':datetime.now(timezone.utc).isoformat()})
-            if decision.edits or decision.expansions:
+            if decision.edits or decision.expansions or decision.additions:
                 message_id=next((m['id'] for m in reversed(current.messages) if m['role']=='user'),None)
-                current.proposal=ChangeProposal(id=str(uuid4()),draft_version=draft.version,edits=decision.edits,expansions=decision.expansions,reason=decision.answer,message_id=message_id)
+                current.proposal=ChangeProposal(id=str(uuid4()),draft_version=draft.version if draft else 0,edits=decision.edits,expansions=decision.expansions,additions=decision.additions,reason=decision.answer,message_id=message_id)
             refresh(current,draft)
             current.version+=1
             result={'answer':decision.answer,'project_id':project_id,'task_id':current.id,'task':current.model_dump(mode='json',exclude={'requests'}),'draft':draft.model_dump(mode='json') if draft else None}

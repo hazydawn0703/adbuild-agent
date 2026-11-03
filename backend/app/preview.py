@@ -44,7 +44,7 @@ def build_preview(draft: BuildDraft, history: list[dict], policy_version: int, n
     if not selected:
         issues.append({'requirement_id':'','code':'empty_selection','field':'included','message':'没有选中需要新增的广告需求','blocking':True})
     for question in pending_questions or []:
-        if question.get('blocking',True) and set(question['requirement_ids']) & set(selected):
+        if question.get('blocking',True) and (question.get('scope')=='task' or set(question['requirement_ids']) & set(selected)):
             issues.append({'requirement_id':'','code':'semantic_review','field':question['field'],'message':question['question'],'blocking':True})
     snapshot={'draft_id':draft.id,'version':draft.version,'policy_version':policy_version,'rows':rows,'campaigns':campaigns,
               'counts':{'campaigns':len(campaigns),'adgroups':sum(len(c['adgroups']) for c in campaigns),

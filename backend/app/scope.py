@@ -56,6 +56,9 @@ def validate_scope(scope, messages):
             if not selector['values']:
                 raise ValueError('范围条件缺少候选值')
             for value in selector['values']:
+                if selector['field']=='name' and any(s['field'] in ('business_no','post_id','requirement_id') for s in group):
+                    if not re.search(r'(?:名称|计划名|标题|campaign\s*name|named)[^\n，,；;]{0,40}'+re.escape(value),text,re.I):
+                        raise ValueError('已有业务身份条件时，额外名称筛选必须有明确名称依据，不能将负责人加入筛选')
                 if selector['field'] == 'objective':
                     from .excel import objective
                     parts=re.split(r'[，,；;\n/]|和|以及|及|\band\b',text,flags=re.I)
@@ -70,9 +73,15 @@ def validate_scope(scope, messages):
 
 def matches(req, selector):
     field = selector['field']
-    if field == 'platform':
-        host = urlsplit(req.post_url).hostname or ''
-        actual = 'tiktok' if host == 'tiktok.com' or host.endswith('.tiktok.com') else ''
+    if field=='requirement_id':
+        actual=str(req.id).strip().lower()
+    elif field == 'platform':
+        explicit=str(getattr(req,'platform','') or '').strip().casefold().replace(' ','')
+        if explicit:
+            actual='tiktok' if explicit in ('tiktok','tt') else explicit
+        else:
+            host = urlsplit(req.post_url).hostname or ''
+            actual = 'tiktok' if host == 'tiktok.com' or host.endswith('.tiktok.com') else ''
     else:
         actual = str(getattr(req, field, '') or '').strip().lower()
     values = [str(v).strip().lower() for v in selector['values']]
@@ -101,9 +110,13 @@ def compact_state(state):
     rows = (draft or {}).get('requirements', [])
     selected = [r for r in rows if r.get('included', True)]
     # An explicitly mentioned unselected record remains editable without including all candidates.
-    latest = next((m.get('content', '') for m in reversed(state.get('messages', [])) if m.get('role') == 'user'), '')
-    mentioned = [r for r in rows if any(v and re.search(r'(?<![0-9A-Za-z_])'+re.escape(str(v))+r'(?![0-9A-Za-z_])',latest) for v in (r.get('id'), r.get('business_no'), r.get('post_id')))]
-    wanted = {r['id'] for r in selected + mentioned}
+    messages = state.get('messages', [])
+    instructions='\n'.join(m.get('content','') for m in messages if m.get('role')=='user')
+    mentioned = [r for r in rows if any(v and re.search(r'(?<![0-9A-Za-z_])'+re.escape(str(v))+r'(?![0-9A-Za-z_])',instructions) for v in (r.get('id'), r.get('business_no'), r.get('post_id')))]
+    scope=state.get('scope') or {}
+    from types import SimpleNamespace
+    matching=[r for r in rows if scope.get('status')=='resolved' and scope.get('selectors') and all(matches(SimpleNamespace(**r),s) for s in scope['selectors'])]
+    wanted = {r['id'] for r in selected + mentioned + matching}
     relevant = []
     for r in rows:
         if r['id'] not in wanted:
@@ -118,14 +131,22 @@ def compact_state(state):
         inspection = d.get('inspection') or {}
         documents.append({'id': d.get('id'), 'name': d.get('name'), 'mapping': d.get('mapping'),
                           'sheets': [{'sheet': s['sheet'], 'rows': s.get('rows'), 'cols': s.get('cols'),
-                                      'regions': [{'range': r.get('range'), 'nonempty_rows': r.get('nonempty_rows')} for r in s.get('regions', [])]}
+                                      'regions': [{'range': r.get('range'), 'nonempty_rows': r.get('nonempty_rows'),
+                                          'header_candidates':r.get('header_candidates',[])[:2],
+                                          'sample':r.get('sample',[])[:2],
+                                          'evidence_coverage':{'headers_returned':min(2,len(r.get('header_candidates',[]))), 'headers_total':len(r.get('header_candidates',[])),
+                                                               'samples_returned':min(2,len(r.get('sample',[]))), 'samples_total':len(r.get('sample',[]))}}
+                                                  for r in s.get('regions', [])]}
                                      for s in inspection.get('sheets', [])]})
-    messages = state.get('messages', [])
     # Never silently omit user instructions. A long conversation is an explicit resumable limit.
-    catalog=[{k:r.get(k) for k in ('id','business_no','post_id','objective','name','included')} for r in rows[:100]]
+    # Search the entire server-side candidate set before choosing the bounded discovery catalog.
+    catalog_rows=[r for r in rows if r['id'] in wanted]
+    catalog_ids={r['id'] for r in catalog_rows}
+    catalog_rows.extend(r for r in rows if r['id'] not in catalog_ids)
+    catalog=[{k:r.get(k) for k in ('id','business_no','post_id','objective','name','platform','included')} for r in catalog_rows[:max(100,len(wanted))]]
     payload = {'messages': messages, 'draft': {**draft, 'requirements': relevant} if draft else None,
                'context': state.get('context', {}), 'scope': state.get('scope'), 'documents': documents,
-               'candidate_catalog':catalog,'catalog_coverage':{'returned':len(catalog),'total':len(rows),'complete':len(rows)<=100},
+               'candidate_catalog':catalog,'catalog_coverage':{'returned':len(catalog),'total':len(rows),'complete':len(catalog)==len(rows),'scope_search_complete':True,'scope_matches':len(matching)},
                'coverage': {'candidate_records': len(rows), 'selected_records': len(selected),
                             'provided_records': len(relevant), 'excluded_records': len(rows) - len(relevant)}}
     return redact_private(payload)

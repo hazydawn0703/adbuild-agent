@@ -96,7 +96,8 @@ def test_context_only_contains_selected_or_explicitly_referenced_rows():
     assert payload['draft']['requirements'][0]['history_coverage']=={'returned':8,'total':20,'complete':False}
     assert payload['coverage']['excluded_records']==500
     assert len(json.dumps(payload))<20000
-    assert payload['catalog_coverage']=={'returned':100,'total':501,'complete':False}
+    assert payload['catalog_coverage']['returned']==100 and payload['catalog_coverage']['total']==501 and payload['catalog_coverage']['complete'] is False
+    assert payload['catalog_coverage']['scope_search_complete'] is True
     assert 'x'*1000 not in json.dumps(payload)
 
 

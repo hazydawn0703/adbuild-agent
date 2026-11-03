@@ -189,13 +189,38 @@ async def mapping_proposal(file_id:str,actor:Actor=Depends(authenticate)):
     if len(unique)==1:
         maps=next(iter(unique.values()))
         return {'mappings':[m.model_dump() for m in maps],'explanation':'已按确认过的表头语义复用列，并重新检测数据范围。','reused':True,'expected_task_version':task_version}
-    proposal=await asyncio.wait_for(propose_mapping(row['inspection'],data,task=task),180)
+    from datetime import datetime,timezone,timedelta
+    from .intake import save
+    lease_id=str(uuid4())
     with transaction() as c:
-        from .intake import save
         current,_=access(c,task.id,actor,write=True)
         if current.version!=task_version: raise HTTPException(409,'分析期间任务已变化')
-        current.analysis['mapping']={'file_id':file_id,'proposal':proposal.model_dump(mode='json'),'base_version':task_version}
+        if current.lease and datetime.fromisoformat(current.lease['until'])>datetime.now(timezone.utc): raise HTTPException(409,'任务正在分析')
+        current.lease={'request_id':lease_id,'until':(datetime.now(timezone.utc)+timedelta(seconds=210)).isoformat()}
         save(c,current)
+    if task.analysis.get('mapping',{}).get('file_id')!=file_id: task.analysis.pop('mapping',None)
+    def persist_progress(proposal):
+        with transaction() as c:
+            current,_=access(c,task.id,actor,write=True)
+            if current.version!=task_version or not current.lease or current.lease['request_id']!=lease_id: raise HTTPException(409,'分析期间任务已变化')
+            current.analysis['mapping']={'file_id':file_id,'proposal':proposal.model_dump(mode='json'),'base_version':task_version}
+            save(c,current)
+    try:
+        proposal=await asyncio.wait_for(propose_mapping(row['inspection'],data,task=task,on_progress=persist_progress),180)
+        persist_progress(proposal)
+    except BaseException as error:
+        with transaction() as c:
+            current,_=access(c,task.id,actor,write=True)
+            if current.lease and current.lease['request_id']==lease_id:
+                current.lease=None;current.stage='attention'
+                current.analysis['mapping_error']={'type':type(error).__name__,'resume_available':True}
+                save(c,current)
+        if isinstance(error,TimeoutError): raise HTTPException(504,'分析超时，已完成的区域读取已保存，请继续分析') from None
+        raise
+    with transaction() as c:
+        current,_=access(c,task.id,actor,write=True)
+        if current.version!=task_version or not current.lease or current.lease['request_id']!=lease_id: raise HTTPException(409,'分析期间任务已变化')
+        current.lease=None;save(c,current)
     return {**proposal.model_dump(mode='json'),'expected_task_version':task_version}
 
 
@@ -244,6 +269,12 @@ async def confirm_mapping(file_id:str,body:MappingConfirmation,actor:Actor=Depen
             raise HTTPException(422,'映射分析尚未完成，请继续分析剩余区域')
         from .scope import select_requirements
         draft.requirements=select_requirements(draft.requirements,task.scope,task.messages)
+        if task.scope.status=='resolved' and task.scope.action in ('new','repost') and not any(r.included for r in draft.requirements):
+            from .models import Clarification
+            task.scope.status='unresolved'
+            task.semantic_questions=[q for q in task.semantic_questions if q.field!='scope']+[Clarification(id=str(uuid4()),field='scope',scope='task',question='当前范围条件没有匹配记录，请核对编号、帖子或名称，或在预览中明确选择本批需求。')]
+            task.analysis['scope_diagnostic']='没有记录同时满足范围条件；范围尚未确定'
+
 
         from .models import InputField
         context=task.context
@@ -258,12 +289,14 @@ async def confirm_mapping(file_id:str,body:MappingConfirmation,actor:Actor=Depen
             draft.requirements=[evaluate(Requirement.model_validate(r.model_dump()),history) for r in draft.requirements]
 
         if task.draft_id:
-            old=c.execute('select version from drafts where id=%s for update',(task.draft_id,)).fetchone()
+            old=c.execute('select version,data from drafts where id=%s for update',(task.draft_id,)).fetchone()
+            from .merge import merge_requirements
+            draft.requirements=[evaluate(r,history) for r in merge_requirements(BuildDraft.model_validate(old['data']).requirements,draft.requirements)]
             draft.id=task.draft_id;draft.version=old['version']+1
             c.execute('update drafts set version=%s,data=%s where id=%s',(draft.version,json_value(draft),draft.id))
         else:
             c.execute("insert into drafts(id,tenant_id,project_id,version,data) values(%s,%s,%s,%s,%s)",(draft.id,project['tenant_id'],project['id'],draft.version,json_value(draft)))
-        task.draft_id=draft.id;task.version+=1;task.proposal=None;refresh(task,draft)
+        task.draft_id=draft.id;task.version+=1;task.proposal=None;task.lease=None;refresh(task,draft)
         task.requests[body.request_id]={'digest':request_digest,'result':draft.model_dump(mode='json')}
         save(c,task)
         from .templates import capture
@@ -328,6 +361,11 @@ def patch_draft(draft_id:str,body:DraftPatch,actor:Actor=Depends(authenticate)):
             changed={(e.requirement_id,f) for e in body.edits for f in e.values}
             task.semantic_questions=[q for q in task.semantic_questions if not any((rid,q.field) in changed for rid in q.requirement_ids)]
             task.messages.append({'id':message_id,'role':'user','content':'人工明确修改草稿：'+json.dumps([e.model_dump() for e in body.edits],ensure_ascii=False)})
+            if any('included' in e.values for e in body.edits):
+                from .models import TaskScope,ScopeSelector
+                selected_ids=[r.id for r in draft.requirements if r.included]
+                task.scope=TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='requirement_id',values=selected_ids)],message_ids=[message_id],reason='用户在预览中明确选择本批需求') if selected_ids else TaskScope(reason='用户取消了全部选择')
+                task.semantic_questions=[q for q in task.semantic_questions if q.field!='scope']
             refresh(task,draft);save(c,task)
         return draft
 

@@ -2,7 +2,7 @@
 
 运行地址：https://stratos.run/apps/adbuild-agent
 
-Next.js + CopilotKit / AG-UI + FastAPI + LangGraph，使用服务器 MySQL 8.0、应用层租户权限、Argon2 密码哈希与私有文件存储。模型为 DeepSeek-V4.1-Flash-1017，官方 API ID 为 deepseek-flash。
+Next.js + 官方 AG-UI HttpAgent + FastAPI + LangGraph，使用服务器 MySQL 8.0、应用层租户权限、Argon2 密码哈希与私有文件存储。三栏界面通过维护中的 AG-UI 客户端同步对话与草稿，不需要额外的 Provider 层。模型为 DeepSeek-V4.1-Flash-1017，官方 API ID 为 deepseek-flash。
 
 ## 初始化
 

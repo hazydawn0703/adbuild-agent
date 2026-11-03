@@ -18,7 +18,7 @@ def clean(value):
 
 
 def sensitive_cells(sheet):
-    pattern=re.compile(r'^(?:(?:TikTok|Spark|广告|账户|账号|登录|登陆|接口|客户)\s*)?(?:access[_ ]?token|refresh[_ ]?token|api[ _-]?key|password|client[_ ]?secret|密码|密钥|授权码)\s*[:：]?$',re.I)
+    pattern=re.compile(r'^(?:(?:TikTok|Spark(?:\s*Ads)?|广告|账户|账号|登录|登陆|接口|客户)\s*)?(?:access[_ ]?token|refresh[_ ]?token|api[ _-]?key|password|client[_ ]?secret|authorization[_ ]?code|spark[_ ]?code|tt[_ ]?code|密码|密钥|授权码)\s*[:：]?$',re.I)
     rows={};hidden_rows=set();hidden_columns={}
     for c in sheet._cells.values():
         if c.value is not None: rows.setdefault(c.row,[]).append(c)
@@ -153,7 +153,7 @@ def search_rows(data: bytes,terms: list[str],max_hits=30):
     terms={clean(term).casefold() for term in terms if len(clean(term))>=2}
     if not terms:return {'rows':[],'matched_rows':0,'complete':True}
     if len(terms)>30:raise ValueError('一次最多检索 30 个词')
-    wb=read_workbook(data);hits=[];count=0
+    wb=read_workbook(data);hits=[];context=[];count=0
     patterns=[re.compile(r'(?<![0-9A-Za-z_])'+re.escape(term)+r'(?![0-9A-Za-z_])') for term in terms]
     for sheet in wb:
         hidden=sensitive_cells(sheet);rows={}
@@ -163,7 +163,17 @@ def search_rows(data: bytes,terms: list[str],max_hits=30):
             if any(pattern.search(clean(cell.value).casefold()) for pattern in patterns for cell in cells):
                 count+=1
                 if len(hits)<max_hits:hits.append({'sheet':sheet.title,'row':index,'cells':{c.coordinate:clean(c.value)[:500] for c in cells}})
-    return {'rows':hits,'matched_rows':count,'complete':count<=max_hits}
+        hit_indices=[r['row'] for r in hits if r['sheet']==sheet.title]
+        if hit_indices:
+            context_indices=set(sorted(rows)[:5])
+            for hit in hit_indices:
+                context_indices.update(index for index in (hit-2,hit-1,hit+1) if index in rows)
+            for index in sorted(context_indices):
+                if len(context)>=30:break
+                cells=rows[index]
+                context.append({'sheet':sheet.title,'row':index,'cells':{c.coordinate:clean(c.value)[:500] for c in cells[:40]},'omitted_cells':max(0,len(cells)-40)})
+    return {'rows':hits,'context_rows':context,'matched_rows':count,'complete':count<=max_hits,
+            'coverage':{'scanned_all_nonempty_rows':True,'returned_matches':len(hits),'total_matches':count,'context_rows':len(context)}}
 
 
 def rebind_mapping(mapping: SheetMapping, inspection):
@@ -246,6 +256,7 @@ def normalize_value(field,value,tz=''):
         if result is None: raise ValueError('广告目标不支持或包含多个目标，需要明确目标及各自配置')
         return result
     if field=='budget':
+        if ',' in text and not re.fullmatch(r'[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?',text): raise ValueError('金额分隔符口径不明确，请提供明确的小数格式')
         try: result=Decimal(text.replace(',',''))
         except InvalidOperation as e: raise ValueError('预算不是有效金额') from e
         if not result.is_finite() or result<=0: raise ValueError('预算必须为有限的正数')
@@ -297,18 +308,20 @@ def validate_mapping(mapping,wb):
     if mapping.sheet not in wb.sheetnames or mapping.last_row<mapping.first_row: raise ValueError('工作表或数据范围无效')
     if mapping.last_row>wb[mapping.sheet].max_row or mapping.last_row-mapping.first_row>=10000: raise ValueError('数据范围超出工作表或 10,000 行限制')
     if set(mapping.columns)&set(mapping.bindings): raise ValueError('同一字段不能同时绑定列和固定来源')
+    for column in mapping.columns.values():
+        if not re.fullmatch(r'[A-Z]{1,3}',column) or column_index_from_string(column)>300:raise ValueError('映射列超出允许的300列')
     for binding in mapping.bindings.values():
         source_sheet=binding.sheet or mapping.sheet
         if source_sheet not in wb.sheetnames: raise ValueError('绑定来源工作表不存在')
         if binding.kind=='row':
-            if source_sheet!=mapping.sheet or not re.fullmatch(r'[A-Z]{1,3}',binding.column): raise ValueError('逐行绑定必须属于当前区域的有效列')
+            if source_sheet!=mapping.sheet or not re.fullmatch(r'[A-Z]{1,3}',binding.column) or column_index_from_string(binding.column)>300: raise ValueError('逐行绑定必须属于当前区域的有效列')
         elif binding.kind in ('cell','header'):
             if not re.fullmatch(r'[A-Z]{1,3}[1-9][0-9]*',binding.cell): raise ValueError('固定来源必须提供有效单元格')
             cell=wb[source_sheet][binding.cell]
             if cell.row>50000 or cell.column>300: raise ValueError('绑定来源超出允许范围')
         else: raise ValueError('来源绑定类型不支持')
     for rule in mapping.filters:
-        if not re.fullmatch(r'[A-Z]{1,3}',rule.column) or rule.operator not in ('eq','in','nonempty'): raise ValueError('行筛选无效')
+        if not re.fullmatch(r'[A-Z]{1,3}',rule.column) or column_index_from_string(rule.column)>300 or rule.operator not in ('eq','in','nonempty'): raise ValueError('行筛选无效')
         if rule.operator=='eq' and len(rule.values)!=1 or rule.operator=='in' and not rule.values: raise ValueError('行筛选缺少明确候选值')
 
 
@@ -371,13 +384,17 @@ def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
                 try: values[field]=_transform(value,transform)
                 except ValueError as error:
                     issues.append(Issue(code='invalid_transform',field=field,message=f'{cell.coordinate}：{error}'))
-            if not any(values.get(k) for k in ('post_url','post_id','business_no')):
+            if not any(values.get(k) for k in ('post_url','post_id','business_no','name','budget','objective')):
                 continue
             url = clean(values.get('post_url'))
             host=urlsplit(url).hostname or ''
             if url and host!='tiktok.com' and not host.endswith('.tiktok.com'):
                 issues.append(Issue(code='invalid_platform',field='post_url',message='帖子链接不属于 TikTok，需核对平台'))
             elif url:
+                if values.get('platform') and clean(values['platform']).casefold().replace(' ','') not in ('tiktok','tt'):
+                    issues.append(Issue(code='invalid_conflict',field='platform',message='平台字段与 TikTok 帖子链接不一致'))
+                if not values.get('platform'):
+                    values['platform']='TikTok';refs['platform']=refs['post_url']
                 match=re.search(r'/video/([0-9]+)',url)
                 if match:
                     if values.get('post_id') and platform_id(values['post_id'])!=match[1]:
@@ -385,6 +402,17 @@ def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
                         values['post_id']=''
                     else:
                         values['post_id']=match[1];refs['post_id']=refs['post_url']
+            if not values.get('platform'):
+                # A reviewed platform predicate supplies real row evidence; it is
+                # not a workbook-wide default inferred from unrelated records.
+                for rule in mapping.filters:
+                    labels={clean(v).casefold().replace(' ','') for v in rule.values}
+                    if labels and labels<={'tiktok','tt'}:
+                        cell=_anchor(sheet,sheet.cell(index,column_index_from_string(rule.column)))
+                        actual=clean(cell.value).casefold().replace(' ','')
+                        if actual in labels:
+                            values['platform']='TikTok';refs['platform']=SourceRef(file_id=file_id,sheet=sheet.title,cell=cell.coordinate,raw_value=clean(cell.value))
+                            break
             # Timezone must be normalized before timezone-less timestamps.
             ordered=sorted(list(values),key=lambda field:0 if field=='timezone' else 2 if field in ('start_at','end_at') else 1)
             for field in ordered:
@@ -394,7 +422,7 @@ def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
                     issues.append(Issue(code='invalid_'+field,field=field,message=str(error)))
             for field,value in mapping.defaults.items():
                 if field not in refs: refs[field]=SourceRef(file_id=file_id,sheet=sheet.title,cell='',raw_value=value,kind='template')
-            row_id=sha256(f'{file_id}:{sheet.title}:{index}'.encode()).hexdigest()[:24]
+            row_id=sha256(f'{file_id}:{sheet.title}:{index}:{mapping.model_dump_json()}'.encode()).hexdigest()[:24]
             try:
                 result.append(Requirement(id=row_id,**values,sources=refs,issues=issues))
             except ValidationError as error:

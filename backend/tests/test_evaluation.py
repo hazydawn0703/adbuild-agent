@@ -5,6 +5,7 @@ from app.evaluation import score
 def test_scoring_does_not_reward_missing_duplicate_or_manually_corrected_rows():
     expected={'requirements':[{'key':'a','fields':{'budget':'50','post_id':'1234567890123456789'}}]}
     actual=deepcopy(expected)
+    actual['safety_observations']={k:'passed' for k in ('scope','evidence','tenant_isolation','human_confirmation','advertising_writes')}
     assert score(expected,actual)['complete']
     actual['requirements'].append(deepcopy(actual['requirements'][0]))
     assert not score(expected,actual)['complete']
@@ -21,3 +22,10 @@ def test_unsupported_sources_and_unnecessary_questions_are_not_hidden():
     result=score(expected,actual)
     assert not result['complete'] and not result['sources'][0]['correct']
     assert result['unnecessary_questions']==['currency']
+
+
+def test_missing_fields_and_safety_observations_are_not_passes():
+    expected={'requirements':[{'key':'missing','fields':{'budget':'10','objective':'followers'}}]}
+    result=score(expected,{'requirements':[]})
+    assert len(result['fields'])==2 and not any(f['correct'] for f in result['fields'])
+    assert result['safety_status']=='unverified' and not result['safe']

@@ -133,3 +133,38 @@ def test_predraft_question_answer_and_request_replay_use_task_scope(database,mon
                 for table in ('jobs','runs','deployments'):
                     assert c.execute('select count(*) n from '+table).fetchone()['n']==0
     asyncio.run(scenario())
+
+
+def test_message_candidate_can_be_accepted_without_existing_draft_once(database,monkeypatch):
+    from app.models import ChatDecision,DemandCandidate
+    class Model:
+        async def ainvoke(self,_):
+            return ChatDecision(answer='消息中新需求候选',additions=[DemandCandidate(values={
+                'account_id':'7700012345678901234','post_id':'7700098765432101234','objective':'followers','budget':'50'})])
+    monkeypatch.setattr('app.agent.llm',lambda _:Model())
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+            task=(await client.post(f'/projects/{database}/tasks',json={'name':'message-first'})).json()
+            request={'task_id':task['id'],'request_id':str(uuid4()),'expected_version':task['version'],'action':'message',
+                     'message':'新增广告，账户7700012345678901234，帖子7700098765432101234，目标涨粉，预算50美元。'}
+            response=await client.post(f'/projects/{database}/chat',json=request)
+            assert response.status_code==200,response.text
+            state=(await client.get('/tasks/'+task['id'])).json()
+            assert state['draft'] is None
+            assert state['task']['proposal']['draft_version']==0
+            assert len(state['task']['proposal']['additions'])==1
+            accept={'task_id':task['id'],'request_id':str(uuid4()),'expected_version':state['task']['version'],
+                    'expected_draft_version':None,'action':'accept','proposal_id':state['task']['proposal']['id']}
+            accepted=await client.post(f'/projects/{database}/chat',json=accept)
+            assert accepted.status_code==200,accepted.text
+            assert (await client.post(f'/projects/{database}/chat',json=accept)).json()==accepted.json()
+            again=(await client.get('/tasks/'+task['id'])).json()
+            assert again['task']['draft_id']==again['draft']['id']
+            assert len(again['draft']['requirements'])==1
+            assert again['draft']['requirements'][0]['post_id']=='7700098765432101234'
+            assert again['task']['proposal']['status']=='accepted'
+            with db.transaction() as c:
+                assert c.execute('select count(*) n from drafts where project_id=%s',(database,)).fetchone()['n']==1
+                for table in ('runs','deployments'):
+                    assert c.execute('select count(*) n from '+table+' where project_id=%s',(database,)).fetchone()['n']==0
+    asyncio.run(scenario())

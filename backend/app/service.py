@@ -7,7 +7,7 @@ from .rules import evaluate, check_policy, fingerprint
 from .db import transaction, json_value
 from .auth import project_access
 
-EDITABLE = {"included","account_id","post_id","post_url","name","objective","budget","budget_mode","currency","start_at","end_at","timezone","audience","language","identity_id","cta","landing_url","structure"}
+EDITABLE = {"included","account_id","post_id","post_url","name","objective","budget","budget_mode","currency","start_at","end_at","timezone","audience","language","identity_id","cta","landing_url","structure","platform"}
 
 
 def history_for(conn, project):
@@ -20,7 +20,7 @@ def pending_questions(conn,draft_id):
     questions=list(row['data'].get('semantic_questions',[]))
     proposal=row['data'].get('proposal')
     if proposal and proposal['status']=='pending':
-        questions.append({'field':'included','requirement_ids':[e['requirement_id'] for e in proposal['edits']],
+        questions.append({'field':'included','scope':'task' if proposal.get('additions') else 'requirements','requirement_ids':list(dict.fromkeys([e['requirement_id'] for e in proposal['edits']]+[e['base_requirement_id'] for e in proposal.get('expansions',[])])),
             'question':'存在待采纳的修改提案，请先采纳或拒绝，再确认完整方案','blocking':True})
     return questions
 
@@ -153,4 +153,47 @@ def apply_expansions(conn,draft,actor,expansions,message_id):
     draft.requirements=[r for r in draft.requirements if r.id not in replaced]+added
     draft.version+=1;draft.approval=None;draft.status='draft'
     conn.execute('update drafts set version=%s,data=%s where id=%s',(draft.version,json_value(draft),draft.id))
+    return draft
+
+
+def apply_additions(conn,draft,project,actor,additions,message_id,task):
+    """Adopt grounded message candidates into the one canonical draft."""
+    from .models import DemandCandidate
+    from .provenance import supported_source
+    from .excel import normalize_value
+    from .rules import fingerprint
+    state={'messages':task.messages,'context':task.context.model_dump(mode='json')}
+    added=[]
+    for raw in additions:
+        candidate=DemandCandidate.model_validate(raw)
+        values={};sources={}
+        for field,value in candidate.values.items():
+            if value in (None,''): continue
+            values[field]=normalize_value(field,value,candidate.values.get('timezone',''))
+            sources[field]=supported_source(state,{},field,values[field],candidate.sources.get(field))
+        if values.get('post_url') and not values.get('post_id'):
+            import re
+            match=re.search(r'/video/(\d+)',values['post_url'])
+            if match: values['post_id']=match[1];sources['post_id']=sources['post_url']
+        if not values.get('post_id'): raise HTTPException(422,'新增候选需要可核实的帖子 ID 或视频链接')
+        if not values.get('account_id') and project.get('account_id'):
+            values['account_id']=normalize_value('account_id',project['account_id'])
+            sources['account_id']=SourceRef(file_id='',sheet='',cell='',raw_value=project['account_id'],kind='template')
+        for ref in sources.values(): ref.accepted_by=actor.user_id;ref.accepted_at=datetime.now(timezone.utc)
+        added.append(Requirement(id=str(uuid4()),**values,sources=sources,confirmed_fields=list(sources)))
+    if not added: raise HTTPException(422,'没有可采纳的新需求')
+    current=list(draft.requirements) if draft else []
+    seen={fingerprint(r) for r in current}
+    for req in added:
+        key=fingerprint(req)
+        if key in seen: raise HTTPException(422,'候选与已有需求重复，请修改现有需求或明确新排期')
+        seen.add(key)
+    is_new=draft is None
+    if is_new: draft=BuildDraft(id=str(uuid4()),project_id=project['id'])
+    draft.requirements=[evaluate(r,history_for(conn,project)) for r in current+added];draft.approval=None;draft.status='draft'
+    if is_new:
+        conn.execute('insert into drafts(id,tenant_id,project_id,version,data) values(%s,%s,%s,%s,%s)',(draft.id,project['tenant_id'],project['id'],draft.version,json_value(draft)))
+    else:
+        draft.version+=1
+        conn.execute('update drafts set version=%s,data=%s where id=%s',(draft.version,json_value(draft),draft.id))
     return draft
