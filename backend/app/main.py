@@ -275,6 +275,44 @@ async def confirm_mapping(file_id:str,body:MappingConfirmation,actor:Actor=Depen
     return draft
 
 
+class StructureProposalBody(Model):
+    expected_version: int
+    requirement_id: str
+    structure: dict
+
+
+@app.post('/drafts/{draft_id}/structure-proposal')
+def propose_structure(draft_id:str,body:StructureProposalBody,actor:Actor=Depends(authenticate)):
+    from .models import StructureSpec,ChangeProposal,ChatEdit
+    from .structure import validate_structure
+    from .intake import access,save
+    with transaction() as c:
+        draft,project=draft_access(c,draft_id,actor,write=True)
+        if draft.version!=body.expected_version: raise HTTPException(409,'草稿已变化')
+        req=next((r for r in draft.requirements if r.id==body.requirement_id),None)
+        if not req: raise HTTPException(422,'未知需求')
+        raw=body.structure
+        if req.structure:
+            existing={a.id:a for g in req.structure.groups for a in g.ads}
+            for group in raw.get('groups',[]):
+                for ad in group.get('ads',[]):
+                    old=existing.get(ad.get('id'))
+                    if old and old.kind=='authorization_code' and ad.get('kind')==old.kind and not ad.get('authorization_code'):
+                        ad['authorization_code']=old.authorization_code
+        structure=StructureSpec.model_validate(raw)
+        candidate=req.model_copy(update={'structure':structure})
+        issues=validate_structure(candidate)
+        if issues: raise HTTPException(422,[i.model_dump() for i in issues])
+        row=c.execute('select id from intake_tasks where draft_id=%s',(draft_id,)).fetchone()
+        if not row: raise HTTPException(422,'请在搭建任务中编辑结构')
+        task,_=access(c,row['id'],actor,write=True)
+        message_id=str(uuid4())
+        task.messages.append({'id':message_id,'role':'user','content':'提交分组结构供审核','created_at':__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()})
+        task.proposal=ChangeProposal(id=str(uuid4()),draft_version=draft.version,edits=[ChatEdit(requirement_id=req.id,values={'structure':structure.model_dump(mode='json')})],reason='分组结构已校验，请采纳后核对完整预览',message_id=message_id)
+        task.version+=1;task.lease=None;save(c,task)
+        return {'task_id':task.id,'proposal':task.proposal}
+
+
 @app.post('/drafts/{draft_id}/edit')
 def patch_draft(draft_id:str,body:DraftPatch,actor:Actor=Depends(authenticate)):
     with transaction() as c:
@@ -313,6 +351,17 @@ class BuildConfirmation(Model):
     expected_version:int
     digest:str
     acknowledged:bool
+
+@app.get('/drafts/{draft_id}/requirements/{requirement_id}/history')
+def page_history(draft_id:str,requirement_id:str,offset:int=0,limit:int=25,actor:Actor=Depends(authenticate)):
+    if offset<0 or limit<1 or limit>100: raise HTTPException(422,'分页范围无效')
+    with transaction() as c:
+        draft,project=draft_access(c,draft_id,actor)
+        req=next((r for r in draft.requirements if r.id==requirement_id),None)
+        if not req: raise HTTPException(404,'需求不存在')
+        req=evaluate(req,history_for(c,project))
+        return {'items':req.history[offset:offset+limit],'total':len(req.history),'offset':offset,'complete':offset+limit>=len(req.history)}
+
 
 @app.post('/drafts/{draft_id}/confirm')
 def confirm_build(draft_id:str,body:BuildConfirmation,actor:Actor=Depends(authenticate)):

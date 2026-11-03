@@ -154,9 +154,8 @@ def evaluate(req: Requirement, history: list[dict], now=None):
         req.issues.append(Issue(code="schedule",field="end_at",message="结束时间必须晚于开始时间"))
     if not req.structure and req.objective == "traffic" and (not req.landing_url.startswith("https://") or not req.cta):
         req.issues.append(Issue(code="destination",field="landing_url",message="流量目标需要 HTTPS 落地页和 CTA"))
-    if req.structure:
-        from .structure import validate_structure
-        req.issues.extend(validate_structure(req))
+    from .structure import validate_structure
+    req.issues.extend(validate_structure(req))
     exact=[]
     for h in req.history:
         if h['classification'] in ('existing','config_change'):exact.append(h)
