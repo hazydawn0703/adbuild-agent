@@ -138,7 +138,7 @@ class ProjectPolicy(Model):
 
 
 InputField = Literal['platform','account_id','business_no','name','post_url','post_id','objective','budget','budget_mode','currency','start_at','end_at','timezone','audience','language','identity_id','cta','landing_url']
-MappingField = InputField | Literal['campaign_key','group_key','record_key','budget_level','campaign_budget','adgroup_budget']
+MappingField = Literal['platform','account_id','business_no','name','post_url','post_id','objective','budget','budget_mode','currency','start_at','end_at','timezone','audience','language','identity_id','cta','landing_url','campaign_key','group_key','record_key','budget_level','campaign_budget','adgroup_budget']
 
 
 class Binding(Model):
@@ -160,7 +160,7 @@ class SheetMapping(Model):
     header_row: int = Field(ge=1)
     first_row: int = Field(ge=1)
     last_row: int = Field(ge=1)
-    bindings: dict[MappingField, Binding] = Field(default_factory=dict)
+    bindings: dict[MappingField, Binding] = Field(default_factory=dict,description='实际来源绑定，包括实体关系。campaign_key=计划身份，group_key=广告组身份，record_key=素材记录身份，budget_level=预算层级，campaign_budget=计划总额，adgroup_budget=组预算；识别到来源就必须实际输出这些键，不能只在explanation描述。每个键只有一种row/cell/header来源。')
     filters: list[RowFilter] = Field(default_factory=list)
 
 

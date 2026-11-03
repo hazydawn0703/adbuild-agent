@@ -8,6 +8,11 @@ from app.models import BuildDraft
 from app.structure import allocate_budget
 
 
+def test_model_schema_exposes_entity_binding_keys():
+    schema=SheetMapping.model_json_schema()['properties']['bindings']
+    assert {'campaign_key','group_key','record_key','budget_level','campaign_budget','adgroup_budget'} <= set(schema['propertyNames']['enum'])
+
+
 def parse(level='campaign', groups=('G1','G2','G3'), amount='100.01'):
     wb=Workbook();s=wb.active
     s.append(['plan','group','level','campaign budget','group budget','post','account','business','goal','mode','currency','start','end','tz','audience','identity'])
