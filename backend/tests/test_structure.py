@@ -27,7 +27,7 @@ def split(**changes):
     return StructureSpec.model_validate(dict(budget_level='adgroup', groups=[
         {'id':'north', 'name':'North', 'audience':'North audience', 'budget':{'allocation_ratio':'0.4'}},
         {'id':'south', 'name':'South', 'audience':'South audience', 'budget':{'allocation_ratio':'0.6'},
-         'ads':[{'id':'asset-1'}, {'id':'asset-2'}]},
+         'ads':[{'id':'asset-1','post_id':'7800000000000000044'}, {'id':'asset-2','post_id':'7800000000000000055'}]},
     ]) | changes)
 
 

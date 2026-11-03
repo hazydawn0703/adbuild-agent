@@ -10,6 +10,12 @@ from .auth import project_access
 EDITABLE = {"included","account_id","post_id","post_url","name","objective","budget","budget_mode","currency","start_at","end_at","timezone","audience","language","identity_id","cta","landing_url","structure","platform"}
 
 
+def stored_draft(data):
+    if data.get('protocol_version')!=3:
+        raise HTTPException(409,'草稿协议已更新，请保留原始资料并创建新任务重新分析；旧确认不能继续使用')
+    return BuildDraft.model_validate(data)
+
+
 def history_for(conn, project):
     return [r["data"] for r in conn.execute("select data from history where project_id=%s and account_id=%s",(project["id"],project["account_id"]))]
 
@@ -43,7 +49,7 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
         raise HTTPException(404,"草稿不存在")
     project = project_access(conn,row["project_id"],actor,write=True)
     ensure_draft_active(conn,draft_id)
-    draft = BuildDraft.model_validate(row["data"])
+    draft = stored_draft(row["data"])
     if draft.version != expected_version or draft.status not in ("draft","attention","approved"):
         raise HTTPException(409,"草稿版本已变化或已经冻结，请刷新")
     history = history_for(conn, project)
@@ -51,6 +57,21 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
         req = next((r for r in draft.requirements if r.id == edit["requirement_id"]),None)
         if not req or set(edit["values"]) - EDITABLE:
             raise HTTPException(422,"需求或编辑字段无效")
+        if edit.get('target_id') and edit['target_id']!=req.id:
+            from .entities import edit_entity,evidence_values
+            try:
+                sources={}
+                if edit.get('sources'):
+                    from .provenance import supported_source
+                    taskrow=conn.execute('select data from intake_tasks where draft_id=%s',(draft.id,)).fetchone()
+                    state=taskrow['data'] if taskrow else {}
+                    state={**state,'project_account_id':project.get('account_id',''),'documents':list(conn.execute('select id,storage_path,sha256 from files where project_id=%s and kind=%s',(project['id'],'requirements')))}
+                    original=evidence_values(req,edit['target_id'])
+                    sources={field:supported_source(state,original,field,value,edit['sources'][field]) for field,value in edit['values'].items() if field in edit['sources']}
+                updated=edit_entity(req,edit['target_id'],edit['values'],edit.get('source_message_id'),actor.user_id,sources)
+            except ValueError as error:raise HTTPException(422,str(error)) from None
+            draft.requirements=[evaluate(updated,history) if r.id==req.id else r for r in draft.requirements]
+            continue
         values = req.model_dump()
         patch=dict(edit["values"])
         from .excel import normalize_value,post_id_from_url
@@ -104,6 +125,23 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
             req.sources[field].accepted_at=datetime.now(timezone.utc)
             if field not in req.confirmed_fields: req.confirmed_fields.append(field)
         req.issues = [i for i in req.issues if i.field not in patch]
+        if req.structure:
+            from .entities import edit_entity
+            group_fields={'audience','language','start_at','end_at','timezone','budget_mode','currency'}
+            group_patch={k:v for k,v in patch.items() if k in group_fields}
+            # Plan-shared currency/mode only belong to groups when group budgets are active.
+            if req.structure.budget_level!='adgroup':group_patch={k:v for k,v in group_patch.items() if k not in ('budget_mode','currency')}
+            if group_patch:
+                for group in list(req.structure.groups):
+                    req=edit_entity(req,group.id,group_patch,edit.get('source_message_id'),actor.user_id,{k:req.sources[k] for k in group_patch})
+            material_fields={'post_id','post_url','identity_id','cta','landing_url'}
+            material_patch={k:v for k,v in patch.items() if k in material_fields}
+            materials=[ad for g in req.structure.groups for ad in g.ads]
+            if {'post_id','post_url'} & set(material_patch) and len(materials)!=1:
+                raise HTTPException(422,'修改多个素材的帖子需要明确目标素材')
+            if material_patch:
+                for material in materials:
+                    req=edit_entity(req,material.id,material_patch,edit.get('source_message_id'),actor.user_id,{k:req.sources[k] for k in material_patch})
         draft.requirements = [evaluate(req,history) if r.id == req.id else r for r in draft.requirements]
     draft.version += 1
     draft.approval = None

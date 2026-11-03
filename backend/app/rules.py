@@ -185,6 +185,26 @@ def evaluate(req: Requirement, history: list[dict], now=None):
         req.classification='change' if any(h['classification']=='config_change' for h in exact) else 'existing'
     else:
         req.classification='incomplete' if req.issues else 'new'
+    if req.structure:
+        from .models import StructureSpec
+        states=[];candidates=[]
+        for group in req.structure.groups:
+            for ad in group.ads:
+                material=req.model_copy(update={'post_id':ad.post_id,'post_url':ad.post_url,
+                    'start_at':group.start_at,'end_at':group.end_at,'timezone':group.timezone,
+                    'structure':StructureSpec(budget_level=req.structure.budget_level,groups=[group])})
+                matches=history_candidates(material,history)
+                candidates.extend({**h,'target_id':ad.id} for h in matches)
+                exact=[h for h in matches if h['classification'] in ('existing','config_change')]
+                unknown=any(h['same_post'] and h['same_objective'] and h['classification']=='unverified' for h in matches)
+                states.append('change' if any(h['classification']=='config_change' for h in exact) else 'existing' if exact else 'unknown' if unknown else 'new')
+        req.history=candidates
+        if states and all(s in ('existing','change') for s in states):
+            req.classification='change' if 'change' in states else 'existing'
+        else:
+            if any(s in ('existing','change','unknown') for s in states):
+                req.issues.append(Issue(code='history_review',field='included',message='本计划包含已有投放或待核实素材，请按素材明确选择新增范围',target_id=req.id))
+            req.classification='incomplete' if req.issues else 'new'
     req.issues=list({(i.code,i.field,i.message):i for i in req.issues}.values())
     return req
 

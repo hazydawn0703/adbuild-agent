@@ -34,6 +34,7 @@ class Issue(Model):
     field: str
     message: str
     blocking: bool = True
+    target_id: str = ''
 
 
 class BudgetSpec(Model):
@@ -114,6 +115,7 @@ class BuildApproval(Model):
 class BuildDraft(Model):
     id: str
     project_id: str
+    protocol_version: Literal[3] = 3
     version: int = 1
     status: Literal["mapping", "draft", "approved", "queued", "executing", "complete", "attention"] = "draft"
     approval: BuildApproval | None = None
@@ -179,6 +181,7 @@ class DraftPatch(Model):
 
 class ChatEdit(Model):
     requirement_id: str
+    target_id: str = ''
     values: dict[InputField | Literal['included','structure'], Any]
     sources: dict[str, SourceRef] = Field(default_factory=dict)
 
@@ -255,6 +258,7 @@ class Clarification(Model):
     blocking: bool = True
     reason_code: str = 'semantic_review'
     evidence_version: int = 0
+    target_ids: list[str] = Field(default_factory=list)
 
 
 class TaskQuestion(Clarification):

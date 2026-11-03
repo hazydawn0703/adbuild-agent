@@ -106,6 +106,10 @@ def select_requirements(requirements, scope, messages):
             for group in req.structure.groups:
                 group.ads=[ad for ad in group.ads if (not included_posts or ad.post_id in included_posts) and ad.post_id not in excluded_posts]
             req.structure.groups=[g for g in req.structure.groups if g.ads]
+            if req.structure.budget_level=='adgroup' and req.sources.get('budget') and req.sources['budget'].kind=='calculated' and all(g.budget and g.budget.amount is not None for g in req.structure.groups):
+                from decimal import Decimal
+                req.budget=sum((g.budget.amount for g in req.structure.groups),Decimal(0))
+                req.sources['budget']=req.sources['budget'].model_copy(update={'raw_value':str(req.budget),'derived_from':[g.id+':budget' for g in req.structure.groups]})
         selected = resolved and (scope.get('all_records', False) or bool(scope.get('selectors')))
         selected = selected and all(matches(req, s) for s in scope.get('selectors', []))
         selected = selected and not any(matches(req, s) for s in scope.get('exclude_selectors', []))

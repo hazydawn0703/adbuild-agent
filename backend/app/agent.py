@@ -308,6 +308,18 @@ def validate_decision(state,decision):
             if question.requirement_ids: raise ProposalError('任务级问题不能引用需求行')
         elif not state.get('draft') or not question.requirement_ids or not set(question.requirement_ids)<=ids:
             raise ProposalError('需求级澄清必须关联当前草稿的有效需求')
+        if question.target_ids:
+            from .entities import find_entity
+            from .models import Requirement
+            targets=set()
+            for row in rows:
+                if row['id'] not in question.requirement_ids:continue
+                req=Requirement.model_validate(row)
+                for target in question.target_ids:
+                    try:find_entity(req,target)
+                    except ValueError:continue
+                    targets.add(target)
+            if targets!=set(question.target_ids):raise ProposalError('问题引用了不属于当前计划的实体')
     validate_selection(state,decision)
     try:validate_new_candidates(state,decision)
     except ValueError as error:raise ProposalError(str(error)) from None
@@ -345,6 +357,12 @@ def validate_decision(state,decision):
     for edit in decision.edits:
         if edit.requirement_id not in ids or set(edit.values)-EDITABLE:
             raise ProposalError('提案包含未知需求或不允许的字段')
+        if edit.target_id and edit.target_id!=edit.requirement_id:
+            from .entities import find_entity,GROUP_FIELDS,MATERIAL_FIELDS
+            from .models import Requirement,GroupSpec
+            try:node=find_entity(Requirement.model_validate(next(r for r in rows if r['id']==edit.requirement_id)),edit.target_id)
+            except ValueError as error:raise ProposalError(str(error)) from None
+            if set(edit.values)-(GROUP_FIELDS if isinstance(node,GroupSpec) else MATERIAL_FIELDS):raise ProposalError('修改字段不属于该实体')
         if restricted and explicit and edit.requirement_id not in explicit:
             raise ProposalError('提案超出用户明确限定的需求范围，不得为其他需求生成任何修改')
         if 'timezone' in edit.values and any(f in edit.values for f in ('start_at','end_at')) and not re.search(r'时区|timezone|UTC|GMT',message,re.I):

@@ -1,3 +1,4 @@
+from .service import stored_draft
 from .public import public_business
 """Task-scoped interaction state. Draft values remain in drafts, never in checkpoints."""
 import json
@@ -82,8 +83,9 @@ def refresh(task,draft):
         if req.included and req.classification not in ('existing','change','ignored'):
             for issue in req.issues:
                 if issue.blocking:
-                    group=grouped.setdefault((issue.field,issue.code),{'ids':set(),'messages':[]})
+                    group=grouped.setdefault((issue.field,issue.code),{'ids':set(),'targets':set(),'messages':[]})
                     group['ids'].add(req.id)
+                    group['targets'].add(issue.target_id or req.id)
                     if issue.message not in group['messages']:group['messages'].append(issue.message)
     task.evidence=evidence
     # A flat missing-field check and the default hierarchy can report the same
@@ -91,14 +93,14 @@ def refresh(task,draft):
     # Preserve distinct record sets, and leave semantic/candidate questions alone.
     combined={}
     for (field,_code),group in grouped.items():
-        key=(field,'requirements',tuple(sorted(group['ids'])))
+        key=(field,'requirements',tuple(sorted(group['ids'])),tuple(sorted(group['targets'])))
         messages=combined.setdefault(key,[])
         messages.extend(message for message in group['messages'] if message not in messages)
     task.questions=[]
-    for (field,scope,ids),messages in combined.items():
-        key=json.dumps({'origin':'system','task':task.id,'draft_version':draft.version,'field':field,'scope':scope,'requirements':ids},sort_keys=True)
+    for (field,scope,ids,targets),messages in combined.items():
+        key=json.dumps({'origin':'system','task':task.id,'draft_version':draft.version,'field':field,'scope':scope,'requirements':ids,'targets':targets},sort_keys=True)
         task.questions.append(Clarification(id=sha256(key.encode()).hexdigest()[:20],field=field,scope=scope,
-            requirement_ids=list(ids),question='；'.join(messages)))
+            requirement_ids=list(ids),target_ids=list(targets),evidence_version=draft.version,question='；'.join(messages)))
     task.questions.extend(task.semantic_questions)
     task.stage='attention' if task.analysis.get('phase')=='attention' else 'clarifying' if task.questions else 'preview'
 
@@ -164,7 +166,7 @@ def create_task(project_id:str,body:NewTask,actor:Actor=Depends(authenticate)):
             if c.execute('select id from intake_tasks where draft_id=%s',(body.draft_id,)).fetchone():
                 raise HTTPException(409,'草稿已关联搭建任务')
             task.draft_id=body.draft_id
-            refresh(task,BuildDraft.model_validate(row['data']))
+            refresh(task,stored_draft(row['data']))
         c.execute('insert into intake_tasks(id,tenant_id,project_id,draft_id,version,data) values(%s,%s,%s,%s,%s,%s)',(task.id,p['tenant_id'],project_id,task.draft_id,task.version,json_value(task)))
     return public_business(task)
 
@@ -177,7 +179,7 @@ def get_task(task_id:str,actor:Actor=Depends(authenticate)):
         task,p=access(c,task_id,actor)
         draft=None;preview=None
         if task.draft_id:
-            draft=BuildDraft.model_validate(c.execute('select data from drafts where id=%s',(task.draft_id,)).fetchone()['data'])
+            draft=stored_draft(c.execute('select data from drafts where id=%s',(task.draft_id,)).fetchone()['data'])
             history=history_for(c,p)
             draft.requirements=[evaluate(r,history) for r in draft.requirements]
             preview=build_preview(draft,history,p['policy_version'],pending_questions=pending_questions(c,draft.id),expected_account_id=p['account_id'])
@@ -236,7 +238,7 @@ async def act(project_id,body,actor):
         draft=None
         history=history_for(c,p)
         if task.draft_id:
-            draft=BuildDraft.model_validate(c.execute('select data from drafts where id=%s',(task.draft_id,)).fetchone()['data'])
+            draft=stored_draft(c.execute('select data from drafts where id=%s',(task.draft_id,)).fetchone()['data'])
             if draft.version!=body.expected_draft_version: raise HTTPException(409,'草稿已变化，请刷新')
             draft.requirements=[evaluate(r,history) for r in draft.requirements]
             refresh(task,draft)
@@ -278,7 +280,19 @@ async def act(project_id,body,actor):
                 elif not draft or q.field not in EDITABLE:
                     raise HTTPException(422,'问题需要当前草稿与有效字段')
                 else:
-                    edits.extend({'requirement_id':rid,'values':{q.field:value},'source_message_id':message_id} for rid in q.requirement_ids)
+                    if q.target_ids:
+                        from .entities import find_entity
+                        for target in q.target_ids:
+                            owner=None
+                            for candidate in draft.requirements:
+                                if candidate.id not in q.requirement_ids:continue
+                                try:find_entity(candidate,target)
+                                except ValueError:continue
+                                owner=candidate;break
+                            if owner is None:raise HTTPException(409,'问题目标已变化，请刷新')
+                            edits.append({'requirement_id':owner.id,'target_id':target,'values':{q.field:value},'source_message_id':message_id})
+                    else:
+                        edits.extend({'requirement_id':rid,'values':{q.field:value},'source_message_id':message_id} for rid in q.requirement_ids)
                 answered.append({'question':q.question,'field':q.field,'answer':value})
             if not answered: raise HTTPException(422,'请填写答案')
             if edits: draft=edit_draft(c,draft.id,actor,draft.version,edits)
@@ -350,7 +364,7 @@ async def act(project_id,body,actor):
             current.lease=None
             for question in decision.questions:
                 question.evidence_version=draft.version if draft else current.context.version
-                question.id=sha256(json.dumps({'task':task.id,'scope':question.scope,'field':question.field,'ids':sorted(question.requirement_ids),'reason':question.reason_code,'evidence_version':question.evidence_version},sort_keys=True,ensure_ascii=False).encode()).hexdigest()[:20]
+                question.id=sha256(json.dumps({'task':task.id,'scope':question.scope,'field':question.field,'ids':sorted(question.requirement_ids),'targets':sorted(question.target_ids),'reason':question.reason_code,'evidence_version':question.evidence_version},sort_keys=True,ensure_ascii=False).encode()).hexdigest()[:20]
             # Empty model output cannot discard unresolved questions or pending proposals.
             existing={q.id:q for q in current.semantic_questions if q.id not in current.answers}
             existing.update({q.id:q for q in decision.questions})

@@ -147,6 +147,10 @@ def validate_proposal_evidence(state,decision):
     for edit in decision.edits:
         row=rows.get(edit.requirement_id)
         if not row:continue # Scope validation supplies the more specific error.
+        if edit.target_id and edit.target_id!=edit.requirement_id:
+            from .entities import evidence_values
+            from .models import Requirement
+            row=evidence_values(Requirement.model_validate(row),edit.target_id)
         for field,value in edit.values.items():
             if field in CRITICAL_FIELDS or field=='objective':
                 edit.sources[field]=supported_source(state,row,field,value,edit.sources.get(field))

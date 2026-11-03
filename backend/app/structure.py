@@ -38,8 +38,9 @@ def allocate_budget(total: Decimal, ratios: list[Decimal]) -> list[Decimal]:
 def campaign_tree(req: Requirement):
     """Return materialized review nodes plus local issues. Never creates platform objects."""
     issues = []
+    target_id=req.id
     def problem(field, message):
-        issues.append(Issue(code='structure', field=field, message=message))
+        issues.append(Issue(code='structure', field=field, message=message,target_id=target_id))
 
     name = req.name or f"{req.business_no or req.id[:8]}-TikTok-{req.objective or '待确认'}"
     spec = req.structure
@@ -81,6 +82,7 @@ def campaign_tree(req: Requirement):
     groups = []
     material_ids = set()
     for index, group in enumerate(spec.groups):
+        target_id=group.id
         materials = group.ads
         if not materials:
             problem('structure', '广告组尚无明确素材')
@@ -89,6 +91,7 @@ def campaign_tree(req: Requirement):
         language = req.language if group.language is None else group.language
         if not audience:
             problem('audience', f'广告组 {group.name or group.id} 缺少受众')
+        delivered=set()
         if not group.start_at or not group.end_at or not group.timezone:
             problem('start_at', f'广告组 {group.name or group.id} 缺少明确排期或时区')
         elif not group.start_at.tzinfo or not group.end_at.tzinfo:
@@ -96,6 +99,7 @@ def campaign_tree(req: Requirement):
         elif group.end_at <= group.start_at:
             problem('end_at', '广告组结束时间必须晚于开始时间')
         for material in materials:
+            target_id=material.id
             if not material.id.strip() or material.id in material_ids:
                 problem('structure', '广告 ID 必须非空且在计划内唯一')
             material_ids.add(material.id)
@@ -126,6 +130,9 @@ def campaign_tree(req: Requirement):
                     problem('post_id', f'广告 {material.name or material.id} 的链接与帖子 ID 冲突')
             if req.objective == 'traffic' and (not destination.startswith('https://') or not cta):
                 problem('landing_url', f'广告 {material.name or material.id} 的流量目标需要 HTTPS 落地页与 CTA')
+            delivery=(material.kind,post_id,identity_id,material.authorization_code)
+            if delivery in delivered:problem('structure','同一广告组内存在重复素材，请核对记录身份')
+            delivered.add(delivery)
             ads.append({'id':material.id, 'name':material.name or req.name or req.business_no or post_id,
                         'material_kind':material.kind, 'post_id':post_id, 'post_url':post_url,
                         'identity_id':identity_id, 'authorization_present':bool(material.authorization_code),

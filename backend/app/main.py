@@ -1,3 +1,4 @@
+from .service import stored_draft
 from .public import public_business, public_agent_state
 import json
 from uuid import uuid4
@@ -342,18 +343,28 @@ async def confirm_mapping(file_id:str,body:MappingConfirmation,actor:Actor=Depen
         context=task.context
         if (not context.account_ids or project['account_id'] in context.account_ids):
             for req in draft.requirements:
+                if context.account_ids and req.account_id not in context.account_ids:continue
                 if context.objectives and req.objective not in context.objectives: continue
                 for field,value in context.defaults.items():
                     if getattr(req,field) in (None,'') and not any(i.field==field and i.code.startswith('invalid_') for i in req.issues):
                         from .excel import normalize_value
                         setattr(req,field,normalize_value(field,value,req.timezone))
                         req.sources[field]=SourceRef(file_id='',sheet='',cell='',raw_value=value,kind='template',context_version=context.version)
+                        if req.structure and field in ('audience','language','start_at','end_at','timezone'):
+                            for group in req.structure.groups:
+                                if getattr(group,field) in (None,''):
+                                    setattr(group,field,getattr(req,field));group.sources[field]=req.sources[field]
+                        if req.structure and field in ('post_id','post_url','identity_id','cta','landing_url'):
+                            for group in req.structure.groups:
+                                for material in group.ads:
+                                    if getattr(material,field) in (None,''):
+                                        setattr(material,field,getattr(req,field));material.sources[field]=req.sources[field]
             draft.requirements=[evaluate(Requirement.model_validate(r.model_dump()),history) for r in draft.requirements]
 
         if task.draft_id:
             old=c.execute('select version,data from drafts where id=%s for update',(task.draft_id,)).fetchone()
             from .merge import merge_requirements
-            draft.requirements=[evaluate(r,history) for r in merge_requirements(BuildDraft.model_validate(old['data']).requirements,draft.requirements)]
+            draft.requirements=[evaluate(r,history) for r in merge_requirements(stored_draft(old['data']).requirements,draft.requirements)]
             draft.id=task.draft_id;draft.version=old['version']+1
             c.execute('update drafts set version=%s,data=%s where id=%s',(draft.version,json_value(draft),draft.id))
         else:
@@ -439,7 +450,7 @@ def draft_access(c,draft_id,actor,write=False):
     if write:
         from .service import ensure_draft_active
         ensure_draft_active(c,draft_id)
-    return BuildDraft.model_validate(row['data']),project
+    return stored_draft(row['data']),project
 
 @app.get('/drafts/{draft_id}/preview')
 def preview_draft(draft_id:str,actor:Actor=Depends(authenticate)):
