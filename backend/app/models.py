@@ -152,7 +152,7 @@ class SheetMapping(Model):
     header_row: int = Field(ge=1)
     first_row: int = Field(ge=1)
     last_row: int = Field(ge=1)
-    columns: dict[InputField, Annotated[str, Field(pattern=r'^[A-Z]{1,3}$')]] = Field(default_factory=dict)
+    columns: dict[InputField, Annotated[str, Field(pattern=r'^[A-Z]{1,3}$')]] = Field(default_factory=dict, description='只包含真实存在的逐行列映射，值为Excel大写列字母。缺少来源的字段省略，不填空字符串、字段名或null占位。固定资料使用bindings。')
     bindings: dict[InputField, Binding] = Field(default_factory=dict)
     filters: list[RowFilter] = Field(default_factory=list)
     # Defaults are explicitly accepted by a user, not instructions extracted from cells.
@@ -208,7 +208,6 @@ class RequirementExpansion(Model):
 
 class ChatDecision(Model):
     answer: str
-    scope: TaskScope | None = None
     expansions: list[RequirementExpansion] = Field(default_factory=list)
     additions: list[DemandCandidate] = Field(default_factory=list)
     edits: list[ChatEdit] = Field(default_factory=list)

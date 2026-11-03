@@ -27,7 +27,7 @@ def test_scope_has_own_schema_and_is_not_optional_in_field_response(monkeypatch)
     result=asyncio.run(conversation_graph(InMemorySaver()).ainvoke(state,{'configurable':{'thread_id':'dedicated'}}))
     assert calls==['scope','fields']
     assert result['scope']['status']=='resolved'
-    assert result['decision']['scope']['selectors'][0]['values']==[code]
+    assert result['scope']['selectors'][0]['values']==[code]
 
 
 def test_incomplete_scope_returns_structured_question_without_field_call(monkeypatch):
@@ -98,7 +98,7 @@ def test_checkpoint_resume_reuses_scope_and_execution_position(monkeypatch):
         saved=await graph.aget_state(config)
         assert saved.next==('understand',)
         result=await graph.ainvoke(None,config)
-        assert result['decision']['scope']['status']=='resolved'
+        assert result['scope']['status']=='resolved'
     asyncio.run(scenario())
     assert calls=={'scope':1,'fields':2}
 
@@ -137,7 +137,7 @@ def test_empty_intake_records_known_scope_and_waits_for_real_input(monkeypatch):
     result=asyncio.run(conversation_graph(InMemorySaver()).ainvoke(state,{'configurable':{'thread_id':'awaiting-input'}}))
     assert calls==['scope']
     assert result['progress']['phase']=='awaiting_input'
-    assert result['decision']['scope']['status']=='resolved'
+    assert result['scope']['status']=='resolved'
     assert result['decision']['additions']==[]
     assert result['decision']['edits']==[]
     state['scope']=result['scope']
@@ -174,7 +174,7 @@ def test_latest_history_query_reenters_scope_even_when_build_range_is_known(monk
             return ChatDecision(answer='当前项目导入快照中有一条记录')
     monkeypatch.setattr('app.agent.llm',lambda schema:Scope() if schema is TaskScope else Fields())
     result=asyncio.run(conversation_graph(InMemorySaver()).ainvoke(state,{'configurable':{'thread_id':'switch-history'}}))
-    assert calls==['scope','fields'] and result['decision']['scope']['action']=='history'
+    assert calls==['scope','fields'] and result['scope']['action']=='history'
 
 
 def test_explicit_edit_after_history_returns_to_edit_without_changing_selection(monkeypatch):
@@ -190,6 +190,51 @@ def test_explicit_edit_after_history_returns_to_edit_without_changing_selection(
         async def ainvoke(self,_):calls.append('fields');return ChatDecision(answer='预算提案',edits=[ChatEdit(requirement_id='wanted',values={'budget':'40'})])
     monkeypatch.setattr('app.agent.llm',lambda schema:Scope() if schema is TaskScope else Fields())
     result=asyncio.run(conversation_graph(InMemorySaver()).ainvoke(state,{'configurable':{'thread_id':'switch-edit'}}))
-    assert calls==['scope','fields'] and result['decision']['scope']['action']=='edit'
+    assert calls==['scope','fields'] and result['scope']['action']=='edit'
     assert result['decision']['edits'][0]['values']=={'budget':'40'}
     assert [r['included'] for r in result['draft']['requirements']]==[False,False]
+
+
+def test_field_schema_has_no_scope_and_rejects_a_second_scope_authority():
+    from pydantic import ValidationError
+    assert 'scope' not in ChatDecision.model_json_schema()['properties']
+    with pytest.raises(ValidationError) as invalid:
+        ChatDecision.model_validate({'answer':'wrong layer','scope':TaskScope().model_dump(mode='json')})
+    assert any(error['type']=='extra_forbidden' and error['loc']==('scope',) for error in invalid.value.errors())
+
+
+def test_model_scope_in_field_response_is_repaired_without_changing_authoritative_scope(monkeypatch):
+    code,state=fixture_state()
+    scope=TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='business_no',values=[code])],message_ids=['source']).model_dump(mode='json')
+    state['scope']=scope;calls=[]
+    class Fields:
+        async def ainvoke(self,_):
+            calls.append(1)
+            return {'answer':'forged scope','scope':{'action':'new','status':'resolved','all_records':True}} if len(calls)==1 else ChatDecision(answer='保持已核实范围')
+    monkeypatch.setattr('app.agent.llm',lambda schema:Fields())
+    result=asyncio.run(conversation_graph(InMemorySaver()).ainvoke(state,{'configurable':{'thread_id':'no-shadow-scope'}}))
+    assert len(calls)==2
+    assert result['scope']==scope
+    assert 'scope' not in result['decision']
+
+
+def test_task_scope_answer_reenters_scope_but_other_structured_answers_do_not(monkeypatch):
+    import json
+    from app.agent import scope_required
+    code,state=fixture_state()
+    state['scope']=TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='business_no',values=[code])],message_ids=['source']).model_dump(mode='json')
+    answer={'id':'answer','role':'user','content':'本任务回答：'+json.dumps([{'field':'scope','question':'本次范围？','answer':'仅业务编号other'}],ensure_ascii=False)}
+    state['messages'].append(answer)
+    assert scope_required(state)
+    calls=[]
+    class Scope:
+        async def ainvoke(self,_):
+            calls.append('scope')
+            return TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='business_no',values=['other'])],message_ids=['answer'])
+    class Fields:
+        async def ainvoke(self,_):calls.append('fields');return ChatDecision(answer='范围已按回答核实')
+    monkeypatch.setattr('app.agent.llm',lambda schema:Scope() if schema is TaskScope else Fields())
+    result=asyncio.run(conversation_graph(InMemorySaver()).ainvoke(state,{'configurable':{'thread_id':'scope-answer'}}))
+    assert calls==['scope','fields'] and result['scope']['selectors'][0]['values']==['other']
+    state['messages'][-1]['content']='本任务回答：'+json.dumps([{'field':'budget','answer':'40'}],ensure_ascii=False)
+    assert not scope_required(state)

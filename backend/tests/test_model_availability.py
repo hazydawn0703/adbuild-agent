@@ -128,6 +128,6 @@ def test_provider_503_resumes_same_graph_checkpoint_without_repeating_scope(monk
         assert checkpoint.next==('understand',)
         assert PRIVATE not in str(checkpoint)
         result=await graph.ainvoke(None,config)
-        assert result['decision']['scope']['status']=='resolved' and result['decision']['edits']==[]
+        assert result['scope']['status']=='resolved' and result['decision']['edits']==[]
     asyncio.run(scenario())
     assert calls=={'scope':1,'fields':2}

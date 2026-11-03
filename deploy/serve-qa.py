@@ -26,7 +26,9 @@ load_dotenv('/opt/adbuild-agent/qa/robustness/.env',override=True)
 assert (make_url(os.environ['DATABASE_URL']).database or '').endswith('_test')
 assert os.getenv('EXECUTION_ENABLED','false').lower() in ('false','0')
 os.environ['EXECUTION_ENABLED']='false'
-os.environ['STORAGE_DIRECTORY']=str(workflow/'workbooks')
+storage=workflow/'private-workbooks'
+assert storage.is_dir(), 'The successful workflow private file store is required'
+os.environ['STORAGE_DIRECTORY']=str(storage)
 os.umask(0o077)
 sys.path.insert(0,str(release/'backend'))
 from app.settings import settings

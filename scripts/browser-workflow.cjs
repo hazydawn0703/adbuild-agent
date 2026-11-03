@@ -13,15 +13,22 @@ async function main(){
  const login=JSON.parse(await fs.readFile(loginFile,'utf8'));
  if(!login.email||!login.password)throw new Error('QA_LOGIN_FILE must contain email and password');
  const output=path.resolve(process.env.QA_ARTIFACT_DIR||`artifacts/real-browser-${new Date().toISOString().replace(/[:.]/g,'-')}`);
- await fs.mkdir(output,{recursive:true});
+ await fs.mkdir(path.dirname(output),{recursive:true});
+ await fs.mkdir(output); // A run must never overwrite an existing evidence directory.
  const report={started_at:new Date().toISOString(),preview_url:previewUrl,api_url:apiUrl,project:projectName,
   task:process.env.QA_TASK_NAME||null,api_forwarding:'route.fetch to actual isolated API; no mocked responses',
   steps:[],api:[],workspace_snapshots:[],page_errors:[],forbidden_attempts:[],passed:false};
- const configuration=await fetch(apiUrl.replace(/\/$/,'')+'/config').then(async response=>{
-  assert(response.ok,'Isolated QA API config is unavailable');return response.json();
- });
- assert.equal(configuration.execution_enabled,false,'Real advertising must stay disabled before browser verification');
- report.execution_enabled=configuration.execution_enabled;
+ try{
+  const configuration=await fetch(apiUrl.replace(/\/$/,'')+'/config').then(async response=>{
+   assert(response.ok,'Isolated QA API config is unavailable');return response.json();
+  });
+  assert.equal(configuration.execution_enabled,false,'Real advertising must stay disabled before browser verification');
+  report.execution_enabled=configuration.execution_enabled;
+ }catch(error){
+  report.error={name:error.name,message:error.message};report.completed_at=new Date().toISOString();
+  await fs.writeFile(path.join(output,'report.json'),JSON.stringify(report,null,2),{flag:'wx'});
+  throw error;
+ }
  const browser=await chromium.launch({headless:true,channel:process.env.QA_BROWSER_CHANNEL||'chrome'});
  const page=await browser.newPage({viewport:{width:1440,height:1000}});
  page.setDefaultTimeout(30000);
@@ -44,7 +51,7 @@ async function main(){
  });
  try{
   await page.goto(previewUrl);await page.waitForLoadState('networkidle');
-  await page.getByRole('button',{name:/登录工作空间/}).click();
+  await page.getByRole('button',{name:'登录账号',exact:true}).click();
   await page.getByLabel('邮箱',{exact:true}).fill(login.email);
   await page.getByLabel('密码',{exact:true}).fill(login.password);
   await page.getByRole('button',{name:'登录',exact:true}).click();
@@ -54,7 +61,7 @@ async function main(){
   await page.waitForLoadState('networkidle');
   if(process.env.QA_INPUT_DIR){
    const input=path.resolve(process.env.QA_INPUT_DIR);
-   await page.getByRole('button',{name:'＋ 新建搭建任务',exact:true}).click();
+   await page.getByRole('button',{name:'新建搭建任务',exact:true}).click();
    await page.waitForLoadState('networkidle');
    const message=await fs.readFile(path.join(input,'message.txt'),'utf8');
    await page.getByLabel('发送给 Agent 的需求').fill(message);
@@ -150,7 +157,7 @@ async function main(){
   throw error;
  }finally{
   report.completed_at=new Date().toISOString();
-  await fs.writeFile(path.join(output,'report.json'),JSON.stringify(report,null,2));
+  await fs.writeFile(path.join(output,'report.json'),JSON.stringify(report,null,2),{flag:'wx'});
   await browser.close();
  }
  console.log(JSON.stringify({passed:report.passed,task_id:report.task_id,confirmation_action:report.confirmation_action,api_requests:report.api.length,artifact_directory:output}));

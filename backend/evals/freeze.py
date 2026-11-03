@@ -8,23 +8,25 @@ from app.settings import settings
 parser=argparse.ArgumentParser()
 parser.add_argument('--output',required=True)
 parser.add_argument('--commit',required=True)
-parser.add_argument('--evidence',action='append',default=[],help='Sealed private run directory; never sent to a model')
+parser.add_argument('--evidence',action='append',default=[],help='Private run seal JSON file; never sent to a model')
 args=parser.parse_args()
 root=Path(__file__).resolve().parents[2]
-paths=sorted(str(p.relative_to(root)).replace('\\','/') for directory in ('backend','frontend','deploy','docs','scripts') for p in (root/directory).rglob('*') if p.is_file() and not any(x in p.parts for x in ('node_modules','.next','__pycache__','.pytest_cache','.venv','test-results','playwright-report')) and p.suffix not in ('.pyc','.tsbuildinfo') and p.name not in ('.env',))
-paths += [p for p in ('README.md','.gitignore') if (root/p).is_file()]
+paths=sorted(str(p.relative_to(root)).replace('\\','/') for directory in ('backend','frontend','deploy','docs','scripts','.github') for p in (root/directory).rglob('*') if p.is_file() and not any(x in p.parts for x in ('node_modules','.next','__pycache__','.pytest_cache','.venv','test-results','playwright-report')) and p.suffix not in ('.pyc','.tsbuildinfo') and p.name not in ('.env',))
+paths += [p for p in ('README.md','.gitignore','AGENTS.md','.gitattributes','compose.yaml','.env.example') if (root/p).is_file()]
 evidence=[]
 observed_models=set()
-for directory in args.evidence:
-    folder=Path(directory).resolve()
-    seal=json.loads((folder/'seal.json').read_text(encoding='utf-8'))
+for filename in args.evidence:
+    seal_file=Path(filename).resolve()
+    folder=seal_file.parent
+    seal=json.loads(seal_file.read_text(encoding='utf-8'))
     for name,digest in seal['files'].items():
         file=(folder/name).resolve()
         assert file.is_relative_to(folder) and hashlib.sha256(file.read_bytes()).hexdigest()==digest, 'Evidence seal mismatch'
-    evidence.append({'run':folder.name,'seal_sha256':hashlib.sha256((folder/'seal.json').read_bytes()).hexdigest(),
+    evidence.append({'run':folder.name,'seal_sha256':hashlib.sha256(seal_file.read_bytes()).hexdigest(),
                      'protocol_sha256':hashlib.sha256((folder/'protocol.json').read_bytes()).hexdigest()})
-    events=folder/'model-events.jsonl'
-    if events.is_file():
+    for name in seal['files']:
+        if not name.endswith('model-events.jsonl'):continue
+        events=folder/name
         for line in events.read_text(encoding='utf-8').splitlines():
             event=json.loads(line)
             if event.get('event')=='model_end':

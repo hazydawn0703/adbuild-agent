@@ -154,8 +154,8 @@ class TaskAction(Model):
 
 
 async def act(project_id,body,actor):
-    from .agent import structured
-    from .prompts import COMMON, INTENT, HISTORY, CLARIFY
+    from .agent import FLOW_VERSION
+    from .prompts import PROMPT_HASH
     digest=sha256(body.model_dump_json().encode()).hexdigest()
     now=datetime.now(timezone.utc)
     with transaction() as c:
@@ -165,6 +165,8 @@ async def act(project_id,body,actor):
         if previous:
             if previous['digest']!=digest: raise HTTPException(409,'请求 ID 已用于不同内容')
             if 'result' in previous: return public_business(previous['result'])
+            if previous.get('flow_version')!=FLOW_VERSION or previous.get('prompt_hash')!=PROMPT_HASH:
+                raise HTTPException(409,'原分析流程或提示词版本未知或已变化，请使用新请求重新分析')
         if task.version!=body.expected_version: raise HTTPException(409,'任务已变化，请刷新')
         if task.lease and datetime.fromisoformat(task.lease['until'])>now: raise HTTPException(409,'任务正在分析')
         draft=None
@@ -196,7 +198,7 @@ async def act(project_id,body,actor):
             proposal.status='accepted' if body.action=='accept' else 'rejected'
         elif body.action=='answer':
             edits=[];message_id=str(uuid4())
-            answered=[]
+            answered=[];scope_answered=False
             for qid,value in body.answers.items():
                 q=next((q for q in task.questions if q.id==qid),None)
                 if not q or not value.strip(): raise HTTPException(422,'问题已过期或答案为空')
@@ -206,6 +208,9 @@ async def act(project_id,body,actor):
                         try:normalize_value(q.field,value,'')
                         except (ValueError,TypeError,KeyError):raise HTTPException(422,'任务答案格式无效，请按字段要求填写') from None
                     task.answers[qid]={'field':q.field,'value':value,'question':q.question,'message_id':message_id}
+                    if q.field=='scope':
+                        task.scope.status='unresolved';task.scope.reason='已保存范围回答，请继续分析核对本次集合'
+                        scope_answered=True
                 elif not draft or q.field not in EDITABLE:
                     raise HTTPException(422,'问题需要当前草稿与有效字段')
                 else:
@@ -213,6 +218,7 @@ async def act(project_id,body,actor):
                 answered.append({'question':q.question,'field':q.field,'answer':value})
             if not answered: raise HTTPException(422,'请填写答案')
             if edits: draft=edit_draft(c,draft.id,actor,draft.version,edits)
+            elif scope_answered and draft: draft=edit_draft(c,draft.id,actor,draft.version,[])
             task.messages.append({'id':message_id,'role':'user','content':'本任务回答：'+json.dumps(answered,ensure_ascii=False),'created_at':now.isoformat()})
             task.proposal=None
             task.semantic_questions=[q for q in task.semantic_questions if q.id not in body.answers]
@@ -223,8 +229,10 @@ async def act(project_id,body,actor):
             if body.action=='resume':
                 saved=task.analysis
                 if body.message or body.answers or body.proposal_id:raise HTTPException(409,'恢复只继续原分析；新信息请使用重新分析')
-                if saved.get('phase')!='attention' or not saved.get('resume_available') or not all(k in saved for k in ('checkpoint_request_id','base_task_version','base_draft_version')):
+                if saved.get('phase')!='attention' or not saved.get('resume_available') or not all(k in saved for k in ('checkpoint_request_id','base_task_version','base_draft_version','flow_version','prompt_hash')):
                     raise HTTPException(409,'此任务没有可恢复的版本化检查点，请重新分析')
+                if saved['flow_version']!=FLOW_VERSION or saved['prompt_hash']!=PROMPT_HASH:
+                    raise HTTPException(409,'分析流程或提示词已更新，不能恢复旧检查点，请重新分析')
                 if saved['base_task_version']!=task.version or saved['base_draft_version']!=(draft.version if draft else None):
                     raise HTTPException(409,'任务或草稿已变化，不能继续旧检查点，请重新分析')
                 checkpoint_request_id=saved['checkpoint_request_id']
@@ -232,10 +240,11 @@ async def act(project_id,body,actor):
                 base_draft_version=saved['base_draft_version']
             if body.message and not any(m.get('request_id')==body.request_id for m in task.messages):
                 task.messages.append({'id':str(uuid4()),'request_id':body.request_id,'role':'user','content':body.message,'created_at':now.isoformat()})
-            task.requests[body.request_id]={'digest':digest,'status':'processing'}
+            task.requests[body.request_id]={'digest':digest,'status':'processing','flow_version':FLOW_VERSION,'prompt_hash':PROMPT_HASH}
             task.lease={'request_id':body.request_id,'until':(now+timedelta(seconds=210)).isoformat()}
             task.analysis.update({'checkpoint_request_id':checkpoint_request_id,'base_task_version':base_task_version,
-                                  'base_draft_version':base_draft_version,'phase':'running','resume_available':False})
+                                  'base_draft_version':base_draft_version,'flow_version':FLOW_VERSION,'prompt_hash':PROMPT_HASH,
+                                  'phase':'running','resume_available':False})
             task.analysis.pop('error',None);task.analysis.pop('error_type',None)
             save(c,task)
         else: raise HTTPException(422,'不支持的动作')
@@ -260,8 +269,10 @@ async def act(project_id,body,actor):
             else:
                 output=await graph.ainvoke({'messages':task.messages,'draft':draft.model_dump(mode='json') if draft else None,'context':task.context.model_dump(mode='json'),'documents':documents,'scope':task.scope.model_dump(mode='json'),'project_account_id':p['account_id'],'history_records':history},config)
             decision=ChatDecision.model_validate(output['decision'])
+            from .models import TaskScope
+            resolved_scope=TaskScope.model_validate(output['scope'])
             from .agent import validate_decision
-            validate_decision({'messages':task.messages,'draft':draft.model_dump(mode='json') if draft else None,'context':task.context.model_dump(mode='json'),'documents':documents,'scope':output.get('scope',task.scope.model_dump(mode='json')),'project_account_id':p['account_id']},decision)
+            validate_decision({'messages':task.messages,'draft':draft.model_dump(mode='json') if draft else None,'context':task.context.model_dump(mode='json'),'documents':documents,'scope':resolved_scope.model_dump(mode='json'),'project_account_id':p['account_id']},decision)
         if (decision.edits or decision.expansions) and not draft: raise ValueError('尚无草稿，不能修改字段')
         if draft:
             ids={r.id for r in draft.requirements}
@@ -281,17 +292,17 @@ async def act(project_id,body,actor):
             current.semantic_questions=list(existing.values())
             for question in decision.questions:
                 current.analysis.setdefault('question_basis',{}).setdefault(question.id,question_observation(question,draft))
-            if decision.scope is not None:
-                current.scope=decision.scope
-                if draft and decision.scope.status=='resolved' and decision.scope.action in ('new','repost'):
+            current.scope=resolved_scope
+            if current.scope.status=='resolved':
+                if draft and current.scope.action in ('new','repost'):
                     from .scope import select_requirements
-                    scoped=select_requirements(draft.requirements,decision.scope,current.messages)
-                    selection_edits=[{'requirement_id':r.id,'values':{'included':r.included},'source_message_id':decision.scope.message_ids[-1]} for r,old in zip(scoped,draft.requirements) if r.included!=old.included]
+                    scoped=select_requirements(draft.requirements,current.scope,current.messages)
+                    selection_edits=[{'requirement_id':r.id,'values':{'included':r.included},'source_message_id':current.scope.message_ids[-1]} for r,old in zip(scoped,draft.requirements) if r.included!=old.included]
                     if selection_edits:
                         draft=edit_draft(c,draft.id,actor,draft.version,selection_edits)
                         current.proposal=None
                 if not draft:
-                    current.semantic_questions=[q for q in current.semantic_questions if not (q.scope=='task' and q.field=='scope' and decision.scope.status=='resolved')]
+                    current.semantic_questions=[q for q in current.semantic_questions if not (q.scope=='task' and q.field=='scope')]
             current.analysis.update({'request_id':body.request_id,'phase':'complete','resume_available':False,'progress':output.get('progress',{}),'completed_at':datetime.now(timezone.utc).isoformat()})
             if (current.scope.action=='history'):
                 from .history_query import lookup_history
@@ -318,7 +329,7 @@ async def act(project_id,body,actor):
                 current.lease=None;current.stage='attention'
                 current.analysis.update({'request_id':body.request_id,'phase':'attention','error_type':type(error).__name__,'resume_available':True,
                                          'checkpoint_request_id':checkpoint_request_id,'base_task_version':base_task_version,'base_draft_version':base_draft_version})
-                current.requests[body.request_id]={'digest':digest,'status':'failed','error_type':type(error).__name__}
+                current.requests[body.request_id]={'digest':digest,'status':'failed','error_type':type(error).__name__,'flow_version':FLOW_VERSION,'prompt_hash':PROMPT_HASH}
                 from .agent import ModelServiceError
                 if isinstance(error,ModelServiceError):
                     current.analysis['error']=error.public_error()

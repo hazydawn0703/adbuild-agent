@@ -30,6 +30,30 @@ def test_preview_counts_and_budget_are_the_confirmed_scope():
     approve_preview(d,p,'another_operator',1,p['digest'],True)
     assert d.approval.approved_at==first and d.approval.approved_by=='operator'
 
+def test_unresolved_task_scope_blocks_old_selected_rows_and_invalidates_confirmation():
+    from app.service import pending_questions
+    class Connection:
+        def __init__(self,status):self.status=status
+        def execute(self,*_):return self
+        def fetchone(self):return {'data':{'scope':{'status':self.status},'semantic_questions':[]}}
+    d=draft();p=build_preview(d,[],0,NOW)
+    approve_preview(d,p,'operator',1,p['digest'],True)
+    assert build_preview(d,[],0,NOW,pending_questions=pending_questions(Connection('resolved'),d.id))['approval_valid']
+    blocked=build_preview(d,[],0,NOW,pending_questions=pending_questions(Connection('unresolved'),d.id))
+    assert not blocked['can_confirm'] and not blocked['approval_valid']
+    assert any(issue['field']=='scope' for issue in blocked['issues'])
+
+@pytest.mark.parametrize('task_state',[{'lease':{'request_id':'running'}},{'analysis':{'resume_available':True}},{'analysis':{'mapping_error':{'resume_available':True}}}])
+def test_inflight_or_failed_analysis_cannot_confirm_previous_preview(task_state):
+    from app.service import pending_questions
+    class Connection:
+        def execute(self,*_):return self
+        def fetchone(self):return {'data':{'scope':{'status':'resolved'},**task_state}}
+    d=draft();p=build_preview(d,[],0,NOW)
+    approve_preview(d,p,'operator',1,p['digest'],True)
+    blocked=build_preview(d,[],0,NOW,pending_questions=pending_questions(Connection(),d.id))
+    assert not blocked['can_confirm'] and not blocked['approval_valid']
+
 @pytest.mark.parametrize('changes',[{'budget':None},{'currency':''},{'start_at':None},{'identity_id':''},{'end_at':'2026-01-02T00:00:00Z'}])
 def test_missing_or_expired_selected_rows_block_confirmation(changes):
     d=draft(requirement(**changes));p=build_preview(d,[],0,NOW)

@@ -76,6 +76,10 @@ def test_original_workbooks():
     evaluated=[evaluate(r,exports,datetime(2026,11,2,tzinfo=timezone.utc)) for r in rows]
     assert all(r.history for r in evaluated)
     assert all(any(i.code=='expired' for i in r.issues) for r in evaluated)
+    # Source O/P cells use date-only formats. Their decoded zero time is an Excel
+    # representation, not an explicitly supplied delivery time.
+    assert all(r.start_at is None and r.end_at is None for r in evaluated)
+    assert all({i.field for i in r.issues if i.code=='invalid_date_precision'}=={'start_at','end_at'} for r in evaluated)
     assert all(r.classification!='new' for r in evaluated)
     assert [len(r.history) for r in evaluated]==[1,1,1,2,3,1,1,1]
     assert [r.business_no for r in rows]==['98','153','156','101','158','118','191','193']
@@ -85,7 +89,9 @@ def test_original_workbooks():
     assert all(r.sources['timezone'].raw_value=='投放时区：UTC+0' for r in rows)
     assert all(r.sources['post_id'].cell==f'J{index}' for index,r in enumerate(rows,3))
     assert not any(i.code=='language_conflict' for r in evaluated for i in r.issues)
-    assert all(any(d['field']=='start_at' for h in r.history for d in h['differences']) for r in evaluated)
+    assert all(not h['schedule_comparison']['comparable'] for r in evaluated for h in r.history)
+    assert all(r.sources['start_at'].cell==f'O{index}' and r.sources['end_at'].cell==f'P{index}' for index,r in enumerate(rows,3))
+    assert all(h.get('start_at') and h.get('end_at') for r in evaluated for h in r.history)
     assert any(d['field']=='budget' for h in evaluated[3].history for d in h['differences'])
     from app.preview import build_preview
     from app.models import BuildDraft

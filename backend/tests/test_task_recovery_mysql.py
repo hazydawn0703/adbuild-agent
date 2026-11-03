@@ -138,3 +138,24 @@ def test_sdk_service_503_retains_same_checkpoint_and_can_resume_after_provider_r
                 for table in ('runs','deployments'):
                     assert c.execute('select count(*) n from '+table+' where project_id=%s',(database,)).fetchone()['n']==0
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('changed',['flow_version','prompt_hash','missing_version'])
+def test_resume_rejects_unknown_or_changed_flow_and_prompt_versions(database,monkeypatch,changed):
+    from app.agent import FLOW_VERSION
+    from app.prompts import PROMPT_HASH
+    monkeypatch.setattr('app.agent.llm',lambda _:pytest.fail('Obsolete checkpoint must be rejected before model use'))
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+            task=(await client.post(f'/projects/{database}/tasks',json={})).json()
+            analysis={'phase':'attention','resume_available':True,'checkpoint_request_id':str(uuid4()),
+                      'base_task_version':task['version'],'base_draft_version':None,'flow_version':FLOW_VERSION,'prompt_hash':PROMPT_HASH}
+            if changed=='missing_version':analysis.pop('flow_version')
+            else:analysis[changed]='obsolete-analysis-version'
+            with db.transaction() as c:
+                row=c.execute('select data from intake_tasks where id=%s',(task['id'],)).fetchone()['data']
+                row['stage']='attention';row['analysis']=analysis
+                c.execute('update intake_tasks set data=%s where id=%s',(db.json_value(row),task['id']))
+            response=await client.post(f'/projects/{database}/chat',json={'task_id':task['id'],'request_id':str(uuid4()),'expected_version':task['version'],'action':'resume'})
+            assert response.status_code==409 and '重新分析' in response.text
+    asyncio.run(scenario())

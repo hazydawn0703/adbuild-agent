@@ -6,6 +6,8 @@ from .models import MappingProposal, ChatDecision, TaskScope, Clarification, Sou
 from .settings import settings
 from openai import APIError,APIConnectionError,APITimeoutError,APIStatusError
 
+FLOW_VERSION='intake-graph-2'
+
 
 class ModelServiceError(RuntimeError):
     """Public model availability facts; no provider body, request or credentials."""
@@ -210,6 +212,10 @@ def scope_required(state):
     current=state.get('scope') or {}
     latest=next((m for m in reversed(state.get('messages',[])) if m.get('role')=='user'),{})
     message=latest.get('content','')
+    if message.startswith('本任务回答：'):
+        try:answers=json.loads(message[len('本任务回答：'):])
+        except (ValueError,TypeError):answers=[]
+        if isinstance(answers,list) and any(isinstance(answer,dict) and answer.get('field')=='scope' for answer in answers):return True
     if current.get('status')=='resolved':
         if latest.get('id') in current.get('message_ids',[]) or message.startswith('本任务回答：'):return False
         query=re.search(r'(?:查|查询|查看|检索|搜索|找).{0,12}(?:历史|以前|上次|投放记录)|(?:历史|投放记录).{0,12}(?:查|查询|查看|检索|搜索)|\b(?:query|search|look\s*up)\b.{0,20}\bhistory\b',message,re.I)
@@ -228,7 +234,7 @@ def validate_selection(state,decision):
     import re
     from .scope import as_dict,validate_scope
     rows={r['id']:r for r in (state.get('draft') or {}).get('requirements',[])}
-    scope=as_dict(decision.scope) if decision.scope is not None else state.get('scope')
+    scope=as_dict(state.get('scope'))
     scope=scope or {}
     desired=None
     if scope.get('status')=='resolved' and scope.get('action') in ('new','repost','exclude'):
@@ -288,11 +294,11 @@ def validate_decision(state,decision):
     rows=(state['draft'] or {}).get('requirements',[])
     ids={r['id'] for r in rows}
     from .scope import validate_scope,as_dict
-    active_scope=as_dict(decision.scope) if decision.scope is not None else as_dict(state.get('scope'))
+    active_scope=as_dict(state.get('scope'))
     if active_scope and active_scope.get('action')=='history' and (decision.edits or decision.expansions or decision.additions):
         raise ProposalError('历史查询为只读动作，不能编辑、拆分或新增需求；请明确建立搭建任务后再修改')
-    if decision.scope is not None:
-        try: validate_scope(decision.scope,state['messages'])
+    if active_scope is not None:
+        try: validate_scope(active_scope,state['messages'])
         except ValueError as error: raise ProposalError(str(error)) from None
     for question in decision.questions:
         if question.scope=='task':
@@ -352,12 +358,13 @@ def conversation_graph(checkpointer):
         text='\n'.join(m.get('content','') for m in state.get('messages',[]) if m.get('role')=='user')
         material=any(s.field=='post_id' for s in scope.selectors) or re.search(r'https?://[^\s]*tiktok\.com/[^\s]*/video/\d+|(?:帖子(?:\s*ID)?|视频\s*ID|post(?:\s*id)?)\s*[:：=#]?\s*\d+',text,re.I)
         if scope.status=='resolved' and scope.action in ('new','repost') and not state.get('draft') and not state.get('documents') and not material:
-            return ChatDecision(answer='已记录本次需求范围。请上传需求Excel和ExportAds，或提供明确的TikTok帖子及目标后继续整理方案。',scope=scope).model_dump(mode='json')
+            return ChatDecision(answer='已记录本次需求范围。请上传需求Excel和ExportAds，或提供明确的TikTok帖子及目标后继续整理方案。').model_dump(mode='json')
         return None
     def prepare(state):
         from .scope import compact_state
-        prepared=compact_state(state)
-        return {'prepared':prepared,'scope_question':None,'progress':{'phase':'evidence','coverage':prepared['coverage']}}
+        scope=TaskScope.model_validate(state.get('scope') or {}).model_dump(mode='json')
+        prepared=compact_state({**state,'scope':scope})
+        return {'scope':scope,'prepared':prepared,'scope_question':None,'progress':{'phase':'evidence','coverage':prepared['coverage']}}
     async def resolve_scope(state):
         from .scope import compact_state,validate_scope
         if not scope_required(state):
@@ -383,7 +390,7 @@ def conversation_graph(checkpointer):
         if result.status!='resolved':
             question=Clarification(id='scope',field='scope',scope='task',question=result.reason or '请明确本次选择的业务编号、帖子或需求集合，其他资料可以继续保留为参考。')
             output['scope_question']=question.model_dump(mode='json')
-            output['decision']=ChatDecision(answer=question.question,scope=result,questions=[question]).model_dump(mode='json')
+            output['decision']=ChatDecision(answer=question.question,questions=[question]).model_dump(mode='json')
         else:
             output['prepared']=compact_state({**state,'scope':result.model_dump(mode='json')})
             waiting=waiting_decision(state,result)
@@ -394,13 +401,7 @@ def conversation_graph(checkpointer):
     async def understand(state):
         payload=json.dumps(state['prepared'],ensure_ascii=False)
         if len(payload)>150000: raise ValueError('相关需求与消息超过单轮分析范围；已保留任务，请明确子集后继续，尚未完成全部分析')
-        def validate_output(decision):
-            if decision.scope is not None and state.get('scope') and decision.scope.model_dump(mode='json')!=state['scope']:
-                raise ProposalError('范围已由专责节点处理，字段建议不能另行改写范围；scope应留空')
-            validate_decision(state,decision)
-        decision=await structured(ChatDecision,[('system',COMMON+INTENT+HISTORY+CLARIFY),('user',payload)],validator=validate_output)
-        if state.get('scope'):
-            decision.scope=TaskScope.model_validate(state['scope'])
+        decision=await structured(ChatDecision,[('system',COMMON+INTENT+HISTORY+CLARIFY),('user',payload)],validator=lambda decision:validate_decision(state,decision))
         return {'decision':decision.model_dump(mode='json'),'progress':{'phase':'validated','coverage':state['prepared']['coverage']}}
     def validate(state):
         validate_decision(state,ChatDecision.model_validate(state['decision']))

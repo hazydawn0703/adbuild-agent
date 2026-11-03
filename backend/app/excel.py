@@ -34,6 +34,14 @@ def platform_id(value):
     return re.sub(r"^id:\s*", "", clean(value), flags=re.I)
 
 
+def post_id_from_url(value):
+    """Extract the ID only from a TikTok video path, never from a query string."""
+    url=urlsplit(clean(value));host=url.hostname or ''
+    if host!='tiktok.com' and not host.endswith('.tiktok.com'):return None
+    match=re.search(r'(?:^|/)video/([0-9]+)(?:/|$)',url.path)
+    return match[1] if match else None
+
+
 def objective(value):
     text = clean(value).lower()
     if text in Objective._value2member_map_:
@@ -395,13 +403,13 @@ def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
                     issues.append(Issue(code='invalid_conflict',field='platform',message='平台字段与 TikTok 帖子链接不一致'))
                 if not values.get('platform'):
                     values['platform']='TikTok';refs['platform']=refs['post_url']
-                match=re.search(r'/video/([0-9]+)',url)
-                if match:
-                    if values.get('post_id') and platform_id(values['post_id'])!=match[1]:
+                linked=post_id_from_url(url)
+                if linked:
+                    if values.get('post_id') and platform_id(values['post_id'])!=linked:
                         issues.append(Issue(code='invalid_conflict',field='post_id',message='帖子 ID 与 TikTok 链接中的 ID 不一致'))
                         values['post_id']=''
                     else:
-                        values['post_id']=match[1];refs['post_id']=refs['post_url']
+                        values['post_id']=linked;refs['post_id']=refs['post_url']
             if not values.get('platform'):
                 # A reviewed platform predicate supplies real row evidence; it is
                 # not a workbook-wide default inferred from unrelated records.
@@ -416,6 +424,10 @@ def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
             # Timezone must be normalized before timezone-less timestamps.
             ordered=sorted(list(values),key=lambda field:0 if field=='timezone' else 2 if field in ('start_at','end_at') else 1)
             for field in ordered:
+                if field in ('start_at','end_at') and re.fullmatch(r'\d{4}[-/]\d{1,2}[-/]\d{1,2}',clean(values[field])):
+                    values[field]=None
+                    issues.append(Issue(code='invalid_date_precision',field=field,message='日期只有某天，需明确投放时刻'))
+                    continue
                 try: values[field]=normalize_value(field,values[field],clean(values.get('timezone')))
                 except (ValueError,KeyError,TypeError) as error:
                     values[field]=None if field in ('budget','objective','start_at','end_at') else ''

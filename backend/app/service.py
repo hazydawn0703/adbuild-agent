@@ -18,6 +18,13 @@ def pending_questions(conn,draft_id):
     row=conn.execute('select data from intake_tasks where draft_id=%s',(draft_id,)).fetchone()
     if not row:return []
     questions=list(row['data'].get('semantic_questions',[]))
+    analysis=row['data'].get('analysis') or {}
+    if row['data'].get('lease') or analysis.get('resume_available') or (analysis.get('mapping_error') or {}).get('resume_available'):
+        questions.append({'field':'scope','scope':'task','requirement_ids':[],
+            'question':'本任务还有未完成的分析，请恢复或重新分析后再确认完整方案','blocking':True})
+    if (row['data'].get('scope') or {}).get('status')!='resolved' and not any(q.get('scope')=='task' and q.get('field')=='scope' for q in questions):
+        questions.append({'field':'scope','scope':'task','requirement_ids':[],
+            'question':'本次需求范围尚未确定，请先明确选择范围并重新分析，再确认完整方案','blocking':True})
     proposal=row['data'].get('proposal')
     if proposal and proposal['status']=='pending':
         questions.append({'field':'included','scope':'task' if proposal.get('additions') else 'requirements','requirement_ids':list(dict.fromkeys([e['requirement_id'] for e in proposal['edits']]+[e['base_requirement_id'] for e in proposal.get('expansions',[])])),
@@ -40,7 +47,7 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
             raise HTTPException(422,"需求或编辑字段无效")
         values = req.model_dump()
         patch=dict(edit["values"])
-        from .excel import normalize_value
+        from .excel import normalize_value,post_id_from_url
         from .models import StructureSpec
         for field,value in list(patch.items()):
             if field=='structure':
@@ -49,9 +56,15 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
                 try: patch[field]=normalize_value(field,value,patch.get('timezone',req.timezone))
                 except (ValueError,TypeError) as error: raise HTTPException(422,str(error))
         if 'post_url' in patch and patch['post_url']:
-            import re
-            match=re.search(r'/video/(\d+)',patch['post_url'])
-            if match: patch['post_id']=match[1]
+            linked=post_id_from_url(patch['post_url'])
+            if not linked:raise HTTPException(422,'请提供含明确帖子 ID 的 TikTok 视频链接')
+            if 'post_id' in patch and patch['post_id'] and patch['post_id']!=linked:
+                raise HTTPException(422,'帖子 ID 与 TikTok 视频链接中的 ID 不一致，请核对后一起提交')
+            patch['post_id']=linked
+        if ('post_id' in patch or 'post_url' in patch) and patch.get('post_url',req.post_url) and patch.get('post_id',req.post_id):
+            linked=post_id_from_url(patch.get('post_url',req.post_url))
+            if linked and linked!=patch.get('post_id',req.post_id):
+                raise HTTPException(422,'帖子 ID 与保留的视频链接冲突，请更新或清空原链接后再提交')
         values.update(patch)
         req = Requirement.model_validate(values)
         for field,value in patch.items():

@@ -18,7 +18,9 @@ with transaction() as connection:
     projects = connection.execute('select id,reserved from projects order by id').fetchall()
     reserved = str(sum(row['reserved'] for row in projects))
 report = {'time': datetime.now(timezone.utc).isoformat(),
-          'release': str(Path(__file__).resolve().parents[1]),
+          'auditor_source': str(Path(__file__).resolve().parents[1]),
+          'deployed_release': str(Path('/opt/adbuild-agent/current').resolve()),
+          'deployed_commit': (Path('/opt/adbuild-agent/current')/'REVISION').read_text().strip(),
           'execution_enabled': settings().execution_enabled,
           'counts': counts, 'project_ids': [row['id'] for row in projects], 'reserved': reserved}
 for name, action in (('worker_active', 'is-active'), ('worker_enabled', 'is-enabled')):

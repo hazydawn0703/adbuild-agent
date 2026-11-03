@@ -4,6 +4,12 @@ password_hash=PasswordHash.recommended()
 from fastapi import Header, HTTPException
 from .db import transaction
 from .settings import settings
+from hashlib import sha256
+from hmac import compare_digest
+
+
+def credential_version(password: str):
+    return sha256(password.encode()).hexdigest()
 
 
 @dataclass
@@ -18,8 +24,10 @@ async def authenticate(authorization: str = Header(default="")):
         data=URLSafeTimedSerializer(settings().session_secret,salt="adbuild-session").loads(authorization[7:],max_age=86400)
     except BadSignature: raise HTTPException(401,"登录已失效") from None
     with transaction() as c:
-        user=c.execute("select id from users where id=%s and active=true",(data['user_id'],)).fetchone()
+        user=c.execute("select id,password_hash from users where id=%s and active=true",(data.get('user_id',''),)).fetchone()
     if not user: raise HTTPException(401,"账户不可用")
+    if not compare_digest(data.get('credential_version',''),credential_version(user['password_hash'])):
+        raise HTTPException(401,"密码已更新，请重新登录")
     return Actor(user['id'])
 
 

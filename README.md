@@ -9,7 +9,7 @@ Next.js + 官方 AG-UI HttpAgent + FastAPI + LangGraph，使用服务器 MySQL 8
 1. 创建独立 MySQL 数据库和专用账号，只允许应用服务器连接。首次执行 backend/schema.sql 创建业务表；执行 python -m app.admin checkpoints 创建成熟 MySQL checkpointer 的内部表。初始化后应用只需 SELECT/INSERT/UPDATE/DELETE 权限。
 2. 复制根目录 .env.example 到 .env，填写 MySQL DSN、会话签名密钥、令牌加密密钥和 DeepSeek 配置。密钥不得进入 Git。
 3. python -m pip install -e "./backend[test]"。后端从仓库根目录执行 python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000 --no-access-log。
-4. 管理员开通：在 backend 目录执行 python -m app.admin provision --name GSTM --email <邮箱> --password-file <私有密码文件> --account-id <广告账户ID>，初始密码至少16字符。没有公开注册入口。
+4. 平台管理后台为 `/apps/adbuild-agent/ops`，先验证独立的平台管理密码，再开通客户空间、首个项目和管理员账号。服务器配置 `OPS_PASSWORD_HASH`（Argon2 哈希），不在前端保存平台密码。客户初始密码至少16字符。服务器命令 `python -m app.admin provision --name GSTM --email <邮箱> --password-file <私有密码文件> --account-id <广告账户ID>` 也可用于运维开通。
 5. 前端 cd frontend，npm ci，npm run dev。打开 http://localhost:3000/apps/adbuild-agent。前端从 API /config 获取状态，无需嵌入云服务凭证。
 6. 后台执行 python -m app.worker。任务通过 MySQL InnoDB 事务、SKIP LOCKED 和可见性租约领取；执行另有 GET_LOCK 防止重复投递并发执行。
 

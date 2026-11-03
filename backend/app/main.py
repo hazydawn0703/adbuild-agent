@@ -25,6 +25,8 @@ oauth_tasks = set()
 app = FastAPI(title="Adbuild API",version="0.1.0",root_path=os.getenv('ROOT_PATH',''))
 from .intake import router as intake_router
 app.include_router(intake_router)
+from .ops import router as ops_router
+app.include_router(ops_router)
 web=urlsplit(os.getenv('APP_ORIGIN','http://localhost:3000'))
 app.add_middleware(CORSMiddleware,allow_origins=[f'{web.scheme}://{web.netloc}',"http://127.0.0.1:3000"],allow_methods=["*"],allow_headers=["Authorization","Content-Type"])
 
@@ -50,7 +52,8 @@ def login(body:LoginBody):
     if not user or not password_hash.verify(body.password,user['password_hash']):
         sleep(1)
         raise HTTPException(401,'邮箱或密码不正确')
-    token=URLSafeTimedSerializer(settings().session_secret,salt='adbuild-session').dumps({'user_id':user['id']})
+    from .auth import credential_version
+    token=URLSafeTimedSerializer(settings().session_secret,salt='adbuild-session').dumps({'user_id':user['id'],'credential_version':credential_version(user['password_hash'])})
     return {'access_token':token,'expires_in':86400}
 
 
@@ -226,13 +229,15 @@ async def mapping_proposal(file_id:str,actor:Actor=Depends(authenticate)):
         proposal=await asyncio.wait_for(propose_mapping(row['inspection'],data,task=task,on_progress=persist_progress),180)
         persist_progress(proposal)
     except BaseException as error:
+        public_error=ModelServiceError('analysis_timeout',retryable=True) if isinstance(error,TimeoutError) else error if isinstance(error,ModelServiceError) else None
         with transaction() as c:
             current,_=access(c,task.id,actor,write=True)
             if current.lease and current.lease['request_id']==lease_id:
                 current.lease=None;current.stage='attention'
                 current.analysis['mapping_error']={'type':type(error).__name__,'resume_available':True}
+                if public_error: current.analysis['mapping_error'].update(public_error.public_error())
                 save(c,current)
-        if isinstance(error,TimeoutError): raise HTTPException(504,'分析超时，已完成的区域读取已保存，请继续分析') from None
+        if isinstance(error,TimeoutError): raise public_error from None
         raise
     with transaction() as c:
         current,_=access(c,task.id,actor,write=True)

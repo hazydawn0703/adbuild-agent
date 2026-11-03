@@ -9,5 +9,6 @@ __pycache__/
 !.env.example
 *.tsbuildinfo
 artifacts/
+output/
 .tmp/
 *.egg-info/

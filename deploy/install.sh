@@ -12,13 +12,18 @@ fi
 cd "$release/frontend"
 npm ci --ignore-scripts --no-audit --no-fund
 NEXT_TELEMETRY_DISABLED=1 npm run build
-mkdir -p .next/standalone/.next
+mkdir -p .next/standalone/.next .next/standalone/public
 cp -a .next/static .next/standalone/.next/static
+cp -a public/. .next/standalone/public/
 if [ ! -f /etc/adbuild-agent/runtime.env ]; then
   echo 'Configure MySQL DATABASE_URL, SESSION_SECRET, TOKEN_ENCRYPTION_KEY and DeepSeek settings in /etc/adbuild-agent/runtime.env before deployment' >&2
   exit 1
 fi
 /opt/adbuild-agent/venv/bin/python "$release/deploy/check-release.py"
+# Routing is provisioned on the shared host. An application release must not
+# replace the include or reload the host's configuration when routes are stable.
+sudo cmp -s "$release/deploy/nginx.locations.conf" /etc/adbuild-agent/nginx.locations.conf
+sudo nginx -t
 sudo systemctl disable --now adbuild-agent-worker
 
 for service in web api worker; do
@@ -35,10 +40,5 @@ for attempt in $(seq 1 30); do
 done
 curl --fail --silent http://127.0.0.1:18791/health
 curl --fail --silent -o /dev/null http://127.0.0.1:18790/apps/adbuild-agent
-sudo install -o root -g root -m 644 "$release/deploy/nginx.locations.conf" /etc/adbuild-agent/nginx.locations.conf
-# The shared TLS host includes nginx.locations.conf once during host provisioning.
-# Application releases only update their own namespace; never rewrite shared sites.
-sudo nginx -t
-sudo systemctl reload nginx
 sudo systemctl is-active adbuild-agent-web adbuild-agent-api nginx
 echo 'Deployment ready: https://stratos.run/apps/adbuild-agent'
