@@ -71,3 +71,35 @@ def test_task_upload_mapping_answers_replay_and_tenant_scope(database,tmp_path,m
                     assert c.execute('select count(*) n from '+table).fetchone()['n']==0
                 assert c.execute('select reserved from projects where id=%s',(database,)).fetchone()['reserved']==0
     asyncio.run(scenario())
+
+
+def test_checkpoint_proposal_requires_exact_accept_and_survives_reload(database,monkeypatch):
+    from app.models import ChatDecision,ChatEdit,BuildDraft,Requirement
+    calls=[]
+    class Model:
+        async def ainvoke(self,messages):
+            calls.append(1)
+            return ChatDecision(answer='预算修改提案',edits=[ChatEdit(requirement_id='r',values={'budget':'40'})])
+    monkeypatch.setattr('app.agent.llm',lambda schema:Model())
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+            draft=BuildDraft(id=str(uuid4()),project_id=database,requirements=[Requirement(id='r',business_no='101',budget='50')])
+            with db.transaction() as c:
+                tenant=c.execute('select tenant_id from projects where id=%s',(database,)).fetchone()['tenant_id']
+                c.execute('insert into drafts(id,tenant_id,project_id,version,data) values(%s,%s,%s,%s,%s)',(draft.id,tenant,database,1,db.json_value(draft)))
+            task=(await client.post(f'/projects/{database}/tasks',json={'draft_id':draft.id})).json()
+            request={'task_id':task['id'],'request_id':str(uuid4()),'expected_version':task['version'],'expected_draft_version':1,'action':'message','message':'仅将业务编号101的预算改为40'}
+            result=await client.post(f'/projects/{database}/chat',json=request)
+            assert result.status_code==200,result.text
+            reloaded=(await client.get('/tasks/'+task['id'])).json()
+            assert reloaded['draft']['requirements'][0]['budget']=='50'
+            pending=reloaded['task']['proposal']
+            request.update(request_id=str(uuid4()),expected_version=reloaded['task']['version'],action='accept',message='',proposal_id='wrong')
+            assert (await client.post(f'/projects/{database}/chat',json=request)).status_code==409
+            request['proposal_id']=pending['id']
+            accepted=await client.post(f'/projects/{database}/chat',json=request)
+            assert accepted.status_code==200,accepted.text
+            assert accepted.json()['draft']['requirements'][0]['budget']=='40'
+            assert accepted.json()['draft']['approval'] is None
+            assert len(calls)==1
+    asyncio.run(scenario())

@@ -6,11 +6,16 @@ from .rules import evaluate, check_policy, fingerprint
 from .db import transaction, json_value
 from .auth import project_access
 
-EDITABLE = {"included","account_id","name","objective","budget","budget_mode","currency","start_at","end_at","timezone","audience","language","identity_id","cta","landing_url"}
+EDITABLE = {"included","account_id","post_id","post_url","name","objective","budget","budget_mode","currency","start_at","end_at","timezone","audience","language","identity_id","cta","landing_url"}
 
 
 def history_for(conn, project):
     return [r["data"] for r in conn.execute("select data from history where project_id=%s and account_id=%s",(project["id"],project["account_id"]))]
+
+
+def pending_questions(conn,draft_id):
+    row=conn.execute('select data from intake_tasks where draft_id=%s',(draft_id,)).fetchone()
+    return row['data'].get('semantic_questions',[]) if row else []
 
 
 def edit_draft(conn, draft_id, actor, expected_version, edits):
@@ -29,6 +34,16 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
         values = req.model_dump()
         patch=dict(edit["values"])
         from .excel import objective, date_value
+        if 'post_url' in patch:
+            import re
+            from urllib.parse import urlsplit
+            host=urlsplit(patch['post_url']).hostname or ''
+            match=re.search(r'/video/(\d+)',patch['post_url'])
+            if not (host=='tiktok.com' or host.endswith('.tiktok.com')) or not match:
+                raise HTTPException(422,'请提供可识别帖子 ID 的 TikTok 视频链接')
+            patch['post_id']=match[1]
+        if 'post_id' in patch and not str(patch['post_id']).isdigit():
+            raise HTTPException(422,'帖子 ID 必须为数字字符串')
         if 'objective' in patch:
             normalized=objective(patch['objective'])
             if patch['objective'] and not normalized: raise HTTPException(422,'无法识别广告目标')
@@ -42,11 +57,11 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
             if field in patch: patch[field]=date_value(patch[field],patch.get('timezone',req.timezone))
         values.update(patch)
         req = Requirement.model_validate(values)
-        for field,value in edit["values"].items():
+        for field,value in patch.items():
             req.sources[field] = SourceRef(file_id="",sheet="",cell="",raw_value=str(value),kind="confirmed")
             if field not in req.confirmed_fields:
                 req.confirmed_fields.append(field)
-        req.issues = [i for i in req.issues if i.field not in edit["values"]]
+        req.issues = [i for i in req.issues if i.field not in patch]
         draft.requirements = [evaluate(req,history) if r.id == req.id else r for r in draft.requirements]
     draft.version += 1
     draft.approval = None
@@ -62,7 +77,7 @@ def submit_approved_draft(conn, draft, project):
         raise HTTPException(423,'真实搭建暂缓，当前仅支持预览与人工确认')
     # Caller holds the project lock. Reservation and queue insertion commit atomically.
     project = conn.execute("select * from projects where id=%s for update",(project["id"],)).fetchone()
-    preview=build_preview(draft,history_for(conn,project),project['policy_version'])
+    preview=build_preview(draft,history_for(conn,project),project['policy_version'],pending_questions=pending_questions(conn,draft.id))
     if draft.status!='approved' or not preview['approval_valid']:
         raise HTTPException(409,'必须先人工确认当前版本的搭建预览')
     if not project["policy"]:

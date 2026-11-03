@@ -55,3 +55,29 @@ def test_worker_disabled_does_not_open_database(monkeypatch):
     monkeypatch.setattr('app.settings.settings',lambda:SimpleNamespace(execution_enabled=False))
     monkeypatch.setattr('app.worker.transaction',lambda:pytest.fail('worker touched queue'))
     asyncio.run(main())
+
+
+def test_reviewed_template_reuses_headers_not_sheet_name_columns_or_last_row():
+    from app.templates import capture,reuse
+    def data(headers,records,title):
+        w=Workbook();s=w.active;s.title=title;s.append(headers)
+        values={'Post':'https://www.tiktok.com/@a/video/123','Budget':50,'Goal':'followers','Notes':'note'}
+        for _ in range(records):s.append([values[h] for h in headers])
+        out=BytesIO();w.save(out);return out.getvalue()
+    old=data(['Post','Budget','Goal'],1,'A')
+    mapping=SheetMapping(sheet='A',header_row=1,first_row=2,last_row=2,columns={'post_url':'A','budget':'B','objective':'C'})
+    template=capture([mapping],inspect_workbook(old),old)
+    new=data(['Notes','Goal','Budget','Post'],40,'Renamed')
+    maps=reuse(template,inspect_workbook(new),new)
+    assert maps[0].sheet=='Renamed' and maps[0].last_row==41
+    assert maps[0].columns=={'post_url':'D','budget':'C','objective':'B'}
+
+
+def test_pending_semantic_question_blocks_exact_preview_confirmation():
+    from app.preview import build_preview
+    from test_preview import requirement
+    draft=BuildDraft(id='d',project_id='p',requirements=[requirement()])
+    question={'field':'budget','requirement_ids':['row'],'question':'本批预算口径冲突，需确认','blocking':True}
+    result=build_preview(draft,[],0,datetime(2026,11,3,tzinfo=timezone.utc),pending_questions=[question])
+    assert not result['can_confirm']
+    assert result['rows'][0]['field_states']['budget']=='conflict'

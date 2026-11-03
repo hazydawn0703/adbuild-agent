@@ -8,7 +8,7 @@ from .models import BuildDraft, BuildApproval
 from .rules import evaluate, fingerprint
 
 
-def build_preview(draft: BuildDraft, history: list[dict], policy_version: int, now=None):
+def build_preview(draft: BuildDraft, history: list[dict], policy_version: int, now=None, pending_questions=None):
     rows=[]
     totals={}
     issues=[]
@@ -19,6 +19,7 @@ def build_preview(draft: BuildDraft, history: list[dict], policy_version: int, n
         action='create' if req.included and req.classification not in ('existing','change','ignored') else 'skip'
         campaign_name=req.name or f"{req.business_no or req.id[:8]}-TikTok-{req.objective or '待确认'}"
         data=req.model_dump(mode='json')
+        data['field_states']={q['field']:'conflict' for q in pending_questions or [] if req.id in q['requirement_ids']}
         data.update(action=action,campaign_name=campaign_name,adgroup_name=campaign_name+'-广告组',ad_name=req.name or req.business_no or req.post_id,
                     skip_reason=('未勾选' if not req.included else '已有广告，不重复创建' if req.classification=='existing' else '已有广告变更，本次不自动修改' if req.classification=='change' else '忽略'))
         rows.append(data)
@@ -34,10 +35,14 @@ def build_preview(draft: BuildDraft, history: list[dict], policy_version: int, n
                 totals[key]=totals.get(key,Decimal(0))+req.budget
     if not selected:
         issues.append({'requirement_id':'','code':'empty_selection','field':'included','message':'没有选中需要新增的广告需求','blocking':True})
+    for question in pending_questions or []:
+        if question.get('blocking',True) and set(question['requirement_ids']) & set(selected):
+            issues.append({'requirement_id':'','code':'semantic_review','field':question['field'],'message':question['question'],'blocking':True})
     snapshot={'draft_id':draft.id,'version':draft.version,'policy_version':policy_version,'rows':rows,
               'counts':{'campaigns':len(selected),'adgroups':len(selected),'ads':len(selected),'skipped':len(rows)-len(selected)},
               'totals':[{'currency':currency,'budget_mode':mode,'amount':str(amount)} for (currency,mode),amount in sorted(totals.items())],
               'issues':issues,'selected_ids':selected,'can_confirm':not issues,
+              'platform_checks':[{'item':item,'status':'unverified'} for item in ('账户能力','受众快照','Spark 素材权限')],
               'delivery_note':'确认仅保存搭建方案，真实搭建暂缓；后台账户、受众和素材权限尚需实际校验。'}
     digest=sha256(json.dumps(snapshot,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
     valid=bool(draft.approval and draft.approval.version==draft.version and draft.approval.digest==digest)

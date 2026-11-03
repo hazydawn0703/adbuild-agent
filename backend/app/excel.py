@@ -54,8 +54,10 @@ def inspect_workbook(data: bytes):
         if any(c.row>50000 or c.column>300 for c in populated+formula_cells):
             raise ValueError('实际内容超过 50,000 行或 300 列，请拆分工作表')
         by_row = {}
+        cells_by_row = {}
         for c in populated:
             by_row.setdefault(c.row,{})[c.coordinate]=clean(c.value)[:500]
+            cells_by_row.setdefault(c.row,[]).append(c)
         for c in formula_cells:
             if sheet[c.coordinate].value is None:
                 by_row.setdefault(c.row,{})[c.coordinate]='[公式缓存缺失]'
@@ -66,7 +68,7 @@ def inspect_workbook(data: bytes):
             groups[-1].append(i)
         regions=[]
         for group in groups:
-            cells=[c for c in populated if group[0]<=c.row<=group[-1]]
+            cells=[c for i in group for c in cells_by_row.get(i,[])]
             lo=min((c.column for c in cells),default=1);hi=max((c.column for c in cells),default=1)
             selected=list(dict.fromkeys(group[:5]+group[-3:]))
             regions.append({'range':f'{get_column_letter(lo)}{group[0]}:{get_column_letter(hi)}{group[-1]}',
