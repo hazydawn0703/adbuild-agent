@@ -28,7 +28,7 @@ def test_graph_rejects_unknown_scope(monkeypatch):
             return ChatDecision(answer='bad',edits=[ChatEdit(requirement_id='other',values={'budget':'40'})])
     monkeypatch.setattr('app.agent.llm',lambda _:Model())
     with pytest.raises(ValueError,match='未知需求'):
-        asyncio.run(conversation_graph(InMemorySaver()).ainvoke({'messages':[],'draft':None,'context':{}},{'configurable':{'thread_id':'t'}}))
+        asyncio.run(conversation_graph(InMemorySaver()).ainvoke({'messages':[{'id':'m','role':'user','content':'业务编号101'}],'draft':None,'context':{},'scope':{'status':'resolved','action':'edit','selectors':[{'field':'business_no','values':['101']}],'message_ids':['m']}},{'configurable':{'thread_id':'t'}}))
 
 
 def test_mapping_uses_content_not_sheet_name(monkeypatch):

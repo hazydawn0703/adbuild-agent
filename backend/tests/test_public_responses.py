@@ -87,7 +87,7 @@ def test_real_task_endpoint_projects_private_draft_and_proposal(monkeypatch):
     class DB:
         def execute(self,*args):return Result([{'data':d.model_dump(mode='json')}])
     monkeypatch.setattr(intake,'transaction',transaction_for(DB()))
-    monkeypatch.setattr(intake,'access',lambda *a,**k:(t,{'id':'project','policy_version':0}))
+    monkeypatch.setattr(intake,'access',lambda *a,**k:(t,{'id':'project','policy_version':0,'account_id':d.requirements[0].account_id}))
     monkeypatch.setattr(service,'history_for',lambda *a:[])
     monkeypatch.setattr(service,'pending_questions',lambda *a:[])
     output=intake.get_task('task',Actor('operator'))

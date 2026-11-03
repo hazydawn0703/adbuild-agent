@@ -149,4 +149,9 @@ def compact_state(state):
                'candidate_catalog':catalog,'catalog_coverage':{'returned':len(catalog),'total':len(rows),'complete':len(catalog)==len(rows),'scope_search_complete':True,'scope_matches':len(matching)},
                'coverage': {'candidate_records': len(rows), 'selected_records': len(selected),
                             'provided_records': len(relevant), 'excluded_records': len(rows) - len(relevant)}}
+    history_records=state.get('history_records',[])
+    payload['history_available']=len(history_records)
+    if scope.get('action')=='history':
+        from .history_query import lookup_history
+        payload['history_query']=lookup_history(history_records,scope,rows)
     return redact_private(payload)

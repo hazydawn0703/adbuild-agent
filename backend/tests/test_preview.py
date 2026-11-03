@@ -74,3 +74,11 @@ def test_editing_clears_approval_and_creates_a_new_version(monkeypatch):
     monkeypatch.setattr('app.service.history_for',lambda *a:[])
     result=edit_draft(DB(),'draft',SimpleNamespace(user_id='operator'),1,[{'requirement_id':'row','values':{'budget':'60'}}])
     assert result.version==2 and result.status=='draft' and result.approval is None
+
+
+def test_valid_numeric_account_still_needs_project_binding_match():
+    d=draft(requirement(account_id='50'))
+    p=build_preview(d,[],0,NOW,expected_account_id='7312345678901234567')
+    assert not p['can_confirm'] and any(i['code']=='account_binding' for i in p['issues'])
+    d.requirements[0].account_id='7312345678901234567'
+    assert build_preview(d,[],0,NOW,expected_account_id='7312345678901234567')['can_confirm']

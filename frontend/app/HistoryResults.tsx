@@ -1,0 +1,10 @@
+'use client';
+import {useEffect,useRef,useState} from 'react';
+import {api} from '../lib/api';
+export type HistoryQuery={items:Record<string,string|number>[];total:number;requires_scope:boolean;coverage:{complete:boolean};source_note:string};
+export default function HistoryResults({query,projectId,taskId,taskVersion,token}:{query:HistoryQuery;projectId:string;taskId:string;taskVersion:number;token:string}){
+ const [data,setData]=useState(query),[offset,setOffset]=useState(0),[busy,setBusy]=useState(false),[error,setError]=useState('');
+ const alive=useRef(true);useEffect(()=>{alive.current=true;return()=>{alive.current=false}},[]);
+ async function page(next:number){setBusy(true);setError('');try{const result=await api(`/projects/${projectId}/history?task_id=${taskId}&offset=${next}&limit=25`,token);if(!alive.current)return;if(result.task_version!==taskVersion)throw new Error('查询范围已变化，请刷新本任务');setData(result);setOffset(next)}catch(e){if(alive.current)setError(e instanceof Error?e.message:'无法读取历史记录')}finally{if(alive.current)setBusy(false)}}
+ return <section className="chat-message"><strong>历史查询快照 · {data.total} 条匹配</strong><p>{data.source_note}</p>{data.requires_scope?<p>请明确本次查询的帖子或业务编号。</p>:<div style={{overflowX:'auto'}}><table><thead><tr><th>计划名称</th><th>目标</th><th>计划预算原值</th><th>组预算原值</th><th>历史广告／来源</th></tr></thead><tbody>{data.items.map((row,i)=><tr key={`${row.ad_id}-${i}`}><td>{row.name}</td><td>{row.objective}</td><td>{row.budget||'未提供'} {row.budget_mode}</td><td>{row.adgroup_budget||'未提供'} {row.adgroup_budget_mode}</td><td>{row.ad_id}<small>{row.source_sheet} · 第 {row.source_row} 行</small></td></tr>)}</tbody></table></div>}{!data.requires_scope&&!data.total&&<p>已导入快照中没有找到匹配记录。</p>}{data.total>25&&<p><button disabled={busy||offset===0} onClick={()=>page(Math.max(0,offset-25))}>上一页</button> {offset+1}–{Math.min(offset+25,data.total)} / {data.total} <button disabled={busy||offset+25>=data.total} onClick={()=>page(offset+25)}>下一页</button></p>}{error&&<p role="alert">{error}</p>}</section>
+}

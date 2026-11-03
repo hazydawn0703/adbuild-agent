@@ -2,7 +2,7 @@ import json
 from typing import TypedDict
 from langgraph.graph import StateGraph, START, END
 from langchain_openai import ChatOpenAI
-from .models import MappingProposal, ChatDecision
+from .models import MappingProposal, ChatDecision, TaskScope, Clarification, SourceRef
 from .settings import settings
 
 
@@ -145,10 +145,103 @@ class ConversationState(TypedDict):
     scope: dict
     prepared: dict
     progress: dict
+    scope_question: dict | None
+    project_account_id: str
+    history_records: list[dict]
 
 
 class ProposalError(ValueError):
     pass
+
+
+def scope_matches(state,scope):
+    from types import SimpleNamespace
+    from .scope import matches,as_dict
+    scope=as_dict(scope) or {}
+    rows=(state.get('draft') or {}).get('requirements',[])
+    selected=[]
+    for row in rows:
+        req=SimpleNamespace(**row)
+        if (scope.get('all_records') or scope.get('selectors')) and all(matches(req,s) for s in scope.get('selectors',[])) and not any(matches(req,s) for s in scope.get('exclude_selectors',[])):
+            selected.append(row['id'])
+    return set(selected)
+
+
+def scope_required(state):
+    import re
+    current=state.get('scope') or {}
+    latest=next((m for m in reversed(state.get('messages',[])) if m.get('role')=='user'),{})
+    message=latest.get('content','')
+    if current.get('status')=='resolved':
+        if latest.get('id') in current.get('message_ids',[]) or message.startswith('本任务回答：'):return False
+        query=re.search(r'(?:查|查询|查看|检索|搜索|找).{0,12}(?:历史|以前|上次|投放记录)|(?:历史|投放记录).{0,12}(?:查|查询|查看|检索|搜索)|\b(?:query|search|look\s*up)\b.{0,20}\bhistory\b',message,re.I)
+        selection=re.search(r'重投|重新投放|新增(?:一条|广告|需求|计划|投放)|(?:本次|这次)(?:仅|只)?(?:搭建|投放)|排除|取消(?:投放|搭建|勾选)|\b(?:relaunch|exclude)\b',message,re.I)
+        edit=re.search(r'修改|改为|改成|调整|设置|\b(?:change|update|set)\b',message,re.I)
+        return bool(query or selection or current.get('action')=='history' and edit)
+    rows=(state.get('draft') or {}).get('requirements',[])
+    if rows:
+        # Editing a known draft field does not select a new batch.
+        if re.search(r'修改|改为|改成|调整|设置|\b(?:change|update|set)\b',message,re.I) and not re.search(r'搭建|新增|重投|纳入|勾选|排除|取消|\b(?:select|exclude|include)\b',message,re.I):return False
+    return True
+
+
+def validate_selection(state,decision):
+    """A selection is a grounded action, never a claim that the user typed a boolean."""
+    import re
+    from .scope import as_dict,validate_scope
+    rows={r['id']:r for r in (state.get('draft') or {}).get('requirements',[])}
+    scope=as_dict(decision.scope) if decision.scope is not None else state.get('scope')
+    scope=scope or {}
+    desired=None
+    if scope.get('status')=='resolved' and scope.get('action') in ('new','repost','exclude'):
+        try:validate_scope(scope,state.get('messages',[]))
+        except ValueError as error:raise ProposalError(str(error)) from None
+        matched=scope_matches(state,scope)
+        desired=matched if scope['action']!='exclude' else {r['id'] for r in rows.values() if r.get('included',True)}-matched
+    kept=[]
+    for edit in decision.edits:
+        if 'included' in edit.values and edit.requirement_id in rows:
+            value=edit.values['included'];row=rows[edit.requirement_id]
+            if not isinstance(value,bool):raise ProposalError('参与本批必须是明确选择动作')
+            if value==row.get('included',True):
+                edit.values.pop('included');edit.sources.pop('included',None)
+            else:
+                message=None
+                if desired is not None and value==(edit.requirement_id in desired):
+                    message=next((m for m in reversed(state.get('messages',[])) if m.get('role')=='user' and m.get('id') in scope.get('message_ids',[])),None)
+                if message is None:
+                    latest=next((m for m in reversed(state.get('messages',[])) if m.get('role')=='user'),{})
+                    text=latest.get('content','')
+                    explicit=any(v and re.search(r'(?<![0-9A-Za-z_])'+re.escape(str(v))+r'(?![0-9A-Za-z_])',text) for v in (row.get('business_no'),row.get('post_id'),row['id']))
+                    if explicit and re.search(r'排除|不投|取消|不搭建|不加热|勾选|纳入|选中|重投|恢复|仅.*搭建|只.*搭建|\b(?:exclude|include|select)\b',text,re.I):message=latest
+                if not message or not message.get('id'):raise ProposalError('参与范围改变缺少已核实范围或明确选择消息，字段修改不能扩大范围')
+                edit.sources['included']=SourceRef(file_id='',sheet='',cell='',kind='confirmed',message_id=message['id'],raw_value=str(value).lower())
+        if edit.values:kept.append(edit)
+    decision.edits=kept
+
+
+def validate_new_candidates(state,decision):
+    import re
+    from .excel import normalize_value
+    rows=(state.get('draft') or {}).get('requirements',[])
+    text='\n'.join(m.get('content','') for m in state.get('messages',[]) if m.get('role')=='user')
+    explicit_batch=bool(re.search(r'新批次|另[起开做投].{0,4}一批|再投|重投|重新投放|\b(?:new\s+batch|relaunch|rerun)\b',text,re.I))
+    for candidate in decision.additions:
+        values=candidate.values
+        post=values.get('post_id')
+        if not post and values.get('post_url'):
+            match=re.search(r'/video/(\d+)',str(values['post_url']))
+            if match:post=match[1]
+        goal=normalize_value('objective',values.get('objective')) if values.get('objective') else None
+        account=values.get('account_id') or state.get('project_account_id')
+        existing=[r for r in rows if post and str(r.get('post_id'))==str(post) and r.get('objective')==goal and (not account or not r.get('account_id') or str(r['account_id'])==str(account))]
+        if existing:
+            has_schedule=bool(values.get('start_at') and values.get('end_at'))
+            from .excel import date_value
+            changed_schedule=has_schedule and all(all(r.get(f) for f in ('start_at','end_at')) and
+                any(date_value(values[f],values.get('timezone',''))!=date_value(r[f],r.get('timezone','')) for f in ('start_at','end_at')) for r in existing)
+            if not explicit_batch or not changed_schedule:
+                raise ProposalError('当前草稿已有同账户、帖子和目标的需求；请改用现有需求的 edits/选择或澄清，不能重复 additions。新批次须明确提出并给出不同排期')
 
 
 def validate_decision(state,decision):
@@ -156,7 +249,10 @@ def validate_decision(state,decision):
     from .service import EDITABLE
     rows=(state['draft'] or {}).get('requirements',[])
     ids={r['id'] for r in rows}
-    from .scope import validate_scope
+    from .scope import validate_scope,as_dict
+    active_scope=as_dict(decision.scope) if decision.scope is not None else as_dict(state.get('scope'))
+    if active_scope and active_scope.get('action')=='history' and (decision.edits or decision.expansions or decision.additions):
+        raise ProposalError('历史查询为只读动作，不能编辑、拆分或新增需求；请明确建立搭建任务后再修改')
     if decision.scope is not None:
         try: validate_scope(decision.scope,state['messages'])
         except ValueError as error: raise ProposalError(str(error)) from None
@@ -165,6 +261,9 @@ def validate_decision(state,decision):
             if question.requirement_ids: raise ProposalError('任务级问题不能引用需求行')
         elif not state.get('draft') or not question.requirement_ids or not set(question.requirement_ids)<=ids:
             raise ProposalError('需求级澄清必须关联当前草稿的有效需求')
+    validate_selection(state,decision)
+    try:validate_new_candidates(state,decision)
+    except ValueError as error:raise ProposalError(str(error)) from None
     message=next((m['content'] for m in reversed(state['messages']) if m['role']=='user'),'')
     instruction_context='\n'.join(m['content'] for m in state['messages'] if m.get('role')=='user')
     explicit={r['id'] for r in rows if any(v and re.search(r'(?<![0-9A-Za-z_])'+re.escape(str(v))+r'(?![0-9A-Za-z_])',message) for v in (r.get('business_no'),r['id']))}
@@ -201,8 +300,6 @@ def validate_decision(state,decision):
             raise ProposalError('提案包含未知需求或不允许的字段')
         if restricted and explicit and edit.requirement_id not in explicit:
             raise ProposalError('提案超出用户明确限定的需求范围，不得为其他需求生成任何修改')
-        if 'included' in edit.values and not re.search(r'排除|不投|不要投|取消|不搭建|不加热|勾选|纳入|选中|重投|恢复',message):
-            raise ProposalError('未要求改变需求是否参与本次投放；未修改其他条目不等于取消其投放')
         if 'timezone' in edit.values and any(f in edit.values for f in ('start_at','end_at')) and not re.search(r'时区|timezone|UTC|GMT',message,re.I):
             raise ProposalError('日期自带偏移只用于该日期，不得据此修改独立的投放时区字段')
     from .provenance import validate_proposal_evidence
@@ -211,22 +308,72 @@ def validate_decision(state,decision):
 
 
 def conversation_graph(checkpointer):
-    from .prompts import COMMON, INTENT, HISTORY, CLARIFY
+    from .prompts import COMMON, INTENT, HISTORY, CLARIFY, SCOPE
+    def waiting_decision(state,scope):
+        import re
+        text='\n'.join(m.get('content','') for m in state.get('messages',[]) if m.get('role')=='user')
+        material=any(s.field=='post_id' for s in scope.selectors) or re.search(r'https?://[^\s]*tiktok\.com/[^\s]*/video/\d+|(?:帖子(?:\s*ID)?|视频\s*ID|post(?:\s*id)?)\s*[:：=#]?\s*\d+',text,re.I)
+        if scope.status=='resolved' and scope.action in ('new','repost') and not state.get('draft') and not state.get('documents') and not material:
+            return ChatDecision(answer='已记录本次需求范围。请上传需求Excel和ExportAds，或提供明确的TikTok帖子及目标后继续整理方案。',scope=scope).model_dump(mode='json')
+        return None
     def prepare(state):
         from .scope import compact_state
         prepared=compact_state(state)
-        return {'prepared':prepared,'progress':{'phase':'evidence','coverage':prepared['coverage']}}
+        return {'prepared':prepared,'scope_question':None,'progress':{'phase':'evidence','coverage':prepared['coverage']}}
+    async def resolve_scope(state):
+        from .scope import compact_state,validate_scope
+        if not scope_required(state):
+            waiting=waiting_decision(state,TaskScope.model_validate(state.get('scope') or {}))
+            if waiting:return {'decision':waiting,'progress':{**state.get('progress',{}),'phase':'awaiting_input'}}
+            return {'progress':{**state.get('progress',{}),'phase':'scope_skipped'}}
+        payload=state['prepared']
+        def validate(scope):
+            try:validate_scope(scope,state.get('messages',[]))
+            except ValueError as error:raise ProposalError(str(error)) from None
+            rows=(state.get('draft') or {}).get('requirements',[])
+            if scope.status=='resolved' and rows and scope.action in ('new','repost','exclude') and not scope_matches(state,scope):
+                import re
+                text='\n'.join(m.get('content','') for m in state.get('messages',[]) if m.get('role')=='user')
+                explicit_new_post=scope.action in ('new','repost') and any(s.field=='post_id' for s in scope.selectors) and re.search(r'新增|新加|再加|重投|重新投放|\b(?:new|relaunch)\b',text,re.I)
+                if not explicit_new_post:
+                    raise ProposalError('明确的范围在当前全部候选中没有匹配；请检查字段身份，无法确定时返回 unresolved 并说明需要的信息')
+        try:
+            result=await structured(TaskScope,[('system',COMMON+SCOPE),('user',json.dumps(payload,ensure_ascii=False))],validator=validate)
+        except ProposalError as error:
+            result=TaskScope(reason=str(error))
+        output={'scope':result.model_dump(mode='json'),'progress':{**state.get('progress',{}),'phase':'scope_resolved' if result.status=='resolved' else 'scope_pending'}}
+        if result.status!='resolved':
+            question=Clarification(id='scope',field='scope',scope='task',question=result.reason or '请明确本次选择的业务编号、帖子或需求集合，其他资料可以继续保留为参考。')
+            output['scope_question']=question.model_dump(mode='json')
+            output['decision']=ChatDecision(answer=question.question,scope=result,questions=[question]).model_dump(mode='json')
+        else:
+            output['prepared']=compact_state({**state,'scope':result.model_dump(mode='json')})
+            waiting=waiting_decision(state,result)
+            if waiting:
+                output['decision']=waiting
+                output['progress']['phase']='awaiting_input'
+        return output
     async def understand(state):
         payload=json.dumps(state['prepared'],ensure_ascii=False)
         if len(payload)>150000: raise ValueError('相关需求与消息超过单轮分析范围；已保留任务，请明确子集后继续，尚未完成全部分析')
-        decision=await structured(ChatDecision,[('system',COMMON+INTENT+HISTORY+CLARIFY),('user',payload)],validator=lambda d:validate_decision(state,d))
+        def validate_output(decision):
+            if decision.scope is not None and state.get('scope') and decision.scope.model_dump(mode='json')!=state['scope']:
+                raise ProposalError('范围已由专责节点处理，字段建议不能另行改写范围；scope应留空')
+            validate_decision(state,decision)
+        decision=await structured(ChatDecision,[('system',COMMON+INTENT+HISTORY+CLARIFY),('user',payload)],validator=validate_output)
+        if state.get('scope'):
+            decision.scope=TaskScope.model_validate(state['scope'])
         return {'decision':decision.model_dump(mode='json'),'progress':{'phase':'validated','coverage':state['prepared']['coverage']}}
     def validate(state):
         validate_decision(state,ChatDecision.model_validate(state['decision']))
         return {}
     builder=StateGraph(ConversationState)
     builder.add_node('prepare_evidence',prepare)
+    builder.add_node('resolve_scope',resolve_scope)
     builder.add_node('understand',understand)
     builder.add_node('validate',validate)
-    builder.add_edge(START,'prepare_evidence');builder.add_edge('prepare_evidence','understand');builder.add_edge('understand','validate');builder.add_edge('validate',END)
+    builder.add_edge(START,'prepare_evidence')
+    builder.add_edge('prepare_evidence','resolve_scope')
+    builder.add_conditional_edges('resolve_scope',lambda state:'validate' if state.get('scope_question') or state.get('progress',{}).get('phase')=='awaiting_input' else 'understand')
+    builder.add_edge('understand','validate');builder.add_edge('validate',END)
     return builder.compile(checkpointer=checkpointer)

@@ -392,7 +392,7 @@ def preview_draft(draft_id:str,actor:Actor=Depends(authenticate)):
     from .preview import build_preview
     with transaction() as c:
         draft,project=draft_access(c,draft_id,actor)
-        result=build_preview(draft,history_for(c,project),project['policy_version'],pending_questions=pending_questions(c,draft.id))
+        result=build_preview(draft,history_for(c,project),project['policy_version'],pending_questions=pending_questions(c,draft.id),expected_account_id=project['account_id'])
         result['confirmation_history']=[r['data'] for r in c.execute("select data from audit where project_id=%s and event='build_confirmed' and JSON_UNQUOTE(JSON_EXTRACT(data,'$.draft_id'))=%s order by id desc",(project['id'],draft_id))]
     return public_business(result)
 
@@ -400,6 +400,27 @@ class BuildConfirmation(Model):
     expected_version:int
     digest:str
     acknowledged:bool
+
+@app.get('/projects/{project_id}/history')
+def query_history(project_id:str,task_id:str,offset:int=0,limit:int=25,actor:Actor=Depends(authenticate)):
+    if offset<0 or offset>100000 or limit<1 or limit>100: raise HTTPException(422,'分页范围无效')
+    from .intake import access
+    from .history_query import lookup_history
+    with transaction() as c:
+        project=project_access(c,project_id,actor)
+        task,_=access(c,task_id,actor)
+        if task.project_id!=project_id: raise HTTPException(404,'任务不属于当前项目')
+        if task.scope.action!='history': raise HTTPException(409,'任务意图已变化，请重新明确历史查询范围')
+        requirements=[]
+        if task.draft_id:
+            stored=c.execute('select data from drafts where id=%s and project_id=%s',(task.draft_id,project_id)).fetchone()
+            if stored: requirements=stored['data'].get('requirements',[])
+        result=lookup_history(history_for(c,project),task.scope,requirements,limit=offset+limit)
+        result['items']=result['items'][offset:offset+limit]
+        result.update(offset=offset,task_version=task.version)
+        result['coverage']={'returned':len(result['items']),'total':result['total'],'complete':not result['requires_scope'] and offset+limit>=result['total']}
+        return public_business(result)
+
 
 @app.get('/drafts/{draft_id}/requirements/{requirement_id}/history')
 def page_history(draft_id:str,requirement_id:str,offset:int=0,limit:int=25,actor:Actor=Depends(authenticate)):
@@ -417,7 +438,7 @@ def confirm_build(draft_id:str,body:BuildConfirmation,actor:Actor=Depends(authen
     from .preview import build_preview,approve_preview
     with transaction() as c:
         draft,project=draft_access(c,draft_id,actor,write=True)
-        preview=build_preview(draft,history_for(c,project),project['policy_version'],pending_questions=pending_questions(c,draft.id))
+        preview=build_preview(draft,history_for(c,project),project['policy_version'],pending_questions=pending_questions(c,draft.id),expected_account_id=project['account_id'])
         previous=draft.approval
         approve_preview(draft,preview,actor.user_id,body.expected_version,body.digest,body.acknowledged)
         c.execute('update drafts set data=%s where id=%s',(json_value(draft),draft_id))
@@ -430,7 +451,7 @@ def execute_build(draft_id:str,body:BuildConfirmation,actor:Actor=Depends(authen
     from .preview import build_preview
     with transaction() as c:
         draft,project=draft_access(c,draft_id,actor,write=True)
-        preview=build_preview(draft,history_for(c,project),project['policy_version'],pending_questions=pending_questions(c,draft.id))
+        preview=build_preview(draft,history_for(c,project),project['policy_version'],pending_questions=pending_questions(c,draft.id),expected_account_id=project['account_id'])
         if draft.version!=body.expected_version or preview['digest']!=body.digest or not body.acknowledged:
             raise HTTPException(409,'预览已变化，请重新确认')
         run_id=submit_approved_draft(c,draft,project)

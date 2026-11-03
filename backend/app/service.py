@@ -57,7 +57,9 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
         for field,value in patch.items():
             offered=edit.get('sources',{}).get(field)
             previous=req.sources.get(field)
-            if offered:
+            if field=='included':
+                req.sources[field]=SourceRef(file_id='',sheet='',cell='',raw_value=str(req.included),kind='confirmed',message_id=edit.get('source_message_id'))
+            elif offered:
                 ref=SourceRef.model_validate(offered)
                 if ref.file_id:
                     source_file=conn.execute('select id from files where id=%s and project_id=%s',(ref.file_id,project['id'])).fetchone()
@@ -99,7 +101,7 @@ def submit_approved_draft(conn, draft, project):
         raise HTTPException(423,'多层结构尚未完成平台写入验收，当前仅支持预览与人工确认')
     # Caller holds the project lock. Reservation and queue insertion commit atomically.
     project = conn.execute("select * from projects where id=%s for update",(project["id"],)).fetchone()
-    preview=build_preview(draft,history_for(conn,project),project['policy_version'],pending_questions=pending_questions(conn,draft.id))
+    preview=build_preview(draft,history_for(conn,project),project['policy_version'],pending_questions=pending_questions(conn,draft.id),expected_account_id=project['account_id'])
     if draft.status!='approved' or not preview['approval_valid']:
         raise HTTPException(409,'必须先人工确认当前版本的搭建预览')
     if not project["policy"]:

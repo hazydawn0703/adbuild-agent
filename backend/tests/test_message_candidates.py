@@ -33,7 +33,7 @@ def test_message_candidate_is_checkpointed_as_proposal_without_creation(monkeypa
     class Model:
         async def ainvoke(self,_):return ChatDecision(answer='candidate',additions=[DemandCandidate(values={'post_id':'7700123456789012345','objective':'video_views'})])
     monkeypatch.setattr('app.agent.llm',lambda _:Model())
-    result=asyncio.run(conversation_graph(InMemorySaver()).ainvoke({'messages':messages('新增帖子7700123456789012345，目标视频观看'),'draft':None,'context':{}},{'configurable':{'thread_id':'candidate'}}))
+    result=asyncio.run(conversation_graph(InMemorySaver()).ainvoke({'messages':messages('新增帖子7700123456789012345，目标视频观看'),'draft':None,'context':{},'scope':TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='post_id',values=['7700123456789012345'])],message_ids=['user-message']).model_dump(mode='json')},{'configurable':{'thread_id':'candidate'}}))
     assert result['draft'] is None
     assert result['decision']['additions'][0]['values']['post_id']=='7700123456789012345'
 
