@@ -23,11 +23,14 @@ for(const width of [1280,390,320])test(`project deletion and task archive at ${w
  await page.getByRole('button',{name:'归档任务',exact:true}).click();
  await page.getByRole('button',{name:'确认归档',exact:true}).click();
  await expect(page.getByLabel('选择搭建任务')).toHaveValue('');
- await page.getByRole('button',{name:'查看已归档任务'}).click();
- await expect(page.getByLabel('选择搭建任务')).toHaveValue('task');
- await page.getByRole('button',{name:'恢复任务',exact:true}).click();
- await page.getByRole('button',{name:'确认恢复'}).click();
- await page.getByRole('button',{name:'查看进行中的任务'}).click();
+ await page.getByRole('button',{name:'测试项目的项目菜单'}).click();
+ await page.getByRole('button',{name:'已归档搭建任务',exact:true}).click();
+ const archivedDialog=page.getByRole('dialog',{name:'已归档搭建任务',exact:true});
+ await expect(archivedDialog).toContainText('测试任务');
+ await archivedDialog.getByRole('button',{name:'恢复任务',exact:true}).click();
+ await page.getByRole('dialog',{name:'恢复搭建任务',exact:true}).getByRole('button',{name:'确认恢复'}).click();
+ await expect(archivedDialog).toContainText('暂无已归档搭建任务');
+ await archivedDialog.getByRole('button',{name:'关闭',exact:true}).click();
  await expect(page.getByLabel('选择搭建任务')).toHaveValue('task');
  await page.getByRole('button',{name:'测试项目的项目菜单'}).click();
  await page.getByRole('button',{name:'删除项目',exact:true}).click();
@@ -75,7 +78,7 @@ test('project menu targets its own row and toolbar actions fit all screen sizes'
  await expect(page.locator('.center').getByRole('button',{name:'删除项目',exact:true})).toHaveCount(0);
  const topbar=page.locator('.topbar');
  expect(await topbar.locator('.outline').allTextContents()).toEqual(['项目默认配置','项目授权']);
- expect(await page.locator('.task-actions button').allTextContents()).toEqual(['查看已归档任务','归档任务','新建搭建任务']);
+ expect(await page.locator('.task-actions button').allTextContents()).toEqual(['归档任务','新建搭建任务']);
  for(const width of [1440,1280,1024,390,320]){
   await page.setViewportSize({width,height:844});
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();
