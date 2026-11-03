@@ -235,3 +235,22 @@ def test_archive_blocks_busy_tasks_and_project_cleanup_is_durable(database,tmp_p
             assert not file.exists() and sibling.read_bytes()==b'keep'
             with db.transaction() as c: c.execute('delete from jobs where id=%s',(job['id'],))
     asyncio.run(scenario())
+
+
+def test_project_rename_permissions_conflicts_and_audit(database):
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+            url=f'/projects/{database}'
+            assert (await client.patch(url,json={'name':'   ','expected_name':'test'})).status_code==422
+            renamed=await client.patch(url,json={'name':'  新项目名称  ','expected_name':'test'})
+            assert renamed.status_code==200 and renamed.json()['name']=='新项目名称'
+            assert (await client.patch(url,json={'name':'overwrite','expected_name':'test'})).status_code==409
+            assert (await client.patch('/projects/not-owned',json={'name':'invalid','expected_name':'test'})).status_code==404
+            with db.transaction() as c:
+                row=c.execute('select name,tenant_id from projects where id=%s',(database,)).fetchone()
+                assert row['name']=='新项目名称'
+                audit=c.execute("select data from audit where project_id=%s and event='project_renamed'",(database,)).fetchone()
+                assert audit['data']['old_name']=='test' and audit['data']['name']=='新项目名称'
+                c.execute("update memberships set role='operator' where tenant_id=%s",(row['tenant_id'],))
+            assert (await client.patch(url,json={'name':'invalid','expected_name':'新项目名称'})).status_code==403
+    asyncio.run(scenario())

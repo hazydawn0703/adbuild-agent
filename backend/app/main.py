@@ -132,6 +132,23 @@ def workspace(project_id:str,actor:Actor=Depends(authenticate)):
             "messages":c.execute("select role,content from messages where project_id=%s order by created_at",(project_id,)).fetchall()}
 
 
+class RenameProject(Model):
+    name: str = Field(min_length=1,max_length=255)
+    expected_name: str
+
+
+@app.patch('/projects/{project_id}')
+def rename_project(project_id:str,body:RenameProject,actor:Actor=Depends(authenticate)):
+    name=body.name.strip()
+    if not name: raise HTTPException(422,'项目名称不能为空')
+    with transaction() as c:
+        project=project_access(c,project_id,actor,admin=True)
+        if project['name']!=body.expected_name: raise HTTPException(409,'项目名称已变化，请刷新后重试')
+        c.execute('update projects set name=%s where id=%s',(name,project_id))
+        c.execute("insert into audit(tenant_id,project_id,event,data) values(%s,%s,'project_renamed',%s)",(project['tenant_id'],project_id,json_value({'actor':actor.user_id,'old_name':project['name'],'name':name})))
+    return {'id':project_id,'name':name}
+
+
 @app.delete('/projects/{project_id}')
 def delete_project(project_id:str,actor:Actor=Depends(authenticate)):
     from datetime import datetime, timezone
