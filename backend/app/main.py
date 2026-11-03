@@ -7,10 +7,10 @@ from pydantic import BaseModel
 from .settings import settings
 from .auth import authenticate, Actor, project_access
 from .db import transaction, json_value
-from .models import SheetMapping, BuildDraft, DraftPatch, ProjectPolicy
+from .models import SheetMapping, BuildDraft, DraftPatch, ProjectPolicy, Model
 from .excel import inspect_workbook, parse_export, parse_requirements
 from .rules import evaluate
-from .service import history_for, edit_draft, enqueue_if_authorized
+from .service import history_for, edit_draft, submit_approved_draft
 from . import storage
 from .agent import propose_mapping, conversation_graph
 import asyncio
@@ -31,7 +31,7 @@ def public_config():
     try: cfg=settings()
     except ValidationError as error:
         return {'configured':False,'missing':[str(e['loc'][0]) for e in error.errors()]}
-    return {'configured':True,'missing':[],'model_configured':bool(cfg.llm_api_key),'model':cfg.llm_model}
+    return {'configured':True,'missing':[],'model_configured':bool(cfg.llm_api_key),'model':cfg.llm_model,'execution_enabled':cfg.execution_enabled}
 
 class LoginBody(BaseModel):
     email:str
@@ -185,17 +185,60 @@ async def confirm_mapping(file_id:str,body:MappingConfirmation,actor:Actor=Depen
         maps=[m.model_dump() for m in body.mappings]
         c.execute("update files set mapping=%s where id=%s",(json_value(maps),file_id))
         c.execute("insert into mapping_templates(tenant_id,project_id,signature,data) values(%s,%s,%s,%s) on duplicate key update data=values(data)",(project['tenant_id'],project['id'],signature(row['inspection']),json_value(maps)))
-        enqueue_if_authorized(c,draft,project)
     return draft
 
 
-@app.patch('/drafts/{draft_id}')
+@app.post('/drafts/{draft_id}/edit')
 def patch_draft(draft_id:str,body:DraftPatch,actor:Actor=Depends(authenticate)):
     with transaction() as c:
         draft=edit_draft(c,draft_id,actor,body.expected_version,[body.model_dump()])
         project=project_access(c,draft.project_id,actor,write=True)
-        enqueue_if_authorized(c,draft,project)
         return draft
+
+
+def draft_access(c,draft_id,actor,write=False):
+    row=c.execute('select * from drafts where id=%s for update',(draft_id,)).fetchone()
+    if not row: raise HTTPException(404,'草稿不存在')
+    project=project_access(c,row['project_id'],actor,write=write)
+    return BuildDraft.model_validate(row['data']),project
+
+@app.get('/drafts/{draft_id}/preview')
+def preview_draft(draft_id:str,actor:Actor=Depends(authenticate)):
+    from .preview import build_preview
+    with transaction() as c:
+        draft,project=draft_access(c,draft_id,actor)
+        result=build_preview(draft,history_for(c,project),project['policy_version'])
+        result['confirmation_history']=[r['data'] for r in c.execute("select data from audit where project_id=%s and event='build_confirmed' and JSON_UNQUOTE(JSON_EXTRACT(data,'$.draft_id'))=%s order by id desc",(project['id'],draft_id))]
+    return result
+
+class BuildConfirmation(Model):
+    expected_version:int
+    digest:str
+    acknowledged:bool
+
+@app.post('/drafts/{draft_id}/confirm')
+def confirm_build(draft_id:str,body:BuildConfirmation,actor:Actor=Depends(authenticate)):
+    from .preview import build_preview,approve_preview
+    with transaction() as c:
+        draft,project=draft_access(c,draft_id,actor,write=True)
+        preview=build_preview(draft,history_for(c,project),project['policy_version'])
+        previous=draft.approval
+        approve_preview(draft,preview,actor.user_id,body.expected_version,body.digest,body.acknowledged)
+        c.execute('update drafts set data=%s where id=%s',(json_value(draft),draft_id))
+        if previous!=draft.approval:
+            c.execute("insert into audit(tenant_id,project_id,event,data) values(%s,%s,'build_confirmed',%s)",(project['tenant_id'],project['id'],json_value({'draft_id':draft.id,'version':draft.version,'digest':body.digest,'actor':actor.user_id,'approval':draft.approval.model_dump(mode='json')})))
+    return draft
+
+@app.post('/drafts/{draft_id}/execute')
+def execute_build(draft_id:str,body:BuildConfirmation,actor:Actor=Depends(authenticate)):
+    from .preview import build_preview
+    with transaction() as c:
+        draft,project=draft_access(c,draft_id,actor,write=True)
+        preview=build_preview(draft,history_for(c,project),project['policy_version'])
+        if draft.version!=body.expected_version or preview['digest']!=body.digest or not body.acknowledged:
+            raise HTTPException(409,'预览已变化，请重新确认')
+        run_id=submit_approved_draft(c,draft,project)
+    return {'run_id':run_id}
 
 
 @app.put('/projects/{project_id}/policy')
@@ -231,6 +274,7 @@ def run_action(run_id:str,action:str,actor:Actor=Depends(authenticate)):
         if action=='cancel':
             c.execute("update runs set cancelled=true where id=%s",(run_id,))
         else:
+            if not settings().execution_enabled: raise HTTPException(423,'真实搭建暂缓')
             c.execute("insert into jobs(message) values(%s)",(json_value({"run_id":run_id,"action":action}),))
     return {"accepted":True}
 
@@ -264,7 +308,6 @@ async def chat(project_id:str,body:ChatBody,actor:Actor=Depends(authenticate)):
     with transaction() as c:
         if out.get('edits'):
             draft=edit_draft(c,body.draft_id,actor,body.expected_version,out['edits'])
-            enqueue_if_authorized(c,draft,project)
         answer=out.get('decision',{}).get('answer','已更新草稿')
         c.execute("insert into messages(tenant_id,project_id,role,content) values(%s,%s,'assistant',%s)",(project['tenant_id'],project_id,answer))
     return {"answer":answer,"pending":False}

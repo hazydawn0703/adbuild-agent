@@ -77,6 +77,10 @@ def gate(c,run_id):
     project=c.execute("select * from projects where id=%s",(run['project_id'],)).fetchone()
     if run['cancelled'] or project['policy_version']!=run['policy_version']:
         raise ValueError("任务已取消或项目预授权已变化")
+    from .models import BuildDraft
+    frozen=BuildDraft.model_validate(run['frozen'])
+    if not frozen.approval or frozen.approval.version!=run['draft_version']:
+        raise ValueError('执行批次缺少人工确认记录')
     policy=ProjectPolicy.model_validate(project['policy'])
     if not policy.enabled or policy.valid_until <= datetime.now(timezone.utc):
         raise ValueError("项目预授权已撤销或过期")
@@ -84,6 +88,8 @@ def gate(c,run_id):
 
 
 async def execute(run_id,action='resume'):
+    from .settings import settings
+    if not settings().execution_enabled: raise ValueError('真实搭建暂缓，禁止调用广告工具')
     # A dedicated advisory-lock connection serializes deliveries, including visibility timeout redelivery.
     from .db import transaction
     with transaction() as lock:
@@ -108,6 +114,9 @@ async def _execute(run_id,action):
             req=Requirement.model_validate(dep['requirement'])
             steps=dep['steps']
             context={**req.model_dump(mode='json'),'request_id':dep['fingerprint'],'operation_status':'DISABLE','budget':float(req.budget)}
+            approved=next(r for r in run['frozen']['approval']['snapshot']['rows'] if r['id']==req.id)
+            context.update({k:approved[k] for k in ('campaign_name','adgroup_name','ad_name')})
+            context['name']=approved['campaign_name']
             context.update({k:v['id'] for k,v in steps.items() if isinstance(v,dict) and 'id' in v})
             if action=='pause':
                 if context.get('campaign_id'):
