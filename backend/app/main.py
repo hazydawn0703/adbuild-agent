@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from .settings import settings
 from .auth import authenticate, Actor, project_access
 from .db import transaction, json_value
-from .models import SheetMapping, BuildDraft, DraftPatch, ProjectPolicy, Model
+from .models import SheetMapping, BuildDraft, DraftPatch, ProjectPolicy, Model, SourceRef
 from .excel import inspect_workbook, parse_export, parse_requirements
 from .rules import evaluate
 from .service import history_for, edit_draft, submit_approved_draft
@@ -143,8 +143,9 @@ async def upload_file(project_id:str,kind:str,file:UploadFile=File(),actor:Actor
         project_access(c,project_id,actor,write=True)
         c.execute("insert into files(id,tenant_id,project_id,name,kind,sha256,storage_path,inspection) values(%s,%s,%s,%s,%s,%s,%s,%s)",(file_id,project['tenant_id'],project_id,file.filename,kind,inspection['sha256'],path,json_value(inspection)))
         for r in records:
+            r['account_id']=project['account_id']
             c.execute("insert into history(tenant_id,project_id,account_id,ad_id,data) values(%s,%s,%s,%s,%s) on duplicate key update data=values(data),account_id=values(account_id)",(project['tenant_id'],project_id,project['account_id'],r['ad_id'],json_value(r)))
-    return {"id":file_id,"inspection":inspection,"imported_ads":len(records),"campaigns":len({r['campaign_id'] for r in records})}
+    return {"id":file_id,"inspection":inspection,"imported_ads":len(records),"campaigns":len({r['campaign_id'] for r in records}),"adgroups":len({r['adgroup_id'] for r in records})}
 
 
 @app.post('/files/{file_id}/mapping/propose')
@@ -177,7 +178,12 @@ async def confirm_mapping(file_id:str,body:MappingConfirmation,actor:Actor=Depen
         project=project_access(c,row['project_id'],actor,write=True)
         history=history_for(c,project)
     data=await storage.download(row['storage_path'])
-    requirements=[evaluate(r,history) for r in parse_requirements(data,file_id,body.mappings)]
+    requirements=parse_requirements(data,file_id,body.mappings)
+    for req in requirements:
+        if not req.account_id:
+            req.account_id=project['account_id']
+            req.sources['account_id']=SourceRef(file_id='',sheet='',cell='',raw_value=project['account_id'],kind='template')
+    requirements=[evaluate(r,history) for r in requirements]
     draft=BuildDraft(id=str(uuid4()),project_id=str(project['id']),requirements=requirements,summary={"source_file":file_id,"count":len(requirements)})
     with transaction() as c:
         project_access(c,row['project_id'],actor,write=True)

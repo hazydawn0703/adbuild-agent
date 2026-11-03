@@ -1,7 +1,7 @@
 """Read XLSX as data only. No macro execution, external link fetching or formula evaluation."""
 from io import BytesIO
 from hashlib import sha256
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 import re
@@ -84,12 +84,29 @@ def parse_export(data: bytes):
     return records
 
 
+def zone_value(tz):
+    text = clean(tz)
+    offset = re.fullmatch(r'(?:投放时区[:：]\s*)?(?:UTC|GMT)([+-])(\d{1,2})(?::(\d{2}))?',text,re.I)
+    if offset:
+        hours, minutes = int(offset[2]), int(offset[3] or 0)
+        if hours > 14 or minutes > 59 or hours == 14 and minutes:
+            raise ValueError('无效的 UTC 偏移')
+        return timezone(timedelta(minutes=(hours*60+minutes)*(1 if offset[1]=='+' else -1)))
+    return ZoneInfo(text)
+
+
 def date_value(value, tz):
     if value is None or value == "":
         return None
-    value = value if isinstance(value, datetime) else datetime.fromisoformat(clean(value).replace("/", "-"))
+    if not isinstance(value, datetime):
+        # TikTok exports use non-zero-padded account-local dates such as 2026/9/15 10:08.
+        text = clean(value)
+        if re.fullmatch(r'\d{4}/\d{1,2}/\d{1,2} \d{1,2}:\d{2}(?::\d{2})?',text):
+            value = datetime.strptime(text,'%Y/%m/%d %H:%M:%S' if text.count(':')==2 else '%Y/%m/%d %H:%M')
+        else:
+            value = datetime.fromisoformat(text)
     if value.tzinfo is None and tz:
-        value = value.replace(tzinfo=ZoneInfo(tz))
+        value = value.replace(tzinfo=zone_value(tz))
     return value
 
 
@@ -109,7 +126,16 @@ def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
             values, refs, issues = dict(mapping.defaults), {}, []
             for field, col in mapping.columns.items():
                 cell = sheet.cell(index, column_index_from_string(col))
+                for merged in sheet.merged_cells.ranges:
+                    if cell.coordinate in merged:
+                        cell = sheet.cell(merged.min_row,merged.min_col)
+                        break
                 value = cell.value
+                if cell.data_type == 'e':
+                    issues.append(Issue(code='invalid_cell',field=field,message=f'{cell.coordinate} 是 Excel 错误值，不作为搭建参数'))
+                    continue
+                if field in ('post_url','landing_url') and cell.hyperlink:
+                    value = cell.hyperlink.target or value
                 if value is not None and clean(value):
                     values[field] = value
                     refs[field] = SourceRef(file_id=file_id, sheet=sheet.title, cell=cell.coordinate, raw_value=clean(value))
@@ -127,6 +153,14 @@ def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
                 if field in values:
                     values[field] = platform_id(values[field])
             values["objective"] = objective(values.get("objective"))
+            if values.get('timezone'):
+                try:
+                    zone = zone_value(values['timezone'])
+                    values['timezone'] = str(zone)
+                except (ValueError, KeyError):
+                    issues.append(Issue(code='invalid_timezone',field='timezone',message='时区无法识别，请确认'))
+            if clean(values.get('language')).lower() in ('英语','英文','english','en'):
+                values['language'] = 'en'
             if "budget" in values:
                 try:
                     values["budget"] = Decimal(clean(values["budget"]))
