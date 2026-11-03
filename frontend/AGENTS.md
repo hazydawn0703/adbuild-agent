@@ -7,3 +7,7 @@ This version has breaking changes — APIs, conventions, and file structure may 
 This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
 
 <!-- END:nextjs-agent-rules -->
+
+## 工作台 UI 标准
+
+修改工作台弹窗前阅读 [UI_DESIGN.md](UI_DESIGN.md)。表单弹窗必须复用 `app/Modal.tsx` 和 `app/modal.css`，固定标题及底部操作、仅正文滚动，使用统一浅绿色滚动条和既有表单控件；禁止恢复可编辑 JSON 界面。

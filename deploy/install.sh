@@ -12,8 +12,9 @@ fi
 cd "$release/frontend"
 npm ci --ignore-scripts --no-audit --no-fund
 NEXT_TELEMETRY_DISABLED=1 npm run build
-mkdir -p .next/standalone/.next
+mkdir -p .next/standalone/.next .next/standalone/public
 cp -a .next/static .next/standalone/.next/static
+cp -a public/. .next/standalone/public/
 if [ ! -f /etc/adbuild-agent/runtime.env ]; then
   echo 'Configure MySQL DATABASE_URL, SESSION_SECRET, TOKEN_ENCRYPTION_KEY and DeepSeek settings in /etc/adbuild-agent/runtime.env before deployment' >&2
   exit 1
