@@ -27,7 +27,7 @@ def test_expired_is_blocked():
 
 
 def test_same_post_different_objective_or_schedule_is_new():
-    history=[dict(post_id=req().post_id,objective='traffic',start_at='2027/01/01 00:00',end_at='2027/01/02 00:00',timezone='UTC',language='All',budget='50')]
+    history=[dict(account_id=req().account_id,post_id=req().post_id,objective='traffic',start_at='2027/01/01 00:00',end_at='2027/01/02 00:00',timezone='UTC',language='All',budget='50')]
     assert evaluate(req(),history,datetime(2026,1,1,tzinfo=timezone.utc)).classification=='new'
     history[0]['objective']='followers'
     assert evaluate(req(),history,datetime(2026,1,1,tzinfo=timezone.utc)).classification=='existing'

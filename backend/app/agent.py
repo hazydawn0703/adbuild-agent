@@ -127,6 +127,9 @@ def validate_decision(state,decision):
             raise ProposalError('未要求改变需求是否参与本次投放；未修改其他条目不等于取消其投放')
         if 'timezone' in edit.values and any(f in edit.values for f in ('start_at','end_at')) and not re.search(r'时区|timezone|UTC|GMT',message,re.I):
             raise ProposalError('日期自带偏移只用于该日期，不得据此修改独立的投放时区字段')
+    from .provenance import validate_proposal_evidence
+    try: validate_proposal_evidence(state,decision)
+    except ValueError as error: raise ProposalError(str(error)) from None
 
 
 def conversation_graph(checkpointer):

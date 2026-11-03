@@ -62,15 +62,22 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
                 if ref.file_id:
                     source_file=conn.execute('select id from files where id=%s and project_id=%s',(ref.file_id,project['id'])).fetchone()
                     if not source_file: raise HTTPException(422,'字段来源不属于当前项目')
-                # Model may retain a previously verified reference, never invent a new cell.
-                if not previous or ref.model_dump(exclude={'accepted_at','accepted_by'})!=previous.model_dump(exclude={'accepted_at','accepted_by'}):
-                    raise HTTPException(422,'新来源需通过文件映射或结构化回答核实')
+                from .provenance import supported_source,verified_history_file
+                original=next(r for r in draft.requirements if r.id==req.id)
+                try:
+                    if ref.kind=='history':
+                        ref=verified_history_file(conn,project['id'],ref,field,value,req.timezone)
+                    else:
+                        taskrow=conn.execute('select data from intake_tasks where draft_id=%s',(draft.id,)).fetchone()
+                        taskstate=taskrow['data'] if taskrow else {}
+                        ref=supported_source({'messages':taskstate.get('messages',[]),'context':taskstate.get('context',{})},original.model_dump(),field,value,ref)
+                except (ValueError,OSError) as error:raise HTTPException(422,str(error)) from None
                 req.sources[field]=ref
             elif previous and str(getattr(next(r for r in draft.requirements if r.id==req.id),field))==str(value):
                 req.sources[field]=previous
             else:
                 message_id=edit.get('source_message_id')
-                req.sources[field]=SourceRef(file_id='',sheet='',cell='',raw_value=str(value),kind='confirmed',message_id=message_id)
+                req.sources[field]=SourceRef(file_id='',sheet='',cell='',raw_value='已提交结构配置' if field=='structure' else str(value),kind='confirmed',message_id=message_id)
             req.sources[field].accepted_by=actor.user_id
             req.sources[field].accepted_at=datetime.now(timezone.utc)
             if field not in req.confirmed_fields: req.confirmed_fields.append(field)
@@ -88,6 +95,8 @@ def submit_approved_draft(conn, draft, project):
     from .preview import build_preview
     if not settings().execution_enabled:
         raise HTTPException(423,'真实搭建暂缓，当前仅支持预览与人工确认')
+    if any(r.included and r.structure for r in draft.requirements):
+        raise HTTPException(423,'多层结构尚未完成平台写入验收，当前仅支持预览与人工确认')
     # Caller holds the project lock. Reservation and queue insertion commit atomically.
     project = conn.execute("select * from projects where id=%s for update",(project["id"],)).fetchone()
     preview=build_preview(draft,history_for(conn,project),project['policy_version'],pending_questions=pending_questions(conn,draft.id))
