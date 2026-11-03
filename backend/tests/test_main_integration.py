@@ -14,7 +14,8 @@ def test_platform_admin_and_intake_routes_are_both_available():
     schema=main.app.openapi()
     routes=[(method.upper(),path) for path,operations in schema['paths'].items() for method in operations if method in ('get','post','patch','put','delete')]
     required={('POST','/auth/login'),('POST','/ops/login'),('GET','/ops/tenants'),('POST','/ops/tenants'),
-              ('POST','/ops/tenants/{tenant_id}/admins'),('PATCH','/ops/tenants/{tenant_id}/admins/{user_id}'),
+              ('POST','/ops/tenants/{tenant_id}/admins'),('POST','/ops/tenants/{tenant_id}/admins/{user_id}/status'),
+              ('POST','/ops/tenants/{tenant_id}/name'),('POST','/ops/tenants/{tenant_id}/close'),
               ('POST','/ops/tenants/{tenant_id}/admins/{user_id}/password'),
               ('POST','/projects/{project_id}/tasks'),('GET','/tasks/{task_id}'),
               ('POST','/projects/{project_id}/chat'),('POST','/projects/{project_id}/agent'),
@@ -23,6 +24,7 @@ def test_platform_admin_and_intake_routes_are_both_available():
               ('GET','/projects/{project_id}/history')}
     assert required<=set(routes)
     assert all(routes.count(key)==1 for key in required)
+    assert ('PATCH','/ops/tenants/{tenant_id}/admins/{user_id}') not in routes
 
 
 def test_login_issues_password_version_bound_token_that_authentication_honors(monkeypatch):

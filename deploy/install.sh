@@ -4,6 +4,8 @@ release="$1"
 case "$release" in /opt/adbuild-agent/releases/*) ;; *) echo 'Invalid release path' >&2; exit 1;; esac
 test -f "$release/frontend/package-lock.json"
 sudo install -d -o admin -g admin -m 755 /opt/adbuild-agent
+exec 9>/opt/adbuild-agent/deploy.lock
+flock -n 9 || { echo 'Another adbuild release is in progress' >&2; exit 1; }
 sudo install -d -o root -g admin -m 750 /etc/adbuild-agent
 if [ ! -x /opt/adbuild-agent/venv/bin/python ]; then
   python3 -m venv /opt/adbuild-agent/venv

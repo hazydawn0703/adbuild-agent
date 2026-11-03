@@ -132,6 +132,16 @@ class UpdateAdmin(BaseModel):
     active: bool
 
 
+class RenameTenant(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+
+    @field_validator('name')
+    @classmethod
+    def nonblank(cls, value):
+        if not value.strip(): raise ValueError('名称不能为空')
+        return value.strip()
+
+
 class ResetPassword(BaseModel):
     password: str = Field(min_length=16, max_length=256)
 
@@ -195,7 +205,34 @@ def add_admin(tenant_id: str, body: AdminAccount, _=Depends(authenticate_platfor
     return {'id': user_id}
 
 
-@router.patch('/tenants/{tenant_id}/admins/{user_id}')
+@router.post('/tenants/{tenant_id}/name')
+def rename_tenant(tenant_id: str, body: RenameTenant, _=Depends(authenticate_platform)):
+    with transaction() as c:
+        require_tenant(c, tenant_id)
+        c.execute('update tenants set name=%s where id=%s', (body.name, tenant_id))
+        audit(c, tenant_id, 'ops_tenant_renamed', {'name': body.name})
+    return {'ok': True}
+
+
+@router.post('/tenants/{tenant_id}/close')
+def delete_tenant(tenant_id: str, _=Depends(authenticate_platform)):
+    from .project_cleanup import delete_project_data
+    with transaction() as c:
+        require_tenant(c, tenant_id)
+        projects = c.execute('select id,tenant_id,name from projects where tenant_id=%s order by id for update', (tenant_id,)).fetchall()
+        for project in projects:
+            delete_project_data(c, project)
+        users = c.execute('select user_id from memberships where tenant_id=%s for update', (tenant_id,)).fetchall()
+        c.execute('delete from memberships where tenant_id=%s', (tenant_id,))
+        for user in users:
+            c.execute('delete from users where id=%s and not exists (select 1 from memberships where user_id=%s)', (user['user_id'], user['user_id']))
+        for table in ('connections', 'audit'):
+            c.execute('delete from '+table+' where tenant_id=%s', (tenant_id,))
+        c.execute('delete from tenants where id=%s', (tenant_id,))
+    return {'deleted': True}
+
+
+@router.post('/tenants/{tenant_id}/admins/{user_id}/status')
 def update_admin(tenant_id: str, user_id: str, body: UpdateAdmin, _=Depends(authenticate_platform)):
     with transaction() as c:
         user = require_admin(c, tenant_id, user_id)
