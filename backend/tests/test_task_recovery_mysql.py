@@ -1,3 +1,4 @@
+from model_response_fixture import model_response
 """Request-level recovery against real isolated MySQL and persistent checkpoints."""
 import asyncio
 import json
@@ -30,12 +31,12 @@ def models(monkeypatch,code,failures=1,error_factory=None):
             calls['scope']+=1
             payload=json.loads(messages[-1][1])
             source=next(m for m in reversed(payload['messages']) if m['role']=='user')
-            return TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='business_no',values=[code])],message_ids=[source['id']])
+            return model_response(TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='business_no',values=[code])],message_ids=[source['id']]))
     class Fields:
         async def ainvoke(self,_):
             calls['fields']+=1
             if calls['fields']<=failures:raise error_factory() if error_factory else TimeoutError('injected field timeout')
-            return ChatDecision(answer='从保存的执行位置恢复')
+            return model_response(ChatDecision(answer='从保存的执行位置恢复'))
     monkeypatch.setattr('app.agent.llm',lambda schema:Scope() if schema is TaskScope else Fields())
     return calls
 
@@ -159,3 +160,4 @@ def test_resume_rejects_unknown_or_changed_flow_and_prompt_versions(database,mon
             response=await client.post(f'/projects/{database}/chat',json={'task_id':task['id'],'request_id':str(uuid4()),'expected_version':task['version'],'action':'resume'})
             assert response.status_code==409 and '重新分析' in response.text
     asyncio.run(scenario())
+

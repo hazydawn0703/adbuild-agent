@@ -139,7 +139,7 @@ def evaluate(req: Requirement, history: list[dict], now=None):
     req.issues = [i for i in req.issues if i.code.startswith("invalid_")]
     req.history = history_candidates(req,history)
     for field in ("account_id", "post_id", "objective", "budget", "budget_mode", "currency", "start_at", "end_at", "timezone", "audience", "identity_id"):
-        if req.structure and field in ('post_id','identity_id','audience'):
+        if req.structure and field in ('post_id','identity_id','audience','start_at','end_at','timezone'):
             continue
         if getattr(req, field) in (None, ""):
             req.issues.append(Issue(code="missing",field=field,message=f"缺少 {field}"))
@@ -170,6 +170,10 @@ def evaluate(req: Requirement, history: list[dict], now=None):
         req.issues.append(Issue(code="destination",field="landing_url",message="流量目标需要 HTTPS 落地页和 CTA"))
     from .structure import validate_structure
     req.issues.extend(validate_structure(req))
+    if req.structure:
+        for group in req.structure.groups:
+            if group.end_at and group.end_at.tzinfo and group.end_at <= now:
+                req.issues.append(Issue(code='expired',field='end_at',message=f'广告组 {group.name} 排期已经结束，不会自动平移'))
     exact=[]
     for h in req.history:
         if h['classification'] in ('existing','config_change'):exact.append(h)
@@ -205,3 +209,4 @@ def check_policy(req: Requirement, policy: ProjectPolicy, now=None):
         if source.kind == "history" and field not in req.confirmed_fields:
             failures.append(f"{field} 的历史推断尚未确认")
     return failures
+

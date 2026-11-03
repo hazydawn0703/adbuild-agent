@@ -1,3 +1,4 @@
+from model_response_fixture import campaign_fixture
 from contextlib import contextmanager
 from copy import deepcopy
 import json
@@ -10,7 +11,7 @@ SECRET='private-material-credential-for-response-contract'
 
 
 def draft():
-    return BuildDraft(id='draft',project_id='project',requirements=[Requirement.model_validate({
+    return BuildDraft(id='draft',project_id='project',requirements=[campaign_fixture(**{
         'id':'row','included':True,'account_id':'7800000000000000011','objective':'followers',
         'budget':'20','budget_mode':'lifetime','currency':'USD','start_at':'2027-01-01T09:00:00Z',
         'end_at':'2027-01-04T09:00:00Z','timezone':'UTC','audience':'Verified audience',
@@ -143,3 +144,4 @@ def test_validation_errors_never_echo_private_input():
         assert secret not in json.dumps(detail)
         assert all(set(item)<= {'loc','type','msg'} for item in detail)
     else:raise AssertionError('invalid material accepted')
+

@@ -1,3 +1,4 @@
+from model_response_fixture import campaign_fixture
 from decimal import Decimal
 from datetime import datetime, timezone
 import json
@@ -19,7 +20,7 @@ def requirement(**changes):
                   budget_mode='lifetime', currency='USD', start_at='2027-02-01T09:00:00Z',
                   end_at='2027-02-05T09:00:00Z', timezone='UTC', audience='Confirmed audience',
                   identity_id='7800000000000000033')
-    return Requirement.model_validate(values | changes)
+    return campaign_fixture(**(values | changes))
 
 
 def split(**changes):
@@ -30,13 +31,11 @@ def split(**changes):
     ]) | changes)
 
 
-def test_default_is_one_plan_group_and_ad_without_implicit_merging():
-    a, issues = campaign_tree(requirement())
-    assert not issues
-    assert len(a['adgroups']) == len(a['adgroups'][0]['ads']) == 1
-    d = BuildDraft(id='draft', project_id='project', requirements=[requirement(), requirement(id='other', objective='followers')])
-    preview = build_preview(d, [], 0, NOW)
-    assert preview['counts'] == {'campaigns':2, 'adgroups':2, 'ads':2, 'skipped':0}
+def test_missing_structure_is_blocked_without_implicit_group_or_material():
+    req=Requirement(id='missing')
+    tree,issues=campaign_tree(req)
+    assert tree['adgroups']==[]
+    assert any(i.field=='structure' and i.blocking for i in issues)
 
 
 def test_explicit_grouping_cannot_hide_duplicate_demand():
@@ -67,7 +66,7 @@ def test_rounding_preserves_exact_total_and_is_deterministic():
     assert result == allocate_budget(Decimal('10.01'), ratios)
 
 
-@pytest.mark.parametrize('ratios', [['.5','.6'], ['0','1'], ['-1','2'], ['NaN','1'], []])
+@pytest.mark.parametrize('ratios', [['0','1'], ['-1','2'], ['NaN','1'], []])
 def test_invalid_ratios_never_produce_allocations(ratios):
     with pytest.raises(ValueError):
         allocate_budget(Decimal('10'), [Decimal(v) for v in ratios])
@@ -138,3 +137,4 @@ def test_structured_draft_cannot_reach_flat_executor_even_if_global_switch_chang
         submit_approved_draft(None,draft,{})
     assert error.value.status_code==423
     assert '平台写入验收' in error.value.detail
+

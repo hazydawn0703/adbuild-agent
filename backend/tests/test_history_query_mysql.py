@@ -1,3 +1,4 @@
+from model_response_fixture import model_response
 """Imported history remains queryable without a build draft or write proposals."""
 import asyncio
 from io import BytesIO
@@ -21,14 +22,14 @@ def test_export_only_task_can_query_history_without_materializing_a_draft(databa
     class Scope:
         async def ainvoke(self,messages):
             payload=json.loads(messages[-1][1]);source=next(m for m in reversed(payload['messages']) if m['role']=='user')
-            return TaskScope(action='history',status='resolved',selectors=[ScopeSelector(field='post_id',values=[post])],message_ids=[source['id']])
+            return model_response(TaskScope(action='history',status='resolved',selectors=[ScopeSelector(field='post_id',values=[post])],message_ids=[source['id']]))
     class Fields:
         async def ainvoke(self,messages):
             payload=json.loads(messages[-1][1]);captured.append(payload)
             assert payload['history_available']==1
             assert len(payload['history_query']['items'])==1
             assert 'private-raw-marker' not in json.dumps(payload)
-            return ChatDecision(answer='找到一条导入快照，后台实时状态未核实')
+            return model_response(ChatDecision(answer='找到一条导入快照，后台实时状态未核实'))
     monkeypatch.setattr('app.agent.llm',lambda schema:Scope() if schema is TaskScope else Fields())
     async def scenario():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
@@ -53,3 +54,4 @@ def test_export_only_task_can_query_history_without_materializing_a_draft(databa
                 for table in ('drafts','runs','deployments'):
                     assert c.execute('select count(*) n from '+table+' where project_id=%s',(database,)).fetchone()['n']==0
     asyncio.run(scenario())
+

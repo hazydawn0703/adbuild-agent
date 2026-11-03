@@ -20,11 +20,13 @@ class SourceRef(Model):
     sheet: str
     cell: str
     raw_value: str
-    kind: Literal["excel", "confirmed", "template", "history"] = "excel"
+    kind: Literal["excel", "confirmed", "template", "history", "project", "calculated"] = "excel"
+    derived_from: list[str] = Field(default_factory=list)
     message_id: str | None = None
     context_version: int | None = None
     accepted_by: str | None = None
     accepted_at: datetime | None = None
+    transform: Literal['value','interval_start','interval_end','currency_code'] = 'value'
 
 
 class Issue(Model):
@@ -59,6 +61,9 @@ class GroupSpec(Model):
     name: str = ''
     audience: str | None = None
     language: str | None = None
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    timezone: str = ''
     budget: BudgetSpec | None = None
     ads: list[MaterialSpec] = Field(default_factory=list, max_length=50)
     sources: dict[str, SourceRef] = Field(default_factory=dict)
@@ -131,11 +136,12 @@ class ProjectPolicy(Model):
 
 
 InputField = Literal['platform','account_id','business_no','name','post_url','post_id','objective','budget','budget_mode','currency','start_at','end_at','timezone','audience','language','identity_id','cta','landing_url']
+MappingField = InputField | Literal['campaign_key','group_key','record_key','budget_level','campaign_budget','adgroup_budget']
 
 
 class Binding(Model):
     kind: Literal['row','cell','header']
-    column: str = ''
+    column: str = Field(default='',pattern=r'^(?:[A-Z]{1,3})?$')
     sheet: str = ''
     cell: str = ''
     transform: Literal['value','interval_start','interval_end','currency_code'] = 'value'
@@ -152,11 +158,8 @@ class SheetMapping(Model):
     header_row: int = Field(ge=1)
     first_row: int = Field(ge=1)
     last_row: int = Field(ge=1)
-    columns: dict[InputField, Annotated[str, Field(pattern=r'^[A-Z]{1,3}$')]] = Field(default_factory=dict, description='只包含真实存在的逐行列映射，值为Excel大写列字母。缺少来源的字段省略，不填空字符串、字段名或null占位。固定资料使用bindings。')
-    bindings: dict[InputField, Binding] = Field(default_factory=dict)
+    bindings: dict[MappingField, Binding] = Field(default_factory=dict)
     filters: list[RowFilter] = Field(default_factory=list)
-    # Defaults are explicitly accepted by a user, not instructions extracted from cells.
-    defaults: dict[InputField, str] = Field(default_factory=dict)
 
 
 class MappingProposal(Model):
@@ -250,6 +253,26 @@ class Clarification(Model):
     answer_type: Literal['text','choice','datetime','decimal'] = 'text'
     options: list[str] = Field(default_factory=list)
     blocking: bool = True
+    reason_code: str = 'semantic_review'
+    evidence_version: int = 0
+
+
+class TaskQuestion(Clarification):
+    scope: Literal['task'] = 'task'
+    requirement_ids: list[str] = Field(default_factory=list, max_length=0)
+
+
+class CandidateDecision(Model):
+    answer: str
+    additions: list[DemandCandidate] = Field(default_factory=list)
+    questions: list[TaskQuestion] = Field(default_factory=list)
+
+
+class DraftDecision(Model):
+    answer: str
+    edits: list[ChatEdit] = Field(default_factory=list)
+    expansions: list[RequirementExpansion] = Field(default_factory=list)
+    questions: list[Clarification] = Field(default_factory=list)
 
 
 class ChangeProposal(Model):
@@ -304,3 +327,4 @@ MappingProposal.model_rebuild()
 
 DraftPatch.model_rebuild()
 ChatDecision.model_rebuild()
+

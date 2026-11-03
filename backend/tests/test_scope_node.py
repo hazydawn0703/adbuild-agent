@@ -1,3 +1,5 @@
+from app.models import DraftDecision
+from model_response_fixture import model_response
 import asyncio
 from uuid import uuid4
 
@@ -20,9 +22,9 @@ def test_scope_has_own_schema_and_is_not_optional_in_field_response(monkeypatch)
     class ScopeModel:
         async def ainvoke(self,_):
             calls.append('scope')
-            return TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='business_no',values=[code])],message_ids=['source'])
+            return model_response(TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='business_no',values=[code])],message_ids=['source']))
     class FieldModel:
-        async def ainvoke(self,_):calls.append('fields');return ChatDecision(answer='范围已识别')
+        async def ainvoke(self,_):calls.append('fields');return model_response(ChatDecision(answer='范围已识别'))
     monkeypatch.setattr('app.agent.llm',lambda schema:ScopeModel() if schema is TaskScope else FieldModel())
     result=asyncio.run(conversation_graph(InMemorySaver()).ainvoke(state,{'configurable':{'thread_id':'dedicated'}}))
     assert calls==['scope','fields']
@@ -32,7 +34,7 @@ def test_scope_has_own_schema_and_is_not_optional_in_field_response(monkeypatch)
 
 def test_incomplete_scope_returns_structured_question_without_field_call(monkeypatch):
     class ScopeModel:
-        async def ainvoke(self,_):return TaskScope(reason='请选择本次业务编号')
+        async def ainvoke(self,_):return model_response(TaskScope(reason='请选择本次业务编号'))
     def model(schema):
         assert schema is TaskScope
         return ScopeModel()
@@ -45,9 +47,9 @@ def test_incomplete_scope_returns_structured_question_without_field_call(monkeyp
 
 def test_normal_field_edit_skips_unrelated_scope_resolution(monkeypatch):
     class Fields:
-        async def ainvoke(self,_):return ChatDecision(answer='edit',edits=[ChatEdit(requirement_id='wanted',values={'budget':'40'})])
+        async def ainvoke(self,_):return model_response(ChatDecision(answer='edit',edits=[ChatEdit(requirement_id='wanted',values={'budget':'40'})]))
     def model(schema):
-        assert schema is ChatDecision
+        assert schema is DraftDecision
         return Fields()
     monkeypatch.setattr('app.agent.llm',model)
     code,state=fixture_state();state['messages']=[{'id':'source','role':'user','content':f'仅将业务编号 {code} 的预算改为40'}]
@@ -74,7 +76,7 @@ def test_duplicate_addition_is_repaired_before_checkpoint_success(monkeypatch):
     class Fields:
         async def ainvoke(self,_):
             attempts.append(1)
-            return ChatDecision(answer='duplicate',additions=[DemandCandidate(values={'post_id':'7700000000000000001','objective':'video_views'})]) if len(attempts)==1 else ChatDecision(answer='请核对现有需求')
+            return model_response(ChatDecision(answer='duplicate',additions=[DemandCandidate(values={'post_id':'7700000000000000001','objective':'video_views'})]) if len(attempts)==1 else ChatDecision(answer='请核对现有需求'))
     monkeypatch.setattr('app.agent.llm',lambda schema:Fields())
     result=asyncio.run(conversation_graph(InMemorySaver()).ainvoke(state,{'configurable':{'thread_id':'duplicate'}}))
     assert len(attempts)==2 and result['decision']['additions']==[]
@@ -85,12 +87,12 @@ def test_checkpoint_resume_reuses_scope_and_execution_position(monkeypatch):
     class Scope:
         async def ainvoke(self,_):
             calls['scope']+=1
-            return TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='business_no',values=[code])],message_ids=['source'])
+            return model_response(TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='business_no',values=[code])],message_ids=['source']))
     class Fields:
         async def ainvoke(self,_):
             calls['fields']+=1
             if calls['fields']==1:raise TimeoutError('injected')
-            return ChatDecision(answer='恢复完成')
+            return model_response(ChatDecision(answer='恢复完成'))
     monkeypatch.setattr('app.agent.llm',lambda schema:Scope() if schema is TaskScope else Fields())
     async def scenario():
         graph=conversation_graph(InMemorySaver());config={'configurable':{'thread_id':'resume'}}
@@ -108,9 +110,9 @@ def test_explicit_new_post_is_not_lost_when_existing_candidates_do_not_contain_i
     _,state=fixture_state()
     state['messages']=[{'id':'source','role':'user','content':f'新增帖子{post}的广告，目标涨粉，预算40美元'}]
     class Scope:
-        async def ainvoke(self,_):return TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='post_id',values=[post])],message_ids=['source'])
+        async def ainvoke(self,_):return model_response(TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='post_id',values=[post])],message_ids=['source']))
     class Fields:
-        async def ainvoke(self,_):return ChatDecision(answer='新增候选',additions=[DemandCandidate(values={'post_id':post,'objective':'followers','budget':'40'})])
+        async def ainvoke(self,_):return model_response(ChatDecision(answer='新增候选',additions=[DemandCandidate(values={'post_id':post,'objective':'followers','budget':'40'})]))
     monkeypatch.setattr('app.agent.llm',lambda schema:Scope() if schema is TaskScope else Fields())
     result=asyncio.run(conversation_graph(InMemorySaver()).ainvoke(state,{'configurable':{'thread_id':'new-post'}}))
     assert result['decision']['additions'][0]['values']['post_id']==post
@@ -129,7 +131,7 @@ def test_empty_intake_records_known_scope_and_waits_for_real_input(monkeypatch):
     class Scope:
         async def ainvoke(self,_):
             calls.append('scope')
-            return TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='business_no',values=[code])],message_ids=['source'])
+            return model_response(TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='business_no',values=[code])],message_ids=['source']))
     def model(schema):
         assert schema is TaskScope,'No field model is needed before material input exists'
         return Scope()
@@ -165,13 +167,13 @@ def test_latest_history_query_reenters_scope_even_when_build_range_is_known(monk
     class Scope:
         async def ainvoke(self,_):
             calls.append('scope')
-            return TaskScope(action='history',status='resolved',selectors=[ScopeSelector(field='business_no',values=[code])],message_ids=['source','query'])
+            return model_response(TaskScope(action='history',status='resolved',selectors=[ScopeSelector(field='business_no',values=[code])],message_ids=['source','query']))
     class Fields:
         async def ainvoke(self,messages):
             import json
             payload=json.loads(messages[-1][1]);calls.append('fields')
             assert payload['history_query']['total']==1
-            return ChatDecision(answer='当前项目导入快照中有一条记录')
+            return model_response(ChatDecision(answer='当前项目导入快照中有一条记录'))
     monkeypatch.setattr('app.agent.llm',lambda schema:Scope() if schema is TaskScope else Fields())
     result=asyncio.run(conversation_graph(InMemorySaver()).ainvoke(state,{'configurable':{'thread_id':'switch-history'}}))
     assert calls==['scope','fields'] and result['scope']['action']=='history'
@@ -185,9 +187,9 @@ def test_explicit_edit_after_history_returns_to_edit_without_changing_selection(
     class Scope:
         async def ainvoke(self,_):
             calls.append('scope')
-            return TaskScope(action='edit',status='resolved',selectors=[ScopeSelector(field='business_no',values=[code])],message_ids=['edit'])
+            return model_response(TaskScope(action='edit',status='resolved',selectors=[ScopeSelector(field='business_no',values=[code])],message_ids=['edit']))
     class Fields:
-        async def ainvoke(self,_):calls.append('fields');return ChatDecision(answer='预算提案',edits=[ChatEdit(requirement_id='wanted',values={'budget':'40'})])
+        async def ainvoke(self,_):calls.append('fields');return model_response(ChatDecision(answer='预算提案',edits=[ChatEdit(requirement_id='wanted',values={'budget':'40'})]))
     monkeypatch.setattr('app.agent.llm',lambda schema:Scope() if schema is TaskScope else Fields())
     result=asyncio.run(conversation_graph(InMemorySaver()).ainvoke(state,{'configurable':{'thread_id':'switch-edit'}}))
     assert calls==['scope','fields'] and result['scope']['action']=='edit'
@@ -210,7 +212,7 @@ def test_model_scope_in_field_response_is_repaired_without_changing_authoritativ
     class Fields:
         async def ainvoke(self,_):
             calls.append(1)
-            return {'answer':'forged scope','scope':{'action':'new','status':'resolved','all_records':True}} if len(calls)==1 else ChatDecision(answer='保持已核实范围')
+            return model_response({'answer':'forged scope','scope':{'action':'new','status':'resolved','all_records':True}} if len(calls)==1 else ChatDecision(answer='保持已核实范围'))
     monkeypatch.setattr('app.agent.llm',lambda schema:Fields())
     result=asyncio.run(conversation_graph(InMemorySaver()).ainvoke(state,{'configurable':{'thread_id':'no-shadow-scope'}}))
     assert len(calls)==2
@@ -230,11 +232,12 @@ def test_task_scope_answer_reenters_scope_but_other_structured_answers_do_not(mo
     class Scope:
         async def ainvoke(self,_):
             calls.append('scope')
-            return TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='business_no',values=['other'])],message_ids=['answer'])
+            return model_response(TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='business_no',values=['other'])],message_ids=['answer']))
     class Fields:
-        async def ainvoke(self,_):calls.append('fields');return ChatDecision(answer='范围已按回答核实')
+        async def ainvoke(self,_):calls.append('fields');return model_response(ChatDecision(answer='范围已按回答核实'))
     monkeypatch.setattr('app.agent.llm',lambda schema:Scope() if schema is TaskScope else Fields())
     result=asyncio.run(conversation_graph(InMemorySaver()).ainvoke(state,{'configurable':{'thread_id':'scope-answer'}}))
     assert calls==['scope','fields'] and result['scope']['selectors'][0]['values']==['other']
     state['messages'][-1]['content']='本任务回答：'+json.dumps([{'field':'budget','answer':'40'}],ensure_ascii=False)
     assert not scope_required(state)
+

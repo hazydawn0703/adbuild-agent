@@ -91,7 +91,8 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
                     else:
                         taskrow=conn.execute('select data from intake_tasks where draft_id=%s',(draft.id,)).fetchone()
                         taskstate=taskrow['data'] if taskrow else {}
-                        ref=supported_source({'messages':taskstate.get('messages',[]),'context':taskstate.get('context',{})},original.model_dump(),field,value,ref)
+                        documents=list(conn.execute('select id,storage_path,sha256 from files where project_id=%s and kind=%s',(project['id'],'requirements')))
+                        ref=supported_source({'messages':taskstate.get('messages',[]),'context':taskstate.get('context',{}),'documents':documents},original.model_dump(),field,value,ref)
                 except (ValueError,OSError) as error:raise HTTPException(422,str(error)) from None
                 req.sources[field]=ref
             elif previous and str(getattr(next(r for r in draft.requirements if r.id==req.id),field))==str(value):
@@ -184,7 +185,7 @@ def apply_additions(conn,draft,project,actor,additions,message_id,task):
     from .provenance import supported_source
     from .excel import normalize_value
     from .rules import fingerprint
-    state={'messages':task.messages,'context':task.context.model_dump(mode='json')}
+    state={'messages':task.messages,'context':task.context.model_dump(mode='json'),'project_account_id':project.get('account_id','')}
     added=[]
     for raw in additions:
         candidate=DemandCandidate.model_validate(raw)
@@ -192,7 +193,7 @@ def apply_additions(conn,draft,project,actor,additions,message_id,task):
         for field,value in candidate.values.items():
             if value in (None,''): continue
             values[field]=normalize_value(field,value,candidate.values.get('timezone',''))
-            sources[field]=supported_source(state,{},field,values[field],candidate.sources.get(field))
+            sources[field]=supported_source(state,candidate.values,field,values[field],candidate.sources.get(field))
         if values.get('post_url') and not values.get('post_id'):
             import re
             match=re.search(r'/video/(\d+)',values['post_url'])
@@ -200,7 +201,7 @@ def apply_additions(conn,draft,project,actor,additions,message_id,task):
         if not values.get('post_id'): raise HTTPException(422,'新增候选需要可核实的帖子 ID 或视频链接')
         if not values.get('account_id') and project.get('account_id'):
             values['account_id']=normalize_value('account_id',project['account_id'])
-            sources['account_id']=SourceRef(file_id='',sheet='',cell='',raw_value=project['account_id'],kind='template')
+            sources['account_id']=SourceRef(file_id='',sheet='',cell='',raw_value=project['account_id'],kind='project')
         for ref in sources.values(): ref.accepted_by=actor.user_id;ref.accepted_at=datetime.now(timezone.utc)
         added.append(Requirement(id=str(uuid4()),**values,sources=sources,confirmed_fields=list(sources)))
     if not added: raise HTTPException(422,'没有可采纳的新需求')
@@ -219,3 +220,4 @@ def apply_additions(conn,draft,project,actor,additions,message_id,task):
         draft.version+=1
         conn.execute('update drafts set version=%s,data=%s where id=%s',(draft.version,json_value(draft),draft.id))
     return draft
+

@@ -1,3 +1,4 @@
+from model_response_fixture import row_bindings
 """Workbook contracts, independently constructed development/regression inputs."""
 from datetime import datetime
 from hashlib import sha256
@@ -22,11 +23,11 @@ def example():
     s.append(['x1','TikTok','https://www.tiktok.com/@demo/video/7712345678901234567',42,'video_views','2027/1/2 09:00 - 2027/1/5 18:30'])
     s.append(['x2','Other','https://other.example/video/7712345678901234568',25,'traffic','2027/1/2 09:00 - 2027/1/5 18:30'])
     m=SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=3,
-                   columns={'business_no':'A','post_url':'C','budget':'D','objective':'E'},
-                   bindings={'account_id':Binding(kind='cell',sheet='Client',cell='B1'),
+
+                   bindings={**row_bindings({'business_no':'A','post_url':'C','budget':'D','objective':'E'}), **{'account_id':Binding(kind='cell',sheet='Client',cell='B1'),
                              'currency':Binding(kind='header',cell='D1',transform='currency_code'),
                              'start_at':Binding(kind='row',column='F',transform='interval_start'),
-                             'end_at':Binding(kind='row',column='F',transform='interval_end')},
+                             'end_at':Binding(kind='row',column='F',transform='interval_end')}},
                    filters=[RowFilter(column='B',operator='eq',values=['TikTok'])])
     return w,m
 
@@ -58,7 +59,7 @@ def test_semantic_decoys_cannot_fill_platform_fields(field,value):
 
 
 def test_invalid_source_value_remains_visible_and_blocked():
-    w,m=example();m.filters=[];m.columns['currency']='D';del m.bindings['currency']
+    w,m=example();m.filters=[];m.bindings['currency']=Binding(kind='row',column='D')
     rows=parse_requirements(binary(w),'f',[m])
     assert rows[0].currency=='' and rows[0].sources['currency'].raw_value=='42'
     assert any(i.code=='invalid_currency' for i in rows[0].issues)
@@ -67,7 +68,7 @@ def test_invalid_source_value_remains_visible_and_blocked():
 @pytest.mark.parametrize('value,number_format',[('2027-03-14','General'),(datetime(2027,3,14),'yyyy-mm-dd')])
 def test_date_only_does_not_create_a_midnight(value,number_format):
     w=Workbook();s=w.active;s.append(['Post','Start']);s.append(['7712345678901234567',value]);s['B2'].number_format=number_format
-    rows=parse_requirements(binary(w),'f',[SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,columns={'post_id':'A','start_at':'B'})])
+    rows=parse_requirements(binary(w),'f',[SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,bindings=row_bindings({'post_id':'A','start_at':'B'}))])
     assert rows[0].start_at is None
     assert any(i.field=='start_at' and i.blocking for i in rows[0].issues)
     assert rows[0].sources['start_at'].cell=='B2'
@@ -76,8 +77,8 @@ def test_date_only_does_not_create_a_midnight(value,number_format):
 def test_wrong_fixed_source_and_overlapping_field_mapping_rejected():
     w,m=example();m.bindings['account_id'].sheet='Absent'
     with pytest.raises(ValueError,match='工作表不存在'):parse_requirements(binary(w),'f',[m])
-    w,m=example();m.columns['currency']='D'
-    with pytest.raises(ValueError,match='同时绑定'):parse_requirements(binary(w),'f',[m])
+    w,m=example()
+    with pytest.raises(ValueError):SheetMapping.model_validate({**m.model_dump(),'columns':{'currency':'D'}})
 
 
 def test_ambiguous_header_currency_does_not_choose_a_code():
@@ -146,7 +147,7 @@ def test_export_preserves_budget_levels_without_collapsing_them():
 
 def test_one_row_can_map_to_independent_goals_without_shared_requirement_ids():
     w=Workbook();s=w.active;s.append(['Post','Followers','Video views']);s.append(['https://www.tiktok.com/@x/video/7712345678901234567',50,100])
-    maps=[SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,columns={'post_url':'A','budget':col},bindings={'objective':Binding(kind='header',cell=col+'1')}) for col in ('B','C')]
+    maps=[SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,bindings={**row_bindings({'post_url':'A','budget':col}), **{'objective':Binding(kind='header',cell=col+'1')}}) for col in ('B','C')]
     rows=parse_requirements(binary(w),'file',maps)
     assert len(rows)==2 and len({r.id for r in rows})==2
     assert {(r.objective,str(r.budget)) for r in rows}=={('followers','50'),('video_views','100')}
@@ -155,3 +156,4 @@ def test_one_row_can_map_to_independent_goals_without_shared_requirement_ids():
 def test_budget_separator_ambiguity_is_not_silently_changed():
     with pytest.raises(ValueError,match='分隔符'):normalize_value('budget','1,00')
     assert str(normalize_value('budget','1,000.25'))=='1000.25'
+

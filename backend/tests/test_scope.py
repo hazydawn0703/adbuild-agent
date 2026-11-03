@@ -1,3 +1,5 @@
+from app.agent import ModelServiceError
+from model_response_fixture import model_response
 import asyncio
 import json
 from uuid import uuid4
@@ -58,12 +60,12 @@ def test_predraft_task_question_is_valid_but_requirement_question_is_not():
 def test_invalid_question_never_enters_completed_checkpoint(monkeypatch):
     class Model:
         async def ainvoke(self,messages):
-            return ChatDecision(answer='bad',questions=[Clarification(id='q',field='budget',requirement_ids=['fake'],question='预算？')])
+            return model_response(ChatDecision(answer='bad',questions=[Clarification(id='q',field='budget',requirement_ids=['fake'],question='预算？')]))
     monkeypatch.setattr('app.agent.llm',lambda _:Model())
     async def scenario():
         graph=conversation_graph(InMemorySaver())
         config={'configurable':{'thread_id':'invalid-question'}}
-        with pytest.raises(ProposalError):
+        with pytest.raises(ModelServiceError):
             await graph.ainvoke({'messages':[{'id':'m','role':'user','content':'新增帖子123，目标涨粉'}],'draft':None,'context':{},'scope':TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='post_id',values=['123'])],message_ids=['m']).model_dump(mode='json')},config)
         checkpoint=await graph.aget_state(config)
         assert not checkpoint.values.get('decision')
@@ -74,7 +76,7 @@ def test_invalid_question_never_enters_completed_checkpoint(monkeypatch):
 def test_predraft_question_survives_graph_checkpoint(monkeypatch):
     question=Clarification(id='q',field='scope',scope='task',question='本次选择哪些记录？')
     class Model:
-        async def ainvoke(self,messages):return TaskScope(reason=question.question)
+        async def ainvoke(self,messages):return model_response(TaskScope(reason=question.question))
     monkeypatch.setattr('app.agent.llm',lambda _:Model())
     async def scenario():
         graph=conversation_graph(InMemorySaver())
@@ -118,3 +120,4 @@ def test_material_credential_and_its_source_never_enter_model_context():
     ad=payload['draft']['requirements'][0]['structure']['groups'][0]['ads'][0]
     assert ad['authorization_present'] is True
     assert 'authorization_code' not in ad
+

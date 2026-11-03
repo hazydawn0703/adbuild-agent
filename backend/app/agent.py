@@ -6,7 +6,7 @@ from .models import MappingProposal, ChatDecision, TaskScope, Clarification, Sou
 from .settings import settings
 from openai import APIError,APIConnectionError,APITimeoutError,APIStatusError
 
-FLOW_VERSION='intake-graph-2'
+FLOW_VERSION='entity-graph-3'
 
 
 class ModelServiceError(RuntimeError):
@@ -47,7 +47,7 @@ def llm(schema):
     if not cfg.llm_api_key:
         raise ValueError("尚未配置平台模型 LLM_API_KEY")
     return ChatOpenAI(model=cfg.llm_model,api_key=cfg.llm_api_key,base_url=cfg.llm_base_url,
-                      use_responses_api=False,timeout=60,max_retries=0,extra_body={"thinking":{"type":"disabled"}}).with_structured_output(schema,method="function_calling")
+                      use_responses_api=False,timeout=60,max_retries=0,extra_body={"thinking":{"type":"disabled"}}).with_structured_output(schema,method="function_calling",include_raw=True)
 
 
 async def propose_mapping(inspection,data=None,task=None,on_progress=None):
@@ -119,7 +119,6 @@ async def propose_mapping(inspection,data=None,task=None,on_progress=None):
             if any(x is None for x in (left,top,right,bottom)) or top<1 or left<1 or bottom<top or right<left or bottom>50000 or right>300:raise ProposalError('补读区域超出允许范围')
         for mapping in result.mappings:
             if mapping.sheet not in sheets or mapping.last_row>sheets[mapping.sheet]['rows']:raise ProposalError('映射范围超出实际内容')
-            if mapping.defaults:raise ProposalError('模型不得自动设置项目默认值')
             if wb is not None:
                 try:validate_sources(mapping,wb)
                 except ValueError as error:raise ProposalError(str(error)) from None
@@ -161,9 +160,13 @@ async def structured(schema,messages,validator=None):
     from .prompts import PROMPT_HASH
     for attempt in range(2):
         started=time.monotonic()
+        raw=None
         try:
-            result=await asyncio.wait_for(llm(schema).ainvoke(messages),60)
-            result=schema.model_validate(result)
+            envelope=await asyncio.wait_for(llm(schema).ainvoke(messages),60)
+            from .scope import redact_private
+            raw=envelope['raw']
+            logging.getLogger('adbuild.analysis').info('model_output %s',json.dumps(redact_private({'schema':schema.__name__,'attempt':attempt+1,'raw':raw.model_dump(mode='json'),'parsing_error':str(envelope['parsing_error']) if envelope['parsing_error'] else None}),ensure_ascii=False))
+            result=schema.model_validate(envelope['parsed'])
             if validator: validator(result)
             logging.getLogger('adbuild.analysis').info('model_stage schema=%s prompt=%s duration=%.3f attempt=%d',schema.__name__,PROMPT_HASH,time.monotonic()-started,attempt+1)
             return result
@@ -172,8 +175,8 @@ async def structured(schema,messages,validator=None):
             # the schema-repair attempt retrying an unavailable provider implicitly.
             raise ModelServiceError.from_provider(error) from None
         except (ValidationError,OutputParserException,ProposalError) as error:
-            if attempt: raise
-            messages=[*messages,('system','结构校验失败，请修正字段结构，不补造业务值：'+str(error))]
+            if attempt: raise ModelServiceError('invalid_response',retryable=False) from None
+            messages=[*messages,('system','结构校验失败，请修正字段结构，不补造业务值：'+str(error)+'；错误输出：'+json.dumps(redact_private(raw.model_dump(mode='json') if raw is not None else None),ensure_ascii=False))]
 
 
 class ConversationState(TypedDict):
@@ -336,7 +339,7 @@ def validate_decision(state,decision):
             for field,value in list(values.items()):
                 if value in (None,''):continue
                 normalized=normalize_value(field,value,values.get('timezone',''))
-                addition.sources[field]=supported_source(state,{},field,normalized,addition.sources.get(field))
+                addition.sources[field]=supported_source(state,values,field,normalized,addition.sources.get(field))
                 addition.values[field]=normalized
         except ValueError as error:raise ProposalError('新增候选证据无效：'+str(error)) from None
     for edit in decision.edits:
@@ -399,9 +402,18 @@ def conversation_graph(checkpointer):
                 output['progress']['phase']='awaiting_input'
         return output
     async def understand(state):
+        if state.get('documents') and not state.get('draft'):
+            return {'decision':ChatDecision(answer='已记录需求范围，请先审核文件映射，完整读取候选后继续分析。').model_dump(mode='json'),'progress':{'phase':'awaiting_mapping','coverage':state['prepared']['coverage']}}
         payload=json.dumps(state['prepared'],ensure_ascii=False)
         if len(payload)>150000: raise ValueError('相关需求与消息超过单轮分析范围；已保留任务，请明确子集后继续，尚未完成全部分析')
-        decision=await structured(ChatDecision,[('system',COMMON+INTENT+HISTORY+CLARIFY),('user',payload)],validator=lambda decision:validate_decision(state,decision))
+        from .models import CandidateDecision,DraftDecision
+        scope=state.get('scope') or {}
+        new_material=scope.get('action') in ('new','repost') and any(s['field']=='post_id' for s in scope.get('selectors',[])) and not scope_matches(state,scope)
+        schema=DraftDecision if state.get('draft') and not new_material else CandidateDecision
+        def validate_output(output):
+            validate_decision(state,ChatDecision.model_validate(output.model_dump()))
+        output=await structured(schema,[('system',COMMON+INTENT+HISTORY+CLARIFY),('user',payload)],validator=validate_output)
+        decision=ChatDecision.model_validate(output.model_dump())
         return {'decision':decision.model_dump(mode='json'),'progress':{'phase':'validated','coverage':state['prepared']['coverage']}}
     def validate(state):
         validate_decision(state,ChatDecision.model_validate(state['decision']))
@@ -416,3 +428,4 @@ def conversation_graph(checkpointer):
     builder.add_conditional_edges('resolve_scope',lambda state:'validate' if state.get('scope_question') or state.get('progress',{}).get('phase')=='awaiting_input' else 'understand')
     builder.add_edge('understand','validate');builder.add_edge('validate',END)
     return builder.compile(checkpointer=checkpointer)
+

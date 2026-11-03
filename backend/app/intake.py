@@ -43,6 +43,11 @@ def reconcile_questions(task,draft):
     unresolved=[]
     for question in task.semantic_questions:
         if question.id in task.answers:continue
+        if draft is not None and question.scope!='task':
+            selected=[r for r in draft.requirements if r.included and r.id in question.requirement_ids]
+            if not selected:continue
+            if question.field in ('cta','landing_url') and all(r.objective!='traffic' for r in selected):continue
+            if question.field=='structure' and all(r.structure and not any(i.field=='structure' and i.blocking for i in r.issues) for r in selected):continue
         current=question_observation(question,draft)
         old=basis.get(question.id)
         if question.field=='scope':
@@ -71,7 +76,7 @@ def refresh(task,draft):
             if conflicts and state!='missing': state='conflict'
             refs=[]
             if source:
-                kind={'confirmed':'message','template':'template','history':'history','excel':'excel'}[source.kind]
+                kind={'confirmed':'message','template':'template','history':'history','excel':'excel','project':'template','calculated':'template'}[source.kind]
                 refs=[EvidenceRef(kind=kind,ref_id=f'{source.file_id}:{source.sheet}:{source.cell}',detail=source.model_dump())]
             evidence.append(FieldEvidence(requirement_id=req.id,field=field,state=state,sources=refs,reason=conflicts[0].question if conflicts else ''))
         if req.included and req.classification not in ('existing','change','ignored'):
@@ -237,7 +242,7 @@ async def act(project_id,body,actor):
             refresh(task,draft)
         documents=[]
         for file_id in task.file_ids:
-            document=c.execute("select id,name,inspection,mapping from files where id=%s and project_id=%s and kind='requirements'",(file_id,project_id)).fetchone()
+            document=c.execute("select id,name,inspection,mapping,storage_path,sha256 from files where id=%s and project_id=%s and kind='requirements'",(file_id,project_id)).fetchone()
             if document: documents.append(document)
         if body.action in ('accept','reject'):
             proposal=task.proposal
@@ -344,7 +349,8 @@ async def act(project_id,body,actor):
                 if version!=draft.version: raise HTTPException(409,'分析期间草稿已变化')
             current.lease=None
             for question in decision.questions:
-                question.id=sha256(json.dumps({'task':task.id,'scope':question.scope,'field':question.field,'ids':sorted(question.requirement_ids),'question':question.question},sort_keys=True,ensure_ascii=False).encode()).hexdigest()[:20]
+                question.evidence_version=draft.version if draft else current.context.version
+                question.id=sha256(json.dumps({'task':task.id,'scope':question.scope,'field':question.field,'ids':sorted(question.requirement_ids),'reason':question.reason_code,'evidence_version':question.evidence_version},sort_keys=True,ensure_ascii=False).encode()).hexdigest()[:20]
             # Empty model output cannot discard unresolved questions or pending proposals.
             existing={q.id:q for q in current.semantic_questions if q.id not in current.answers}
             existing.update({q.id:q for q in decision.questions})
@@ -395,3 +401,4 @@ async def act(project_id,body,actor):
                     current.requests[body.request_id]['error']=error.public_error()
                 save(c,current)
         raise
+

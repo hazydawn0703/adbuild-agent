@@ -1,0 +1,29 @@
+from hashlib import sha256
+from io import BytesIO
+import pytest
+from openpyxl import Workbook
+from app.models import SourceRef
+from app.provenance import supported_source
+
+
+def test_new_excel_source_is_reread_and_not_trusted_from_model(monkeypatch,tmp_path):
+    w=Workbook();w.active['A1']='125.50';b=BytesIO();w.save(b);data=b.getvalue()
+    path=tmp_path/'source.xlsx';path.write_bytes(data)
+    monkeypatch.setattr('app.storage.target',lambda _:path)
+    doc={'id':'owned','storage_path':'private','sha256':sha256(data).hexdigest()}
+    state={'documents':[doc]}
+    ref=SourceRef(file_id='owned',sheet='Sheet',cell='A1',raw_value='MODEL INVENTED RAW')
+    actual=supported_source(state,{},'budget','125.50',ref)
+    assert actual.raw_value=='125.50'
+    with pytest.raises(ValueError,match='不一致'):supported_source(state,{},'budget','500',ref)
+    with pytest.raises(ValueError):supported_source({'documents':[]},{},'budget','125.50',ref)
+    path.write_bytes(data+b'changed')
+    with pytest.raises(ValueError,match='指纹'):supported_source(state,{},'budget','125.50',ref)
+
+
+def test_project_binding_is_independent_from_workbook_evidence():
+    ref=SourceRef(kind='project',file_id='',sheet='',cell='',raw_value='forged')
+    actual=supported_source({'project_account_id':'123'},{},'account_id','123',ref)
+    assert actual.raw_value=='123' and actual.kind=='project'
+    with pytest.raises(ValueError):supported_source({'project_account_id':'456'},{},'account_id','123',ref)
+

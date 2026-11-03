@@ -1,3 +1,4 @@
+from model_response_fixture import row_bindings
 """Mapping availability retries preserve real task/file/database state."""
 import asyncio
 from io import BytesIO
@@ -26,7 +27,7 @@ def test_mapping_availability_failure_can_continue_with_saved_evidence(database,
             if failure=='timeout':raise TimeoutError('injected timeout')
             raise ModelServiceError('upstream_server',retryable=True,upstream_status=503)
         assert task.analysis['mapping']['proposal']['read_state']['evidence'][0]['coverage']['read_cells']==2
-        return MappingProposal(mappings=[SheetMapping(sheet='Sheet',header_row=1,first_row=2,last_row=2,columns={'post_url':'A','objective':'B','budget':'C'})],explanation='continued saved mapping')
+        return MappingProposal(mappings=[SheetMapping(sheet='Sheet',header_row=1,first_row=2,last_row=2,bindings=row_bindings({'post_url':'A','objective':'B','budget':'C'}))],explanation='continued saved mapping')
     monkeypatch.setattr(main,'propose_mapping',propose)
     async def scenario():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app),base_url='http://test') as client:
@@ -51,3 +52,4 @@ def test_mapping_availability_failure_can_continue_with_saved_evidence(database,
                 for table in ('runs','deployments'):
                     assert c.execute('select count(*) n from '+table+' where project_id=%s',(database,)).fetchone()['n']==0
     asyncio.run(scenario())
+

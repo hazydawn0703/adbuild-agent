@@ -1,5 +1,6 @@
 """Build a reviewable hierarchy from the draft's shared values and explicit differences."""
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
+from fractions import Fraction
 from urllib.parse import urlsplit
 import re
 from .models import Requirement, Issue, StructureSpec, GroupSpec, MaterialSpec
@@ -20,12 +21,13 @@ def allocate_budget(total: Decimal, ratios: list[Decimal]) -> list[Decimal]:
     ratios = [Decimal(r) for r in ratios]
     if not total.is_finite() or total <= 0 or total != total.quantize(Decimal('.01')):
         raise ValueError('拆分预算必须为正数且最多两位小数')
-    if not ratios or any(not r.is_finite() or r <= 0 or r > 1 for r in ratios) or sum(ratios) != 1:
-        raise ValueError('预算分配比例必须大于零，且合计为 100%')
-    exact = [total * r for r in ratios]
-    amounts = [v.quantize(Decimal('.01'), rounding=ROUND_DOWN) for v in exact]
+    if not ratios or any(not r.is_finite() or r <= 0 for r in ratios):
+        raise ValueError('预算分配权重必须为有限正数')
+    weights = [Fraction(r) for r in ratios]
+    exact = [Fraction(total) * r / sum(weights) for r in weights]
+    amounts = [(Decimal((v * 100).__floor__()) / 100).quantize(Decimal('.01')) for v in exact]
     remainder = int((total - sum(amounts)) / Decimal('.01'))
-    order = sorted(range(len(ratios)), key=lambda i: (-(exact[i] - amounts[i]), i))
+    order = sorted(range(len(ratios)), key=lambda i: (-(exact[i] - Fraction(amounts[i])), i))
     for i in order[:remainder]:
         amounts[i] += Decimal('.01')
     if any(v <= 0 for v in amounts):
@@ -39,8 +41,13 @@ def campaign_tree(req: Requirement):
     def problem(field, message):
         issues.append(Issue(code='structure', field=field, message=message))
 
-    spec = req.structure or StructureSpec(groups=[GroupSpec(id=f'{req.id}:group')])
     name = req.name or f"{req.business_no or req.id[:8]}-TikTok-{req.objective or '待确认'}"
+    spec = req.structure
+    if spec is None:
+        problem('structure', '尚无经过核实的计划、广告组和素材结构')
+        return {'id':f'{req.id}:campaign','requirement_id':req.id,'name':name,
+                'account_id':req.account_id,'objective':req.objective,'budget_level':None,
+                'budget':None,'planned_total':None,'adgroups':[]}, issues
     group_ids = [g.id for g in spec.groups]
     if len(set(group_ids)) != len(group_ids) or any(not value.strip() for value in group_ids):
         problem('structure', '广告组 ID 必须非空且在计划内唯一')
@@ -74,12 +81,20 @@ def campaign_tree(req: Requirement):
     groups = []
     material_ids = set()
     for index, group in enumerate(spec.groups):
-        materials = group.ads or [MaterialSpec(id=f'{group.id}:ad')]
+        materials = group.ads
+        if not materials:
+            problem('structure', '广告组尚无明确素材')
         ads = []
         audience = req.audience if group.audience is None else group.audience
         language = req.language if group.language is None else group.language
         if not audience:
             problem('audience', f'广告组 {group.name or group.id} 缺少受众')
+        if not group.start_at or not group.end_at or not group.timezone:
+            problem('start_at', f'广告组 {group.name or group.id} 缺少明确排期或时区')
+        elif not group.start_at.tzinfo or not group.end_at.tzinfo:
+            problem('timezone', '广告组排期缺少有效时区')
+        elif group.end_at <= group.start_at:
+            problem('end_at', '广告组结束时间必须晚于开始时间')
         for material in materials:
             if not material.id.strip() or material.id in material_ids:
                 problem('structure', '广告 ID 必须非空且在计划内唯一')
@@ -118,8 +133,8 @@ def campaign_tree(req: Requirement):
                         'sources':{k:v.model_dump(mode='json') for k,v in material.sources.items() if k != 'authorization_code'}})
         groups.append({'id':group.id, 'name':group.name or f'{name}-广告组{index+1}',
                        'audience':audience, 'language':language,
-                       'start_at':req.start_at.isoformat() if req.start_at else None,
-                       'end_at':req.end_at.isoformat() if req.end_at else None, 'timezone':req.timezone,
+                       'start_at':group.start_at.isoformat() if group.start_at else None,
+                       'end_at':group.end_at.isoformat() if group.end_at else None, 'timezone':group.timezone,
                        'budget':{'amount':str(amounts[index]) if amounts[index] is not None else None,
                                  'currency':req.currency, 'mode':req.budget_mode} if spec.budget_level == 'adgroup' else None,
                        'ads':ads, 'sources':{k:v.model_dump(mode='json') for k,v in group.sources.items()}})
@@ -132,3 +147,4 @@ def campaign_tree(req: Requirement):
 
 def validate_structure(req: Requirement):
     return campaign_tree(req)[1]
+

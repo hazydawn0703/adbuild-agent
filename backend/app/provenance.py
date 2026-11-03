@@ -93,6 +93,12 @@ def supported_source(state,row,field,value,offered=None):
     previous=SourceRef.model_validate(previous) if previous else None
     if offered:
         ref=SourceRef.model_validate(offered)
+        if ref.kind=='project' and field=='account_id' and equivalent(field,value,state.get('project_account_id')):
+            return SourceRef(file_id='',sheet='',cell='',raw_value=str(value),kind='project')
+        if ref.kind=='excel':
+            document=next((d for d in state.get('documents',[]) if str(d['id'])==ref.file_id),None)
+            if document:
+                return verify_excel_source(document,field,value,ref,tz)
         if ref.kind=='history':
             if match_history_reference(ref,field,value,row.get('history',[]),tz):return ref
             raise ValueError(f'{field} 的历史来源或值不支持本提案')
@@ -112,6 +118,28 @@ def supported_source(state,row,field,value,offered=None):
     if _context_supports(state,row,field,value):
         return SourceRef(kind='template',file_id='',sheet='',cell='',raw_value=str(value),context_version=state.get('context',{}).get('version'))
     raise ValueError(f'{field} 缺少支持该值的用户输入、项目默认或字段证据，请先澄清')
+
+
+def verify_excel_source(document,field,value,ref,tz=''):
+    """Document metadata must come from the project-scoped server query."""
+    from hashlib import sha256
+    from .storage import target
+    from .excel import read_workbook,sensitive_cells,_anchor,_transform,clean
+    from datetime import date
+    data=target(document['storage_path']).read_bytes()
+    if sha256(data).hexdigest()!=document['sha256']:raise ValueError('字段来源文件指纹已变化')
+    if not re.fullmatch(r'[A-Z]{1,3}[1-9][0-9]*',ref.cell):raise ValueError('字段来源单元格无效')
+    wb=read_workbook(data)
+    if ref.sheet not in wb.sheetnames:raise ValueError('字段来源工作表不存在')
+    sheet=wb[ref.sheet];cell=_anchor(sheet,sheet[ref.cell])
+    if cell.row>50000 or cell.column>300 or cell.coordinate in sensitive_cells(sheet):raise ValueError('字段来源不可使用')
+    raw=cell.hyperlink.target if cell.hyperlink and field in ('post_url','landing_url') else cell.value
+    if raw is None or cell.data_type=='e':raise ValueError('字段来源为空或为错误值')
+    if field in ('account_id','post_id','identity_id') and isinstance(raw,(int,float)) and abs(raw)>=10**15:raise ValueError('长 ID 数值精度未核实')
+    if field in ('start_at','end_at') and isinstance(raw,date) and (not isinstance(raw,datetime) or not re.search(r'[hHsS]',re.sub(r'"[^"]*"','',cell.number_format))):raise ValueError('日期来源缺少时刻精度')
+    actual=_transform(raw,ref.transform)
+    if not equivalent(field,value,actual,tz):raise ValueError('字段值与原始单元格不一致')
+    return ref.model_copy(update={'raw_value':clean(raw),'cell':cell.coordinate})
 
 
 def validate_proposal_evidence(state,decision):
@@ -170,3 +198,4 @@ def verified_history_file(conn,project_id,ref,field,value,tz=''):
     if not match_history_reference(ref,field,value,[{**r,'source_file':ref.file_id} for r in rows],tz):
         raise ValueError('历史字段原始行、原始值或规范化值与提案不一致')
     return ref
+

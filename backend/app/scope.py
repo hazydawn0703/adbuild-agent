@@ -73,6 +73,10 @@ def validate_scope(scope, messages):
 
 def matches(req, selector):
     field = selector['field']
+    if field=='post_id' and getattr(req,'structure',None):
+        structure=as_dict(req.structure)
+        posts={str(ad.get('post_id','')).casefold() for group in structure['groups'] for ad in group['ads']}
+        return bool(posts & {str(v).strip().casefold() for v in selector['values']})
     if field=='requirement_id':
         actual=str(req.id).strip().lower()
     elif field == 'platform':
@@ -96,9 +100,16 @@ def select_requirements(requirements, scope, messages):
     result = []
     for original in requirements:
         req = original.model_copy(deep=True)
+        if req.structure:
+            included_posts={str(v) for s in scope.get('selectors',[]) if s['field']=='post_id' for v in s['values']}
+            excluded_posts={str(v) for s in scope.get('exclude_selectors',[]) if s['field']=='post_id' for v in s['values']}
+            for group in req.structure.groups:
+                group.ads=[ad for ad in group.ads if (not included_posts or ad.post_id in included_posts) and ad.post_id not in excluded_posts]
+            req.structure.groups=[g for g in req.structure.groups if g.ads]
         selected = resolved and (scope.get('all_records', False) or bool(scope.get('selectors')))
         selected = selected and all(matches(req, s) for s in scope.get('selectors', []))
         selected = selected and not any(matches(req, s) for s in scope.get('exclude_selectors', []))
+        if req.structure and not req.structure.groups:selected=False
         req.included = bool(selected)
         result.append(req)
     return result
@@ -155,3 +166,4 @@ def compact_state(state):
         from .history_query import lookup_history
         payload['history_query']=lookup_history(history_records,scope,rows)
     return redact_private(payload)
+
