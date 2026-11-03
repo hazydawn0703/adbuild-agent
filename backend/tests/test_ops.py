@@ -31,7 +31,7 @@ def login(client):
 def test_all_platform_endpoints_require_platform_session(client):
     for method, path, body in [
         ('GET', '/ops/session', None), ('GET', '/ops/tenants', None),
-        ('POST', '/ops/tenants', {}), ('PATCH', '/ops/tenants/t', {'name':'new'}), ('DELETE', '/ops/tenants/t', None), ('POST', '/ops/tenants/t/admins', {}),
+        ('POST', '/ops/tenants', {}), ('POST', '/ops/tenants/t/name', {'name':'new'}), ('POST', '/ops/tenants/t/close', None), ('POST', '/ops/tenants/t/admins', {}),
         ('POST', '/ops/tenants/t/admins/u/status', {'active': False}),
         ('POST', '/ops/tenants/t/admins/u/password', {'password': 'new-password-123456'}),
     ]:
@@ -132,10 +132,10 @@ def test_rename_and_delete_tenant(client, monkeypatch):
     monkeypatch.setattr(ops, 'transaction', transaction)
     login(client)
     headers = {'Cookie':f'{ops.COOKIE}={client.cookies.get(ops.COOKIE)}'}
-    assert client.patch('/ops/tenants/t',headers=headers,json={'name':'  新名称  '}).status_code == 200
+    assert client.post('/ops/tenants/t/name',headers=headers,json={'name':'  新名称  '}).status_code == 200
     assert ('update tenants set name=%s where id=%s',('新名称','t')) in statements
-    assert client.patch('/ops/tenants/t',headers=headers,json={'name':'   '}).status_code == 422
-    assert client.delete('/ops/tenants/t',headers=headers).status_code == 200
+    assert client.post('/ops/tenants/t/name',headers=headers,json={'name':'   '}).status_code == 422
+    assert client.post('/ops/tenants/t/close',headers=headers).status_code == 200
     assert ('delete from tenants where id=%s',('t',)) in statements
     assert ('delete from connections where tenant_id=%s',('t',)) in statements
 

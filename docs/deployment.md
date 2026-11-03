@@ -29,3 +29,5 @@
 上线后检查页面、API 健康状态、favicon、平台管理登录门禁，并复核桌面和手机端弹窗交互。
 
 关闭客户空间须输入完整名称二次确认；事务中删除空间、项目、成员关系及不再属于其他空间的账号，上传文件和会话检查点复用 Worker 清理作业。正在分析、执行或存在待处理作业时拒绝删除。广告平台上已创建的广告不受影响。账号启停使用 `POST /ops/tenants/{tenant_id}/admins/{user_id}/status`。
+
+平台管理写操作统一使用 POST：账号启停 `/ops/tenants/{tenant_id}/admins/{user_id}/status`、空间改名 `/ops/tenants/{tenant_id}/name`、永久关闭 `/ops/tenants/{tenant_id}/close`。线上接入链路会对 PATCH 返回空正文 400，因此不使用 PATCH 或 DELETE 承载这些管理操作。

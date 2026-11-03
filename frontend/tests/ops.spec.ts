@@ -12,8 +12,8 @@ test('ops status, rename and permanent deletion confirmation',async({page,contex
   if(req.method()==='GET')return route.fulfill({json:deleted?[]:[tenant]});
   const body=req.postData()?req.postDataJSON():null;writes.push({method:req.method(),path,body});
   if(path.endsWith('/status'))tenant.admins[0].active=body.active;
-  if(req.method()==='PATCH')tenant.name=body.name;
-  if(req.method()==='DELETE')deleted=true;
+  if(path.endsWith('/name'))tenant.name=body.name;
+  if(path.endsWith('/close'))deleted=true;
   await route.fulfill({json:{ok:true}});
  });
  await page.goto('/apps/adbuild-agent/ops');await page.waitForLoadState('networkidle');
@@ -26,6 +26,6 @@ test('ops status, rename and permanent deletion confirmation',async({page,contex
  for(const [width,height] of [[1440,900],[390,844],[320,568],[667,375],[390,330]]){
   await page.setViewportSize({width,height});await expect(dialog.getByRole('button',{name:'永久删除',exact:true})).toBeInViewport();expect(await page.locator('body').evaluate(e=>e.scrollWidth>innerWidth)).toBe(false);
  }
- await page.getByRole('textbox',{name:'输入客户空间名称确认删除'}).fill('错误名称');await page.getByRole('button',{name:'永久删除',exact:true}).click();await expect(dialog.getByRole('alert')).toContainText('请输入完整');expect(writes.filter(w=>w.method==='DELETE')).toHaveLength(0);
- await page.getByRole('textbox',{name:'输入客户空间名称确认删除'}).fill('新空间');await page.getByRole('button',{name:'永久删除',exact:true}).click();await expect(page.getByText('客户空间及其数据已永久删除')).toBeVisible();expect(writes.filter(w=>w.method==='DELETE')).toHaveLength(1);
+ await page.getByRole('textbox',{name:'输入客户空间名称确认删除'}).fill('错误名称');await page.getByRole('button',{name:'永久删除',exact:true}).click();await expect(dialog.getByRole('alert')).toContainText('请输入完整');expect(writes.filter(w=>w.path.endsWith('/close'))).toHaveLength(0);
+ await page.getByRole('textbox',{name:'输入客户空间名称确认删除'}).fill('新空间');await page.getByRole('button',{name:'永久删除',exact:true}).click();await expect(page.getByText('客户空间及其数据已永久删除')).toBeVisible();expect(writes.filter(w=>w.path.endsWith('/close'))).toHaveLength(1);
 });

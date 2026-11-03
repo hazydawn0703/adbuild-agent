@@ -205,7 +205,7 @@ def add_admin(tenant_id: str, body: AdminAccount, _=Depends(authenticate_platfor
     return {'id': user_id}
 
 
-@router.patch('/tenants/{tenant_id}')
+@router.post('/tenants/{tenant_id}/name')
 def rename_tenant(tenant_id: str, body: RenameTenant, _=Depends(authenticate_platform)):
     with transaction() as c:
         require_tenant(c, tenant_id)
@@ -214,7 +214,7 @@ def rename_tenant(tenant_id: str, body: RenameTenant, _=Depends(authenticate_pla
     return {'ok': True}
 
 
-@router.delete('/tenants/{tenant_id}')
+@router.post('/tenants/{tenant_id}/close')
 def delete_tenant(tenant_id: str, _=Depends(authenticate_platform)):
     from .project_cleanup import delete_project_data
     with transaction() as c:
