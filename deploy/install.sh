@@ -36,25 +36,9 @@ done
 curl --fail --silent http://127.0.0.1:18791/health
 curl --fail --silent -o /dev/null http://127.0.0.1:18790/apps/adbuild-agent
 sudo install -o root -g root -m 644 "$release/deploy/nginx.locations.conf" /etc/adbuild-agent/nginx.locations.conf
-sudo python3 - <<'PY'
-from pathlib import Path
-import shutil
-path=Path('/etc/nginx/sites-available/stratos.run')
-text=path.read_text()
-line='include /etc/adbuild-agent/nginx.locations.conf;'
-if line not in text:
-    anchor='proxy_cache off;'
-    if text.count(anchor)!=1:
-        raise SystemExit('Expected unique TLS routing anchor was not found')
-    backup=Path('/etc/adbuild-agent/stratos.run.before-adbuild')
-    if not backup.exists(): shutil.copy2(path,backup)
-    path.write_text(text.replace(anchor,anchor+'\n\n# Adbuild application namespace\n'+line,1))
-PY
-if ! sudo nginx -t; then
-  sudo cp -a /etc/adbuild-agent/stratos.run.before-adbuild /etc/nginx/sites-available/stratos.run
-  echo 'Nginx validation failed; original configuration restored' >&2
-  exit 1
-fi
+# The shared TLS host includes nginx.locations.conf once during host provisioning.
+# Application releases only update their own namespace; never rewrite shared sites.
+sudo nginx -t
 sudo systemctl reload nginx
 sudo systemctl is-active adbuild-agent-web adbuild-agent-api nginx
 echo 'Deployment ready: https://stratos.run/apps/adbuild-agent'
