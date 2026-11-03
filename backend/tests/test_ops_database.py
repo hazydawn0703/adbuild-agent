@@ -74,9 +74,9 @@ def test_platform_customer_lifecycle_and_isolation(monkeypatch):
             records = connection.execute('select data from audit where tenant_id=%s',(tenant,)).fetchall()
             assert len(records) == 5
             assert all('password' not in str(row['data']) for row in records)
-            assert client.patch(f'/ops/tenants/{tenant}', headers=platform, json={'name':'renamed space'}).status_code == 200
+            assert client.post(f'/ops/tenants/{tenant}/name', headers=platform, json={'name':'renamed space'}).status_code == 200
             assert connection.execute('select name from tenants where id=%s',(tenant,)).fetchone()['name'] == 'renamed space'
-            assert client.delete(f'/ops/tenants/{tenant}', headers=platform).status_code == 200
+            assert client.post(f'/ops/tenants/{tenant}/close', headers=platform).status_code == 200
             for table in ('projects','memberships','connections','audit'):
                 assert connection.execute('select count(*) as n from '+table+' where tenant_id=%s',(tenant,)).fetchone()['n'] == 0
             assert not connection.execute('select id from tenants where id=%s',(tenant,)).fetchone()

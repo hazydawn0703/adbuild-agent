@@ -28,8 +28,8 @@ export default function OpsConsole() {
     if(values.password!==values.confirm){setError('两次输入的密码不一致');return}
     setBusy(true);setError('');setNotice('');
     try {
-      if(dialog.kind==='delete')await opsRequest(`/tenants/${dialog.tenant!.id}`,'DELETE');
-      if(dialog.kind==='rename')await opsRequest(`/tenants/${dialog.tenant!.id}`,'PATCH',{name:values.name});
+      if(dialog.kind==='delete')await opsRequest(`/tenants/${dialog.tenant!.id}/close`,'POST');
+      if(dialog.kind==='rename')await opsRequest(`/tenants/${dialog.tenant!.id}/name`,'POST',{name:values.name});
       if(dialog.kind==='tenant')await opsRequest('/tenants','POST',{name:values.name,project_name:values.project_name,account_id:values.account_id,email:values.email,password:values.password});
       if(dialog.kind==='admin')await opsRequest(`/tenants/${dialog.tenant!.id}/admins`,'POST',{email:values.email,password:values.password});
       if(dialog.kind==='password')await opsRequest(`/tenants/${dialog.tenant!.id}/admins/${dialog.admin!.id}/password`,'POST',{password:values.password});
