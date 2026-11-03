@@ -103,3 +103,33 @@ def test_checkpoint_proposal_requires_exact_accept_and_survives_reload(database,
             assert accepted.json()['draft']['approval'] is None
             assert len(calls)==1
     asyncio.run(scenario())
+
+
+def test_predraft_question_answer_and_request_replay_use_task_scope(database,monkeypatch):
+    from app.models import ChatDecision, Clarification
+    class Model:
+        async def ainvoke(self,messages):
+            return ChatDecision(answer='请先明确本次范围',questions=[Clarification(id='model-id',field='scope',scope='task',question='本次选择哪些业务编号？')])
+    monkeypatch.setattr('app.agent.llm',lambda schema:Model())
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+            task=(await client.post(f'/projects/{database}/tasks',json={'name':'predraft'})).json()
+            request={'task_id':task['id'],'request_id':str(uuid4()),'expected_version':task['version'],'action':'message','message':'先讨论本次需求'}
+            first=await client.post(f'/projects/{database}/chat',json=request)
+            assert first.status_code==200,first.text
+            assert (await client.post(f'/projects/{database}/chat',json=request)).json()==first.json()
+            reloaded=(await client.get('/tasks/'+task['id'])).json()
+            assert reloaded['draft'] is None
+            question=reloaded['task']['questions'][0]
+            request={'task_id':task['id'],'request_id':str(uuid4()),'expected_version':reloaded['task']['version'],'action':'answer','answers':{question['id']:'只搭建业务编号 731、732'}}
+            answered=await client.post(f'/projects/{database}/chat',json=request)
+            assert answered.status_code==200,answered.text
+            assert (await client.post(f'/projects/{database}/chat',json=request)).json()==answered.json()
+            again=(await client.get('/tasks/'+task['id'])).json()
+            assert again['task']['answers'][question['id']]['value']=='只搭建业务编号 731、732'
+            assert not again['task']['questions']
+            assert (await client.get(f'/projects/{database}/context')).json()['defaults']=={}
+            with db.transaction() as c:
+                for table in ('jobs','runs','deployments'):
+                    assert c.execute('select count(*) n from '+table).fetchone()['n']==0
+    asyncio.run(scenario())

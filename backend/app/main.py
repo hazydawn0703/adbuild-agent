@@ -139,24 +139,34 @@ async def upload_file(project_id:str,kind:str,task_id:str,file:UploadFile=File()
         task,_=access(c,task_id,actor,write=True)
         if task.project_id!=project_id: raise HTTPException(404,"任务不属于项目")
     data=await file.read(20*1024*1024+1)
-    inspection=inspect_workbook(data)
+    from .excel import WorkbookReadError
+    file_error=None
+    try:
+        inspection=inspect_workbook(data)
+        records=parse_export(data) if kind=='export' else []
+    except WorkbookReadError as error:
+        from hashlib import sha256
+        file_error={'code':error.code,'message':str(error),'recoverable':True}
+        inspection={'sha256':sha256(data).hexdigest(),'sheets':[],'error':file_error}
+        records=[]
     file_id=str(uuid4())
     path=f"{project['tenant_id']}/{project_id}/{file_id}.xlsx"
-    records=parse_export(data) if kind=='export' else []
     await storage.upload(path,data)
     with transaction() as c:
         project_access(c,project_id,actor,write=True)
         c.execute("insert into files(id,tenant_id,project_id,name,kind,sha256,storage_path,inspection) values(%s,%s,%s,%s,%s,%s,%s,%s)",(file_id,project['tenant_id'],project_id,file.filename,kind,inspection['sha256'],path,json_value(inspection)))
         from .intake import access,save
         task,_=access(c,task_id,actor,write=True)
-        task.file_ids.append(file_id);task.version+=1;task.stage='mapping' if kind=='requirements' else task.stage
+        task.file_ids.append(file_id);task.version+=1;task.lease=None;task.proposal=None
+        task.stage='attention' if file_error else 'mapping' if kind=='requirements' else task.stage
+        if file_error: task.analysis.setdefault('file_errors',{})[file_id]=file_error
         save(c,task)
         for r in records:
             r['source_file']=file_id
             r['imported_at']=__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
             r['account_id']=project['account_id']
             c.execute("insert into history(tenant_id,project_id,account_id,ad_id,data) values(%s,%s,%s,%s,%s) on duplicate key update data=values(data),account_id=values(account_id)",(project['tenant_id'],project_id,project['account_id'],r['ad_id'],json_value(r)))
-    return {"id":file_id,"inspection":inspection,"imported_ads":len(records),"campaigns":len({r['campaign_id'] for r in records}),"adgroups":len({r['adgroup_id'] for r in records})}
+    return {"id":file_id,"file_error":file_error,"inspection":inspection,"imported_ads":len(records),"campaigns":len({r['campaign_id'] for r in records}),"adgroups":len({r['adgroup_id'] for r in records})}
 
 
 @app.post('/files/{file_id}/mapping/propose')
@@ -171,6 +181,7 @@ async def mapping_proposal(file_id:str,actor:Actor=Depends(authenticate)):
         task,_=access(c,linked['id'],actor,write=True)
         task_version=task.version
         templates=c.execute("select data from mapping_templates where project_id=%s and JSON_TYPE(data)='OBJECT'",(row['project_id'],)).fetchall()
+    if row['inspection'].get('error'): raise HTTPException(422,{'code':'file_unreadable','file_id':file_id,**row['inspection']['error']})
     from .templates import reuse
     data=await storage.download(row['storage_path'])
     matches=[m for t in templates if (m:=reuse(t['data'],row['inspection'],data))]
@@ -178,7 +189,13 @@ async def mapping_proposal(file_id:str,actor:Actor=Depends(authenticate)):
     if len(unique)==1:
         maps=next(iter(unique.values()))
         return {'mappings':[m.model_dump() for m in maps],'explanation':'已按确认过的表头语义复用列，并重新检测数据范围。','reused':True,'expected_task_version':task_version}
-    proposal=await asyncio.wait_for(propose_mapping(row['inspection'],data),180)
+    proposal=await asyncio.wait_for(propose_mapping(row['inspection'],data,task=task),180)
+    with transaction() as c:
+        from .intake import save
+        current,_=access(c,task.id,actor,write=True)
+        if current.version!=task_version: raise HTTPException(409,'分析期间任务已变化')
+        current.analysis['mapping']={'file_id':file_id,'proposal':proposal.model_dump(mode='json'),'base_version':task_version}
+        save(c,current)
     return {**proposal.model_dump(mode='json'),'expected_task_version':task_version}
 
 
@@ -204,7 +221,7 @@ async def confirm_mapping(file_id:str,body:MappingConfirmation,actor:Actor=Depen
     data=await storage.download(row['storage_path'])
     requirements=parse_requirements(data,file_id,body.mappings)
     for req in requirements:
-        if not req.account_id:
+        if not req.account_id and not any(i.field=='account_id' and i.code.startswith('invalid_') for i in req.issues):
             req.account_id=project['account_id']
             req.sources['account_id']=SourceRef(file_id='',sheet='',cell='',raw_value=project['account_id'],kind='template')
     requirements=[evaluate(r,history) for r in requirements]
@@ -222,14 +239,21 @@ async def confirm_mapping(file_id:str,body:MappingConfirmation,actor:Actor=Depen
             if previous['digest']!=request_digest: raise HTTPException(409,'映射请求 ID 已用于其他内容')
             return previous['result']
         if task.version!=body.expected_task_version: raise HTTPException(409,'任务已变化，请重新识别和审核映射')
+        proposed=task.analysis.get('mapping',{})
+        if proposed.get('file_id')==file_id and not proposed.get('proposal',{}).get('complete',True):
+            raise HTTPException(422,'映射分析尚未完成，请继续分析剩余区域')
+        from .scope import select_requirements
+        draft.requirements=select_requirements(draft.requirements,task.scope,task.messages)
+
         from .models import InputField
         context=task.context
         if (not context.account_ids or project['account_id'] in context.account_ids):
             for req in draft.requirements:
                 if context.objectives and req.objective not in context.objectives: continue
                 for field,value in context.defaults.items():
-                    if getattr(req,field) in (None,''):
-                        setattr(req,field,value)
+                    if getattr(req,field) in (None,'') and not any(i.field==field and i.code.startswith('invalid_') for i in req.issues):
+                        from .excel import normalize_value
+                        setattr(req,field,normalize_value(field,value,req.timezone))
                         req.sources[field]=SourceRef(file_id='',sheet='',cell='',raw_value=value,kind='template',context_version=context.version)
             draft.requirements=[evaluate(Requirement.model_validate(r.model_dump()),history) for r in draft.requirements]
 
