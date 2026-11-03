@@ -1,26 +1,41 @@
 from contextlib import contextmanager
 import json
-from psycopg_pool import ConnectionPool
-from psycopg.rows import dict_row
-from psycopg.types.json import Jsonb
+from sqlalchemy import create_engine
+from pymysql.constants import FIELD_TYPE
+from pymysql.converters import conversions
+from pymysql.cursors import DictCursor
 from .settings import settings
 
-_pool = None
+_engine = None
 
+def engine():
+    global _engine
+    if _engine is None:
+        decoders = conversions.copy()
+        decoders[FIELD_TYPE.JSON] = json.loads
+        _engine = create_engine(settings().database_url, pool_pre_ping=True, pool_size=5, max_overflow=5,
+            connect_args={"conv":decoders,"charset":"utf8mb4"})
+    return _engine
 
-def pool():
-    global _pool
-    if _pool is None:
-        _pool = ConnectionPool(settings().database_url, kwargs={"row_factory":dict_row}, min_size=1,max_size=10)
-    return _pool
-
+class Connection:
+    def __init__(self, raw): self.raw=raw
+    def execute(self, sql, params=()):
+        cursor=self.raw.cursor(DictCursor)
+        cursor.execute(sql,params)
+        return cursor
 
 @contextmanager
 def transaction():
-    with pool().connection() as conn:
-        with conn.transaction():
-            yield conn
-
+    raw=engine().raw_connection()
+    try:
+        raw.begin()
+        yield Connection(raw)
+        raw.commit()
+    except BaseException:
+        raw.rollback()
+        raise
+    finally:
+        raw.close()
 
 def json_value(model):
-    return Jsonb(json.loads(model.model_dump_json()) if hasattr(model,"model_dump_json") else model)
+    return model.model_dump_json() if hasattr(model,"model_dump_json") else json.dumps(model,ensure_ascii=False)

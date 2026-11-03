@@ -28,15 +28,27 @@ app.add_middleware(CORSMiddleware,allow_origins=[f'{web.scheme}://{web.netloc}',
 
 @app.get('/config')
 def public_config():
-    try:
-        cfg=settings()
+    try: cfg=settings()
     except ValidationError as error:
-        return {'configured':False,'missing':[str(e['loc'][0]) for e in error.errors()],
-                'supabase_url':'','supabase_anon_key':''}
-    # Only public Supabase client settings cross this boundary.
-    return {'configured':True,'missing':[],'supabase_url':cfg.supabase_url,
-            'supabase_anon_key':cfg.supabase_anon_key,'model_configured':bool(cfg.llm_api_key),
-            'model':cfg.llm_model}
+        return {'configured':False,'missing':[str(e['loc'][0]) for e in error.errors()]}
+    return {'configured':True,'missing':[],'model_configured':bool(cfg.llm_api_key),'model':cfg.llm_model}
+
+class LoginBody(BaseModel):
+    email:str
+    password:str
+
+@app.post('/auth/login')
+def login(body:LoginBody):
+    from .auth import password_hash
+    from itsdangerous import URLSafeTimedSerializer
+    from time import sleep
+    with transaction() as c:
+        user=c.execute('select * from users where email=%s and active=true',(body.email.lower(),)).fetchone()
+    if not user or not password_hash.verify(body.password,user['password_hash']):
+        sleep(1)
+        raise HTTPException(401,'邮箱或密码不正确')
+    token=URLSafeTimedSerializer(settings().session_secret,salt='adbuild-session').dumps({'user_id':user['id']})
+    return {'access_token':token,'expires_in':86400}
 
 
 @app.get('/projects/{project_id}/connection')
@@ -65,7 +77,7 @@ async def start_connection(project_id:str,actor:Actor=Depends(authenticate)):
 @app.get('/oauth/tiktok/callback')
 def oauth_callback(code:str,state:str):
     with transaction() as c:
-        row=c.execute("select tenant_id from connections where state->>'oauth_state'=%s and state->>'status'='authorizing'",(state,)).fetchone()
+        row=c.execute("select tenant_id from connections where JSON_UNQUOTE(JSON_EXTRACT(state,'$.oauth_state'))=%s and JSON_UNQUOTE(JSON_EXTRACT(state,'$.status'))='authorizing'",(state,)).fetchone()
         if not row: raise HTTPException(400,'授权状态无效或已过期')
     EncryptedStorage(str(row['tenant_id'])).update(code=code)
     return RedirectResponse(settings().app_origin)
@@ -100,7 +112,9 @@ def new_project(body:NewProject,actor:Actor=Depends(authenticate)):
         member=c.execute("select role from memberships where tenant_id=%s and user_id=%s",(body.tenant_id,actor.user_id)).fetchone()
         if not member or member['role']!='admin':
             raise HTTPException(403,"只有管理员可以创建项目")
-        return c.execute("insert into projects(tenant_id,name,account_id) values(%s,%s,%s) returning *",(body.tenant_id,body.name,body.account_id)).fetchone()
+        project_id=str(uuid4())
+        c.execute("insert into projects(id,tenant_id,name,account_id) values(%s,%s,%s,%s)",(project_id,body.tenant_id,body.name,body.account_id))
+        return c.execute("select * from projects where id=%s",(project_id,)).fetchone()
 
 
 @app.get('/projects/{project_id}/workspace')
@@ -129,7 +143,7 @@ async def upload_file(project_id:str,kind:str,file:UploadFile=File(),actor:Actor
         project_access(c,project_id,actor,write=True)
         c.execute("insert into files(id,tenant_id,project_id,name,kind,sha256,storage_path,inspection) values(%s,%s,%s,%s,%s,%s,%s,%s)",(file_id,project['tenant_id'],project_id,file.filename,kind,inspection['sha256'],path,json_value(inspection)))
         for r in records:
-            c.execute("insert into history(tenant_id,project_id,account_id,ad_id,data) values(%s,%s,%s,%s,%s) on conflict(project_id,ad_id) do update set data=excluded.data,account_id=excluded.account_id",(project['tenant_id'],project_id,project['account_id'],r['ad_id'],json_value(r)))
+            c.execute("insert into history(tenant_id,project_id,account_id,ad_id,data) values(%s,%s,%s,%s,%s) on duplicate key update data=values(data),account_id=values(account_id)",(project['tenant_id'],project_id,project['account_id'],r['ad_id'],json_value(r)))
     return {"id":file_id,"inspection":inspection,"imported_ads":len(records),"campaigns":len({r['campaign_id'] for r in records})}
 
 
@@ -170,7 +184,7 @@ async def confirm_mapping(file_id:str,body:MappingConfirmation,actor:Actor=Depen
         c.execute("insert into drafts(id,tenant_id,project_id,version,data) values(%s,%s,%s,%s,%s)",(draft.id,project['tenant_id'],project['id'],draft.version,json_value(draft)))
         maps=[m.model_dump() for m in body.mappings]
         c.execute("update files set mapping=%s where id=%s",(json_value(maps),file_id))
-        c.execute("insert into mapping_templates(tenant_id,project_id,signature,data) values(%s,%s,%s,%s) on conflict(project_id,signature) do update set data=excluded.data",(project['tenant_id'],project['id'],signature(row['inspection']),json_value(maps)))
+        c.execute("insert into mapping_templates(tenant_id,project_id,signature,data) values(%s,%s,%s,%s) on duplicate key update data=values(data)",(project['tenant_id'],project['id'],signature(row['inspection']),json_value(maps)))
         enqueue_if_authorized(c,draft,project)
     return draft
 
@@ -217,7 +231,7 @@ def run_action(run_id:str,action:str,actor:Actor=Depends(authenticate)):
         if action=='cancel':
             c.execute("update runs set cancelled=true where id=%s",(run_id,))
         else:
-            c.execute("select pgmq.send('adbuild',%s)",(json_value({"run_id":run_id,"action":action}),))
+            c.execute("insert into jobs(message) values(%s)",(json_value({"run_id":run_id,"action":action}),))
     return {"accepted":True}
 
 
@@ -230,7 +244,7 @@ class ChatBody(BaseModel):
 
 @app.post('/projects/{project_id}/chat')
 async def chat(project_id:str,body:ChatBody,actor:Actor=Depends(authenticate)):
-    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    from langgraph.checkpoint.mysql.aio import AIOMySQLSaver
     from langgraph.types import Command
     with transaction() as c:
         project=project_access(c,project_id,actor,write=True)
@@ -241,7 +255,7 @@ async def chat(project_id:str,body:ChatBody,actor:Actor=Depends(authenticate)):
         if body.message:
             c.execute("insert into messages(tenant_id,project_id,role,content) values(%s,%s,'user',%s)",(project['tenant_id'],project_id,body.message))
     thread=f"{project['tenant_id']}:{body.draft_id}:{body.expected_version}"
-    async with AsyncPostgresSaver.from_conn_string(settings().database_url) as saver:
+    async with AIOMySQLSaver.from_conn_string(settings().database_url.replace("mysql+pymysql://","mysql://")) as saver:
         graph=conversation_graph(saver)
         input_value=Command(resume=body.confirm) if body.confirm is not None else {"messages":[*messages,{"role":"user","content":body.message}],"draft":row['data']}
         out=await graph.ainvoke(input_value,{"configurable":{"thread_id":thread}})

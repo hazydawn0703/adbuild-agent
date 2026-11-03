@@ -7,12 +7,11 @@ from pydantic import Field
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=Path(__file__).resolve().parents[2] / ".env", extra="ignore")
     database_url: str = Field(min_length=1)
-    supabase_url: str = Field(min_length=1)
-    supabase_anon_key: str = Field(min_length=1)
-    supabase_service_key: str = Field(min_length=1)
+    session_secret: str = Field(min_length=32)
+    storage_directory: str = "/opt/adbuild-agent/data/workbooks"
     token_encryption_key: str = Field(min_length=1)
     llm_api_key: str = ""
-    llm_model: str = "deepseek-v4.1-flash-1017"
+    llm_model: str = "deepseek-flash"
     llm_base_url: str = "https://api.deepseek.com"
     app_origin: str = "http://localhost:3000"
     api_origin: str = "http://localhost:8000"
