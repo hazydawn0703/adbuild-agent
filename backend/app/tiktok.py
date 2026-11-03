@@ -26,7 +26,7 @@ class EncryptedStorage:
 
     def update(self, **values):
         with transaction() as c:
-            c.execute("insert into connections(tenant_id,state) values(%s,%s) on conflict(tenant_id) do update set state=connections.state || excluded.state",(self.tenant_id,json_value(values)))
+            c.execute("insert into connections(tenant_id,state) values(%s,%s) on duplicate key update state=JSON_MERGE_PATCH(state,values(state))",(self.tenant_id,json_value(values)))
 
     async def get_tokens(self):
         value=self.read().get('tokens')

@@ -15,23 +15,10 @@ NEXT_TELEMETRY_DISABLED=1 npm run build
 mkdir -p .next/standalone/.next
 cp -a .next/static .next/standalone/.next/static
 if [ ! -f /etc/adbuild-agent/runtime.env ]; then
-  /opt/adbuild-agent/venv/bin/python - <<'PY' | sudo tee /etc/adbuild-agent/runtime.env >/dev/null
-from cryptography.fernet import Fernet
-print('DATABASE_URL=')
-print('SUPABASE_URL=')
-print('SUPABASE_ANON_KEY=')
-print('SUPABASE_SERVICE_KEY=')
-print('TOKEN_ENCRYPTION_KEY='+Fernet.generate_key().decode())
-print('LLM_API_KEY=')
-print('LLM_MODEL=deepseek-v4.1-flash-1017')
-print('LLM_BASE_URL=https://api.deepseek.com')
-print('APP_ORIGIN=https://stratos.run/apps/adbuild-agent')
-print('API_ORIGIN=https://stratos.run/apps/adbuild-agent/api')
-print('ROOT_PATH=/apps/adbuild-agent/api')
-print('TIKTOK_MCP_URL=https://business-api.tiktok.com/open_mcp/tt-ads-mcp-flat')
-PY
-  sudo chmod 640 /etc/adbuild-agent/runtime.env
+  echo 'Configure MySQL DATABASE_URL, SESSION_SECRET, TOKEN_ENCRYPTION_KEY and DeepSeek settings in /etc/adbuild-agent/runtime.env before deployment' >&2
+  exit 1
 fi
+
 for service in web api worker; do
   sudo install -o root -g root -m 644 "$release/deploy/adbuild-agent-$service.service" /etc/systemd/system/
 done

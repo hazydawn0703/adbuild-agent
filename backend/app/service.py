@@ -62,7 +62,7 @@ def enqueue_if_authorized(conn, draft, project):
     for req in eligible:
         conn.execute("insert into deployments(tenant_id,project_id,fingerprint,run_id,requirement) values(%s,%s,%s,%s,%s)",(project["tenant_id"],project["id"],fingerprint(req),run_id,json_value(req)))
     conn.execute("update projects set reserved=reserved+%s where id=%s",(total,project["id"]))
-    conn.execute("select pgmq.send('adbuild',%s)",(json_value({"run_id":run_id}),))
+    conn.execute("insert into jobs(message) values(%s)",(json_value({"run_id":run_id}),))
     draft.status = "queued"
     conn.execute("update drafts set data=%s where id=%s",(json_value(draft),draft.id))
     return run_id

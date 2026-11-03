@@ -10,4 +10,4 @@
 
 DeepSeek 使用 OpenAI-compatible Chat Completions 和工具调用输出结构。模型由 `LLM_MODEL` 指定，端点为 `LLM_BASE_URL`，密钥为 `LLM_API_KEY`，密钥仅保存在服务器。
 
-公共客户端配置由 API `/config` 提供，不向前端暴露数据库密码、模型密钥和 TikTok token。缺少连接配置时工作台展示“服务已部署，尚需配置”，不会模拟业务成功。
+运行状态由 API `/config` 提供，不向前端暴露数据库密码、模型密钥和 TikTok token。MySQL 8.0 独立库 adbuild_agent，账号限制为服务器实际连接 IP；应用服务只保留本库的数据读写权限。LangGraph 使用 langgraph-checkpoint-mysql，队列使用 InnoDB 的 SKIP LOCKED 和租约。登录为 Argon2 密码与限时签名会话，不再使用 Supabase。

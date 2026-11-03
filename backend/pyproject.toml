@@ -4,9 +4,9 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115,<1", "uvicorn[standard]>=0.34,<1", "python-multipart>=0.0.20",
-  "openpyxl>=3.1.5,<4", "pydantic-settings>=2.8,<3", "psycopg[binary,pool]>=3.2,<4",
+  "openpyxl>=3.1.5,<4", "pydantic-settings>=2.8,<3", "SQLAlchemy>=2,<3", "PyMySQL>=1.1,<1.2", "pwdlib[argon2]>=0.3", "itsdangerous>=2.2",
   "httpx>=0.28,<1", "PyJWT[crypto]>=2.10,<3", "cryptography>=44",
-  "langgraph>=1,<2", "langgraph-checkpoint-postgres>=3,<4", "langchain-openai>=1,<2",
+  "langgraph>=1,<2", "langgraph-checkpoint-mysql[aiomysql]>=3,<4", "langchain-openai>=1,<2",
   "ag-ui-langgraph>=0.0.20", "mcp>=1.20,<2", "jsonschema>=4.23,<5"
 ]
 [project.optional-dependencies]

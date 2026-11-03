@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-import httpx
+from pwdlib import PasswordHash
+password_hash=PasswordHash.recommended()
 from fastapi import Header, HTTPException
 from .db import transaction
 from .settings import settings
@@ -11,13 +12,15 @@ class Actor:
 
 
 async def authenticate(authorization: str = Header(default="")):
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(401,"请先登录")
-    async with httpx.AsyncClient(timeout=15) as client:
-        result = await client.get(settings().supabase_url+"/auth/v1/user",headers={"apikey":settings().supabase_service_key,"Authorization":authorization})
-    if result.status_code != 200:
-        raise HTTPException(401,"登录已失效")
-    return Actor(result.json()["id"])
+    if not authorization.startswith("Bearer "): raise HTTPException(401,"请先登录")
+    from itsdangerous import URLSafeTimedSerializer, BadSignature
+    try:
+        data=URLSafeTimedSerializer(settings().session_secret,salt="adbuild-session").loads(authorization[7:],max_age=86400)
+    except BadSignature: raise HTTPException(401,"登录已失效") from None
+    with transaction() as c:
+        user=c.execute("select id from users where id=%s and active=true",(data['user_id'],)).fetchone()
+    if not user: raise HTTPException(401,"账户不可用")
+    return Actor(user['id'])
 
 
 def project_access(conn, project_id, actor, write=False, admin=False):

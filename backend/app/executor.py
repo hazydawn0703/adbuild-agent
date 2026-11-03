@@ -85,16 +85,14 @@ def gate(c,run_id):
 
 async def execute(run_id,action='resume'):
     # A dedicated advisory-lock connection serializes deliveries, including visibility timeout redelivery.
-    from .db import pool
-    with pool().connection() as lock:
-        acquired=lock.execute("select pg_try_advisory_lock(hashtextextended(%s,0)) locked",(run_id,)).fetchone()['locked']
-        lock.commit()
+    from .db import transaction
+    with transaction() as lock:
+        acquired=lock.execute("select GET_LOCK(%s,0) locked",(run_id,)).fetchone()['locked']
         if not acquired: return False
         try:
             return await _execute(run_id,action)
         finally:
-            lock.execute("select pg_advisory_unlock(hashtextextended(%s,0))",(run_id,))
-            lock.commit()
+            lock.execute("select RELEASE_LOCK(%s)",(run_id,))
 
 
 async def _execute(run_id,action):

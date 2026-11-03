@@ -12,7 +12,7 @@ def llm(schema):
     if not cfg.llm_api_key:
         raise ValueError("尚未配置平台模型 LLM_API_KEY")
     return ChatOpenAI(model=cfg.llm_model,api_key=cfg.llm_api_key,base_url=cfg.llm_base_url,
-                      use_responses_api=False).with_structured_output(schema,method="function_calling")
+                      use_responses_api=False,extra_body={"thinking":{"type":"disabled"}}).with_structured_output(schema,method="function_calling")
 
 
 async def propose_mapping(inspection):

@@ -10,5 +10,5 @@ def test_runtime_config_only_exposes_public_client_settings(monkeypatch):
     config=public_config()
     assert config['configured'] is True
     assert config['model']=='deepseek-v4.1-flash-1017'
-    assert config['supabase_anon_key']=='public-anon'
+    assert 'supabase_anon_key' not in config
     assert not any('secret' in str(v) for v in config.values())
