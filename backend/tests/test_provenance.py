@@ -119,6 +119,7 @@ def test_accepting_verified_history_preserves_original_source_and_adds_adoption(
     file={'id':'export','kind':'export','storage_path':'private/export.xlsx','sha256':sha256(data).hexdigest()}
     class DB:
         def execute(self,sql,args=()):
+            if sql.startswith('select data from intake_tasks'):return Result(None)
             if sql.startswith('select * from drafts'):return Result({'project_id':'project','data':draft.model_dump(mode='json')})
             if sql.startswith('select id from files'):return Result({'id':'export'} if args==('export','project') else None)
             if sql.startswith('select id,kind,storage_path,sha256'):return Result(file if args==('export','project') else None)

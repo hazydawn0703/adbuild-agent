@@ -36,6 +36,7 @@ def database(monkeypatch):
             c.execute('delete from '+table+' where project_id=%s',(project,))
         c.execute('delete from mapping_templates where project_id=%s',(project,))
         c.execute('delete from projects where id=%s',(project,))
+        c.execute('delete from audit where tenant_id=%s',(tenant,))
         c.execute('delete from memberships where tenant_id=%s',(tenant,))
         c.execute('delete from tenants where id=%s',(tenant,))
         c.execute('delete from users where id=%s',(user,))
@@ -50,6 +51,13 @@ def test_task_upload_mapping_answers_replay_and_tenant_scope(database,tmp_path,m
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
             task=(await client.post(f'/projects/{database}/tasks',json={'name':'batch'})).json()
             taskid=task['id']
+            from app.models import IntakeTask,TaskScope
+            with db.transaction() as c:
+                current=IntakeTask.model_validate(task)
+                current.messages=[{'id':'scope-message','role':'user','content':'本表全部新增搭建'}]
+                current.scope=TaskScope(action='new',status='resolved',all_records=True,message_ids=['scope-message'])
+                from app.intake import save
+                save(c,current)
             w=Workbook();s=w.active;s.append(['Post','Goal','Budget']);s.append(['https://www.tiktok.com/@a/video/123','followers',50]);buf=BytesIO();w.save(buf)
             upload=await client.post(f'/projects/{database}/files?kind=requirements&task_id={taskid}',files={'file':('batch.xlsx',buf.getvalue())})
             assert upload.status_code==200,upload.text
@@ -132,4 +140,98 @@ def test_predraft_question_answer_and_request_replay_use_task_scope(database,mon
             with db.transaction() as c:
                 for table in ('jobs','runs','deployments'):
                     assert c.execute('select count(*) n from '+table).fetchone()['n']==0
+    asyncio.run(scenario())
+
+
+def test_archive_restore_and_project_delete(database):
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+            task=(await client.post(f'/projects/{database}/tasks',json={'name':'archive me'})).json()
+            url=f"/tasks/{task['id']}/archive"
+            archived=await client.post(url,json={'expected_version':1,'archived':True})
+            assert archived.status_code==200,archived.text
+            assert archived.json()['archived_at']
+            assert (await client.post(url,json={'expected_version':1,'archived':False})).status_code==409
+            blocked=await client.post(f'/projects/{database}/chat',json={'task_id':task['id'],'request_id':str(uuid4()),'expected_version':2,'message':'change'})
+            assert blocked.status_code==409
+            restored=await client.post(url,json={'expected_version':2,'archived':False})
+            assert restored.status_code==200
+            assert restored.json()['archived_at'] is None
+            with db.transaction() as c:
+                c.execute("update memberships set role='viewer' where tenant_id=(select tenant_id from projects where id=%s)",(database,))
+            assert (await client.delete(f'/projects/{database}')).status_code==403
+            assert (await client.post(url,json={'expected_version':3,'archived':True})).status_code==403
+            with db.transaction() as c:
+                c.execute("update memberships set role='admin' where tenant_id=(select tenant_id from projects where id=%s)",(database,))
+            with db.transaction() as c:
+                tenant=c.execute('select tenant_id from projects where id=%s',(database,)).fetchone()['tenant_id']
+            assert (await client.delete(f'/projects/{database}')).status_code==200
+            assert (await client.get(f'/projects/{database}/workspace')).status_code==404
+            assert (await client.get(f"/tasks/{task['id']}")).status_code==404
+            with db.transaction() as c:
+                for table in ('intake_tasks','drafts','files','history','runs','deployments','project_contexts','messages','mapping_templates'):
+                    assert c.execute('select count(*) n from '+table+' where project_id=%s',(database,)).fetchone()['n']==0
+
+                c.execute("delete from jobs where JSON_CONTAINS(message,%s,'$.checkpoint_threads')",(json.dumps(f"{tenant}:{task['id']}"),))
+    import json
+    asyncio.run(scenario())
+
+
+def test_archive_blocks_busy_tasks_and_project_cleanup_is_durable(database,tmp_path,monkeypatch):
+    import json
+    from datetime import datetime,timezone,timedelta
+    from app.models import IntakeTask,BuildDraft
+    from app.intake import save
+    from app.worker import cleanup
+    monkeypatch.setenv('STORAGE_DIRECTORY',str(tmp_path))
+    from app.settings import settings
+    settings.cache_clear()
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+            task=(await client.post(f'/projects/{database}/tasks',json={'name':'cleanup'})).json()
+            draft=BuildDraft(id=str(uuid4()),project_id=database)
+            current=IntakeTask.model_validate(task)
+            current.draft_id=draft.id
+            current.lease={'until':(datetime.now(timezone.utc)+timedelta(minutes=1)).isoformat()}
+            with db.transaction() as c:
+                tenant=c.execute('select tenant_id from projects where id=%s',(database,)).fetchone()['tenant_id']
+                c.execute('insert into drafts(id,tenant_id,project_id,version,data) values(%s,%s,%s,1,%s)',(draft.id,tenant,database,db.json_value(draft)))
+                save(c,current)
+            url=f"/tasks/{task['id']}/archive"
+            assert (await client.post(url,json={'expected_version':1,'archived':True})).status_code==409
+            assert (await client.delete(f'/projects/{database}')).status_code==409
+            current.lease=None
+            with db.transaction() as c: save(c,current)
+            run=str(uuid4())
+            with db.transaction() as c:
+                c.execute("insert into runs(id,tenant_id,project_id,draft_id,draft_version,policy_version,status,frozen) values(%s,%s,%s,%s,1,0,'queued',%s)",(run,tenant,database,draft.id,'{}'))
+            assert (await client.post(url,json={'expected_version':1,'archived':True})).status_code==409
+            assert (await client.delete(f'/projects/{database}')).status_code==409
+            with db.transaction() as c: c.execute("update runs set status='complete' where id=%s",(run,))
+            assert (await client.post(url,json={'expected_version':1,'archived':True})).status_code==200
+            assert (await client.post(f'/drafts/{draft.id}/edit',json={'expected_version':1,'edits':[]})).status_code==409
+            assert (await client.post(f'/projects/{database}/files?kind=requirements&task_id={task["id"]}',files={'file':('test.xlsx',b'blocked')})).status_code==409
+            # A completed run with a pending job still blocks project deletion.
+            with db.transaction() as c:
+                c.execute('insert into jobs(message) values(%s)',(json.dumps({'run_id':run}),))
+            assert (await client.delete(f'/projects/{database}')).status_code==409
+            relative=f'{tenant}/{database}/test.xlsx'
+            file=tmp_path/relative;file.parent.mkdir(parents=True);file.write_bytes(b'private workbook')
+            sibling=tmp_path/'other-project.xlsx';sibling.write_bytes(b'keep')
+            with db.transaction() as c:
+                c.execute("update jobs set status='complete' where JSON_UNQUOTE(JSON_EXTRACT(message,'$.run_id'))=%s",(run,))
+                c.execute("insert into files(id,tenant_id,project_id,name,kind,sha256,storage_path,inspection) values(%s,%s,%s,'test.xlsx','requirements',%s,%s,'{}')",(str(uuid4()),tenant,database,'0'*64,relative))
+                c.execute("insert into messages(tenant_id,project_id,role,content) values(%s,%s,'user','private')",(tenant,database))
+            assert (await client.delete(f'/projects/{database}')).status_code==200
+            assert file.exists()  # Files are only removed after the deletion transaction commits.
+            with db.transaction() as c:
+                job=c.execute("select * from jobs where JSON_CONTAINS(message,%s,'$.checkpoint_threads')",(json.dumps(f'{tenant}:{current.id}'),)).fetchone()
+                assert job and job['message']['storage_paths']==[relative]
+                assert not c.execute('select id from runs where id=%s',(run,)).fetchone()
+                assert not c.execute("select id from jobs where JSON_UNQUOTE(JSON_EXTRACT(message,'$.run_id'))=%s",(run,)).fetchone()
+                assert c.execute("select id from audit where event='project_deleted' and tenant_id=%s",(tenant,)).fetchone()
+            await cleanup(job['message'])
+            await cleanup(job['message'])  # Retrying a cleanup is safe.
+            assert not file.exists() and sibling.read_bytes()==b'keep'
+            with db.transaction() as c: c.execute('delete from jobs where id=%s',(job['id'],))
     asyncio.run(scenario())

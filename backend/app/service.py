@@ -25,7 +25,13 @@ def pending_questions(conn,draft_id):
     return questions
 
 
+def ensure_draft_active(conn,draft_id):
+    row=conn.execute('select data from intake_tasks where draft_id=%s for update',(draft_id,)).fetchone()
+    if row and row['data'].get('archived_at'): raise HTTPException(409,'任务已归档，请先恢复')
+
+
 def edit_draft(conn, draft_id, actor, expected_version, edits):
+    ensure_draft_active(conn,draft_id)
     row = conn.execute("select * from drafts where id=%s for update",(draft_id,)).fetchone()
     if not row:
         raise HTTPException(404,"草稿不存在")
@@ -97,6 +103,7 @@ def submit_approved_draft(conn, draft, project):
         raise HTTPException(423,'真实搭建暂缓，当前仅支持预览与人工确认')
     if any(r.included and r.structure for r in draft.requirements):
         raise HTTPException(423,'多层结构尚未完成平台写入验收，当前仅支持预览与人工确认')
+    ensure_draft_active(conn,draft.id)
     # Caller holds the project lock. Reservation and queue insertion commit atomically.
     project = conn.execute("select * from projects where id=%s for update",(project["id"],)).fetchone()
     preview=build_preview(draft,history_for(conn,project),project['policy_version'],pending_questions=pending_questions(conn,draft.id))

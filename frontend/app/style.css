@@ -196,3 +196,5 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 
   .preview-toggle{width:44px;height:44px}
 }
+
+.lifecycle-actions{display:flex;flex-wrap:wrap;gap:8px;padding:8px 20px;flex-shrink:0}
