@@ -357,17 +357,19 @@ async def act(project_id,body,actor):
         from langgraph.checkpoint.mysql.aio import AIOMySQLSaver
         from .agent import conversation_graph
         from .settings import settings
-        async with AIOMySQLSaver.from_conn_string(settings().database_url.replace('mysql+pymysql://','mysql://')) as saver:
-            graph=conversation_graph(saver)
-            config={'configurable':{'thread_id':f"{p['tenant_id']}:{task.id}:{checkpoint_request_id}"}}
-            checkpoint=await graph.aget_state(config)
-            if checkpoint.values.get('decision') and not checkpoint.next:
-                output=checkpoint.values
-            elif checkpoint.next:
-                # Resume the saved node with its validated scope/evidence, not the original input.
-                output=await graph.ainvoke(None,config)
-            else:
-                output=await graph.ainvoke({'messages':task.messages,'draft':draft.model_dump(mode='json') if draft else None,'context':task.context.model_dump(mode='json'),'documents':documents,'scope':task.scope.model_dump(mode='json'),'project_account_id':p['account_id'],'history_records':history},config)
+        from .usage import task_context
+        with task_context(task.id,task.project_id):
+            async with AIOMySQLSaver.from_conn_string(settings().database_url.replace('mysql+pymysql://','mysql://')) as saver:
+                graph=conversation_graph(saver)
+                config={'configurable':{'thread_id':f"{p['tenant_id']}:{task.id}:{checkpoint_request_id}"}}
+                checkpoint=await graph.aget_state(config)
+                if checkpoint.values.get('decision') and not checkpoint.next:
+                    output=checkpoint.values
+                elif checkpoint.next:
+                    # Resume the saved node with its validated scope/evidence, not the original input.
+                    output=await graph.ainvoke(None,config)
+                else:
+                    output=await graph.ainvoke({'messages':task.messages,'draft':draft.model_dump(mode='json') if draft else None,'context':task.context.model_dump(mode='json'),'documents':documents,'scope':task.scope.model_dump(mode='json'),'project_account_id':p['account_id'],'history_records':history},config)
             decision=ChatDecision.model_validate(output['decision'])
             from .models import TaskScope
             resolved_scope=TaskScope.model_validate(output['scope'])
