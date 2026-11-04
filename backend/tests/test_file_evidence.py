@@ -44,7 +44,7 @@ def test_real_cell_from_other_group_cannot_fill_a_missing_field(monkeypatch,tmp_
     anchor=SourceRef(file_id='owned',sheet='Sheet',cell='A2',raw_value='G1')
     row={'id':'g1','name':'G1','end_at':None,'sources':{'group_key':anchor.model_dump()}}
     other=SourceRef(file_id='owned',sheet='Sheet',cell='B3',raw_value='not trusted')
-    with pytest.raises(ValueError,match='实体'):supported_source(state,row,'end_at','2028-01-16T09:00:00Z',other)
+    with pytest.raises(ValueError,match='field=end_at; target_id=g1; source=Sheet!B3.*实体'):supported_source(state,row,'end_at','2028-01-16T09:00:00Z',other)
 
 
 def test_another_record_of_same_group_is_valid_evidence(monkeypatch,tmp_path):

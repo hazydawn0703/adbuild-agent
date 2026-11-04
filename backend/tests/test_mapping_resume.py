@@ -115,6 +115,22 @@ def test_repeated_completed_read_does_not_run_without_progress(monkeypatch):
     assert len(result.read_state['evidence'])==1
 
 
+def test_complete_mapping_with_repeated_satisfied_read_reaches_budget_conflict(monkeypatch):
+    w=Workbook();s=w.active;s.append(['Campaign Name','Ad Group Name','Post ID','Budget Level','Campaign Budget','Ad Group Budget'])
+    s.append(['Launch','G1','123','campaign','100',None]);s.append(['Launch','G2','456','campaign','101',None]);data=binary(w);calls=[]
+    class Model:
+        async def ainvoke(self,messages):
+            calls.append(messages)
+            return model_response(MappingProposal(mappings=[SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=3,
+                bindings=row_bindings({'name':'A','group_key':'B','post_id':'C','budget_level':'D','campaign_budget':'E','adgroup_budget':'F'}))],
+                requested_ranges=[RangeRequest(sheet=s.title,range='F2:F3',reason='Check empty group budget')],explanation='Mapping complete',complete=True))
+    monkeypatch.setattr('app.agent.llm',lambda _:Model())
+    mapped=asyncio.run(propose_mapping(inspect_workbook(data),data))
+    assert mapped.complete and not mapped.requested_ranges and not mapped.pending_ranges and len(calls)==2
+    req=parse_requirements(data,'f',mapped.mappings)[0]
+    assert len(req.structure.groups)==2 and any(i.field=='budget' for i in req.issues)
+
+
 def test_server_search_finds_deep_target_and_nearby_headers_without_leaking_codes(monkeypatch):
     w=Workbook();s=w.active;s.title='Any name'
     s.cell(32,1,'Business');s.cell(32,2,'Post')

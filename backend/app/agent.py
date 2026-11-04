@@ -138,7 +138,10 @@ async def propose_mapping(inspection,data=None,task=None,on_progress=None):
         result=await structured(MappingProposal,messages,validator=validate_mapping)
         if result.mappings:completed=result.mappings
         requests=list({key(r):r for r in [*pending(),*result.requested_ranges,*result.pending_ranges]}.values())
+        if result.complete and result.mappings:
+            requests=[r for r in requests if not read_state['pages'].get(key(r),{}).get('complete')]
         if not requests:
+            result.requested_ranges=[]
             result.pending_ranges=[]
             result.read_state=redact_private(read_state)
             return result

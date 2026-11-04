@@ -217,7 +217,8 @@ def verify_excel_source(document,field,value,ref,tz='',owner=None,workbook=None)
     if not equivalent(field,value,actual,tz):raise ValueError(f'{field} 字段值与原始单元格 {ref.sheet}!{cell.coordinate} 不一致')
     if owner is not None:
         from .evidence_ownership import verify_owner
-        verify_owner(wb,document,ref.model_copy(update={'cell':cell.coordinate}),owner,field)
+        try:verify_owner(wb,document,ref.model_copy(update={'cell':cell.coordinate}),owner,field)
+        except ValueError as error:raise ValueError(f'field={field}; target_id={owner.get("id","")}; source={ref.sheet}!{cell.coordinate}: {error}') from None
     return ref.model_copy(update={'raw_value':clean(raw),'cell':cell.coordinate,'transform':transform})
 
 
