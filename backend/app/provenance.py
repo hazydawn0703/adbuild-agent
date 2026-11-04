@@ -230,6 +230,8 @@ def validate_proposal_evidence(state,decision):
         from .entities import check_edit_owner
         from .models import Requirement
         check_edit_owner(Requirement.model_validate(row),edit.target_id,edit.values)
+        if 'budget_level' in edit.values and row.get('structure',{}).get('budget_level')==edit.values['budget_level'] and not any(i.get('field')=='budget_level' for i in row.get('issues',[])):
+            edit.values.pop('budget_level');edit.sources.pop('budget_level',None)
         if 'budget_level' in edit.values and (len(edit.values)!=1 or not row.get('structure')):
             raise ValueError('预算层级修改需要已有实体树并单独提交；金额和子节点字段分别修改')
         if edit.target_id and edit.target_id!=edit.requirement_id:
@@ -314,11 +316,14 @@ def validate_proposal_evidence(state,decision):
                 from .structure import validate_structure
                 candidate=Requirement.model_validate({**row,**edit.values,'structure':structure.model_dump(mode='json')})
                 issues=validate_structure(candidate)
-                if issues and existing.get('groups'):raise ValueError('structure 必须保留完整实体配置，不能以省略字段清空已有节点：'+str([i.model_dump(mode='json') for i in issues]))
+                previous_issues={(i.code,i.field,i.target_id) for i in validate_structure(Requirement.model_validate(row))}
+                introduced=[i for i in issues if (i.code,i.field,i.target_id) not in previous_issues]
+                if introduced and existing.get('groups'):raise ValueError('structure 必须保留完整实体配置，不能以省略字段清空已有节点：'+str([i.model_dump(mode='json') for i in introduced]))
                 edit.values['structure']=structure.model_dump(mode='json')
                 edit.sources['structure']=SourceRef(kind='calculated',file_id='',sheet='',cell='',raw_value='服务端核实的完整三层结构',
                     derived_from=sorted({f'{node.id}:{key}:{ref.kind}:{ref.file_id}:{ref.sheet}:{ref.cell}:{ref.message_id or ""}:{ref.context_version or ""}'
                         for node in [*structure.groups,*[a for g in structure.groups for a in g.ads]] for key,ref in node.sources.items()}))
+    decision.edits=[edit for edit in decision.edits if edit.values]
 
 
 def allocation_edits(state,allocations):

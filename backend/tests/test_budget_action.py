@@ -31,6 +31,25 @@ def test_budget_action_preserves_all_nodes_and_exact_cents_with_canonical_source
     validate_proposal_evidence(state,decision)  # Same verifier can run again at acceptance.
 
 
+def test_echoed_budget_level_does_not_mask_independent_edit_validation():
+    state=allocation_state()
+    decision=ChatDecision(answer='',edits=[{'requirement_id':'plan','values':{'budget_level':'adgroup','currency':'USD'}}])
+    validate_proposal_evidence(state,decision)
+    assert decision.edits[0].values=={'currency':'USD'}
+    state['draft']['requirements'][0]['issues']=[{'code':'invalid_budget_level_conflict','field':'budget_level','message':'Conflicting explicit levels'}]
+    decision=ChatDecision(answer='',edits=[{'requirement_id':'plan','values':{'budget_level':'adgroup','currency':'USD'}}])
+    with pytest.raises(ValueError,match='单独'):validate_proposal_evidence(state,decision)
+
+
+def test_existing_missing_fields_do_not_prevent_an_independent_structure_edit():
+    state=allocation_state();row=state['draft']['requirements'][0]
+    row['structure']['groups'][0]['audience']=None
+    structure=__import__('copy').deepcopy(row['structure'])
+    decision=ChatDecision(answer='',edits=[{'requirement_id':'plan','values':{'structure':structure}}])
+    validate_proposal_evidence(state,decision)
+    assert decision.edits[0].values['structure']['groups'][0]['audience'] is None
+
+
 def test_budget_action_rejects_foreign_group_and_unsupported_amount():
     state=allocation_state()
     for weights,total in [({'g1':1,'g2':1,'foreign':1},'100.01'),({'g1':1,'g2':1,'g3':1},'300.03')]:
