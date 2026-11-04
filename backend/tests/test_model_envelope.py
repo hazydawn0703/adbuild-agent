@@ -27,3 +27,17 @@ def test_valid_tool_result_returns_validated_model(monkeypatch):
     monkeypatch.setattr('app.agent.llm',lambda schema:Model())
     assert asyncio.run(structured(MappingProposal,[]))==proposal
 
+
+def test_repair_uses_actual_arguments_and_error_paths_without_message_envelope(monkeypatch):
+    calls=[]
+    raw=AIMessage(content='',tool_calls=[{'name':'MappingProposal','args':{'mappings':[]},'id':'bad'}],response_metadata={'finish_reason':'tool_calls'})
+    class Model:
+        async def ainvoke(self,messages):
+            calls.append(messages)
+            return {'raw':raw,'parsed':{'mappings':[]},'parsing_error':None} if len(calls)==1 else {'raw':AIMessage(content=''),'parsed':{'mappings':[],'explanation':'Need scope'},'parsing_error':None}
+    monkeypatch.setattr('app.agent.llm',lambda schema:Model())
+    result=asyncio.run(structured(MappingProposal,[]))
+    feedback=calls[1][-1][1]
+    assert result.explanation=='Need scope' and len(calls)==2
+    assert 'explanation' in feedback and '"arguments": {"mappings": []}' in feedback
+    assert 'response_metadata' not in feedback and 'additional_kwargs' not in feedback

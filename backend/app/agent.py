@@ -176,6 +176,7 @@ async def structured(schema,messages,validator=None):
             raw=envelope['raw']
             record_usage(raw)
             logging.getLogger('adbuild.analysis').info('model_output %s',json.dumps(redact_private({'schema':schema.__name__,'attempt':attempt+1,'raw':raw.model_dump(mode='json'),'parsing_error':str(envelope['parsing_error']) if envelope['parsing_error'] else None}),ensure_ascii=False))
+            if isinstance(envelope.get('parsing_error'),(ValidationError,OutputParserException)):raise envelope['parsing_error']
             result=schema.model_validate(envelope['parsed'])
             if validator: validator(result)
             logging.getLogger('adbuild.analysis').info('model_stage schema=%s prompt=%s duration=%.3f attempt=%d',schema.__name__,PROMPT_HASH,time.monotonic()-started,attempt+1)
@@ -185,8 +186,15 @@ async def structured(schema,messages,validator=None):
             # the schema-repair attempt retrying an unavailable provider implicitly.
             raise ModelServiceError.from_provider(error) from None
         except (ValidationError,OutputParserException,ProposalError) as error:
+            logging.getLogger('adbuild.analysis').warning('model_validation %s',json.dumps(redact_private({'schema':schema.__name__,'attempt':attempt+1,'error':str(error)}),ensure_ascii=False))
             if attempt: raise ModelServiceError('invalid_response',retryable=False) from None
-            messages=[*messages,('system','结构校验失败，请修正字段结构，不补造业务值：'+str(error)+'；错误输出：'+json.dumps(redact_private(raw.model_dump(mode='json') if raw is not None else None),ensure_ascii=False))]
+            calls=[]
+            if raw is not None:
+                calls=[{'name':t['name'],'arguments':t['args']} for t in raw.tool_calls]
+                calls.extend({'name':t['name'],'arguments':t['args']} for t in raw.invalid_tool_calls)
+            details=error.errors(include_url=False,include_input=False) if isinstance(error,ValidationError) else str(error)
+            feedback={'validation_errors':details,'failed_calls':calls,'failed_content':raw.content if raw is not None and not calls else None}
+            messages=[*messages,('system',f'结构校验失败，请修正字段结构，不补造业务值。仅调用 {schema.__name__} 工具一次，arguments 必须是一个合法 JSON 对象，结束后不能再附加括号、解释或其他字符。保留其他已有映射与业务值，只修正校验指出的问题；explanation 简明说明依据。以下是实际错误和工具参数，不是响应消息信封，不要输出其外层字段：'+json.dumps(redact_private(feedback),ensure_ascii=False))]
 
 
 class ConversationState(TypedDict):
