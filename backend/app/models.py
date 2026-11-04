@@ -1,5 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
+from fractions import Fraction
 from enum import StrEnum
 from typing import Any, Literal, Annotated
 from pydantic import BaseModel, Field, ConfigDict, computed_field
@@ -284,7 +285,7 @@ class CandidateDecision(Model):
 class BudgetAllocation(Model):
     requirement_id: str
     total: Decimal = Field(gt=0,description='有明确输入依据的该计划总额，由服务端按分分配')
-    group_weights: dict[str,Decimal] = Field(description='当前计划全部真实广告组ID到正权重的映射，如1:1:1填写各组1；不能生成新组')
+    group_weights: dict[str,Fraction] = Field(description='当前计划全部真实广告组ID到正权重的映射；整数或精确分数字符串，如1:1:1各填1，三分之一可填"1/3"，不得用近似小数；不能生成新组')
     message_id: str = Field(description='明确规定分配比例的真实用户消息ID')
 
 

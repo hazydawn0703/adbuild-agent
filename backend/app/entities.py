@@ -131,7 +131,7 @@ def edit_entity(req,target_id,patch,message_id,actor_id,sources=None):
     return Requirement.model_validate(req.model_dump())
 
 
-def objective_variant(base,new_id,objective,total,message_id,actor_id,context):
+def objective_variant(base,new_id,objective,total,message_id,actor_id,context,sources):
     """Clone the evidenced graph for an explicitly accepted objective variant."""
     from datetime import datetime,timezone
     from .assembly import identity
@@ -147,8 +147,7 @@ def objective_variant(base,new_id,objective,total,message_id,actor_id,context):
     copy.issues=[issue.model_copy(update={'target_id':ids.get(issue.target_id,issue.target_id)}) for issue in copy.issues
         if not (issue.target_id in ('',base.id) and issue.field in ('objective','budget'))]
     for field in ('objective','budget'):
-        copy.sources[field]=SourceRef(kind='confirmed',file_id='',sheet='',cell='',raw_value=str(getattr(copy,field)),
-            message_id=message_id,accepted_by=actor_id,accepted_at=datetime.now(timezone.utc))
+        copy.sources[field]=SourceRef.model_validate(sources[field]).model_copy(update={'accepted_by':actor_id,'accepted_at':datetime.now(timezone.utc)})
         if field not in copy.confirmed_fields:copy.confirmed_fields.append(field)
     copy.budget_constraint=total if copy.structure and copy.structure.budget_level=='adgroup' else None
     if copy.budget_constraint is not None:copy.sources['budget_constraint']=copy.sources['budget'].model_copy(deep=True)
@@ -165,5 +164,6 @@ def objective_variant(base,new_id,objective,total,message_id,actor_id,context):
             node.sources.pop(field)
             if node is copy and field in copy.confirmed_fields:copy.confirmed_fields.remove(field)
     if copy.structure:
-        copy.sources['structure']=SourceRef(kind='calculated',file_id='',sheet='',cell='',raw_value='沿用已核实的三层结构并建立新目标节点',derived_from=[base.id+':structure',message_id+':objective'])
+        goal_source=copy.sources['objective']
+        copy.sources['structure']=SourceRef(kind='calculated',file_id='',sheet='',cell='',raw_value='沿用已核实的三层结构并建立新目标节点',derived_from=[base.id+':structure',f'{goal_source.kind}:{goal_source.file_id}:{goal_source.sheet}:{goal_source.cell}:{goal_source.message_id}'])
     return copy

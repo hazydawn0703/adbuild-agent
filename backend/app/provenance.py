@@ -53,16 +53,24 @@ def _budget_values(text):
 
 def allocation_message(state,weights):
     from fractions import Fraction
-    if not weights or any(w is None or not w.is_finite() or w<=0 for w in weights):return None
-    expected=[Fraction(w)/sum(Fraction(v) for v in weights) for w in weights]
+    try:weights=[Fraction(w) for w in weights]
+    except (ValueError,TypeError,OverflowError,ZeroDivisionError):return None
+    if not weights or any(w<=0 for w in weights):return None
+    expected=[w/sum(weights) for w in weights]
     for message in reversed(state.get('messages',[])):
-        text=str(message.get('content',''))
-        if message.get('role')!='user' or not re.search(r'分配|占比|比例|按表顺序|allocation',text,re.I):continue
-        vectors=[re.split(r'\s*[:：]\s*',v) for v in re.findall(r'(?<![\d:：])\d+(?:\.\d+)?(?:\s*[:：]\s*\d+(?:\.\d+)?)+(?![\d:：])',text)]
+        text='\n'.join(str(a['answer']) for a in message['answers'] if a.get('field') in ('structure','allocation','allocation_ratio','budget')) if 'answers' in message else str(message.get('content',''))
+        if message.get('role')!='user' or not re.search(r'分配|占比|比例|按表顺序|均分|平均|各|每组|allocation|each',text,re.I):continue
+        number=r'\d+(?:\.\d+)?(?:/\d+(?:\.\d+)?)?'
+        vectors=[re.split(r'\s*[:：]\s*',v) for v in re.findall(r'(?<![\d/:：])'+number+r'(?:\s*[:：]\s*'+number+r')+(?![\d/:：])',text)]
         percentages=re.findall(r'(\d+(?:\.\d+)?)\s*%',text)
         if percentages:vectors.append(percentages)
+        if re.search(r'均分|平均分配',text) and len(set(expected))==1:return message
+        if re.search(r'各|每组|each',text,re.I):
+            shares=re.findall(r'(?<![\d/])\d+/[1-9]\d*(?![\d/])',text)
+            if len(shares)==1 and all(w==Fraction(shares[0]) for w in expected):return message
         for vector in vectors:
-            values=[Fraction(v) for v in vector]
+            try:values=[Fraction(v) for v in vector]
+            except (ValueError,ZeroDivisionError):continue
             if len(values)==len(expected) and all(v>0 for v in values) and [v/sum(values) for v in values]==expected:return message
         # A newer allocation instruction cannot be replaced by an older one.
         return None
@@ -320,8 +328,12 @@ def allocation_edits(state,allocations):
         from .structure import allocate_budget
         allocate_budget(allocation.total,[allocation.group_weights[key] for key in order])
         structure=req.structure.model_copy(deep=True);structure.budget_level='adgroup'
+        from math import lcm
+        scale=lcm(*(w.denominator for w in allocation.group_weights.values()))
         for group in structure.groups:
-            group.budget=BudgetSpec(allocation_ratio=allocation.group_weights[group.id],currency=req.currency,mode=req.budget_mode)
+            weight=allocation.group_weights[group.id]
+            exact=Decimal(weight.numerator*(scale//weight.denominator))
+            group.budget=BudgetSpec(allocation_ratio=exact,currency=req.currency,mode=req.budget_mode)
             group.sources['allocation_ratio']=SourceRef(kind='confirmed',file_id='',sheet='',cell='',raw_value=str(allocation.group_weights[group.id]),message_id=message['id'])
         result.append(ChatEdit(requirement_id=req.id,values={'budget':str(allocation.total),'structure':structure.model_dump(mode='json')},sources={'budget':source}))
     return result

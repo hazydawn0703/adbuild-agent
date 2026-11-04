@@ -218,7 +218,7 @@ def submit_approved_draft(conn, draft, project):
     return run_id
 
 
-def apply_expansions(conn,draft,actor,expansions,message_id,context,history):
+def apply_expansions(conn,draft,actor,expansions,message_id,context,history,messages):
     """Accepted variants replace only their explicitly referenced base requirements."""
     from .models import RequirementExpansion
     variants=[RequirementExpansion.model_validate(x) for x in expansions]
@@ -233,7 +233,11 @@ def apply_expansions(conn,draft,actor,expansions,message_id,context,history):
     for item in variants:
         base=bases[item.base_requirement_id]
         from .entities import objective_variant
-        copy=objective_variant(base,str(uuid4()),item.objective,item.budget,message_id,actor.user_id,context)
+        from .provenance import supported_source
+        state={'messages':messages,'context':context}
+        try:sources={field:supported_source(state,base.model_dump(mode='json'),field,value) for field,value in [('objective',item.objective),('budget',item.budget)]}
+        except ValueError as error:raise HTTPException(422,str(error)) from None
+        copy=objective_variant(base,str(uuid4()),item.objective,item.budget,message_id,actor.user_id,context,sources)
         added.append(evaluate(copy,history))
     replaced={x.base_requirement_id for x in variants}
     draft.requirements=[r for r in draft.requirements if r.id not in replaced]+added

@@ -18,12 +18,12 @@ def redact_material_secrets(value):
 def allocate_budget(total: Decimal, ratios: list[Decimal]) -> list[Decimal]:
     """Allocate cents deterministically; do not lose money to independent rounding."""
     total = Decimal(total)
-    ratios = [Decimal(r) for r in ratios]
     if not total.is_finite() or total <= 0 or total != total.quantize(Decimal('.01')):
         raise ValueError('拆分预算必须为正数且最多两位小数')
-    if not ratios or any(not r.is_finite() or r <= 0 for r in ratios):
+    try:weights=[Fraction(r) for r in ratios]
+    except (ValueError,TypeError,OverflowError,ZeroDivisionError):raise ValueError('预算分配权重必须为有限正数') from None
+    if not weights or any(r<=0 for r in weights):
         raise ValueError('预算分配权重必须为有限正数')
-    weights = [Fraction(r) for r in ratios]
     exact = [Fraction(total) * r / sum(weights) for r in weights]
     amounts = [(Decimal((v * 100).__floor__()) / 100).quantize(Decimal('.01')) for v in exact]
     remainder = int((total - sum(amounts)) / Decimal('.01'))

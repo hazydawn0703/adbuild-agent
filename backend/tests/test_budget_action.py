@@ -37,6 +37,15 @@ def test_budget_action_rejects_foreign_group_and_unsupported_amount():
         with pytest.raises(ValueError):allocation_edits(state,[BudgetAllocation(requirement_id='plan',total=total,group_weights=weights,message_id='m')])
 
 
+@pytest.mark.parametrize('instruction',['三个广告组各占1/3分配','三个广告组按表顺序1/3:1/3:1/3分配','三个广告组平均分配'])
+def test_exact_fraction_and_equal_split_do_not_need_decimal_approximations(instruction):
+    state=allocation_state();state['messages'][0]['content']=state['messages'][0]['content'].replace('三个广告组按表顺序1:1:1分配',instruction)
+    allocation=BudgetAllocation(requirement_id='plan',total='100.01',group_weights={f'g{i}':'1/3' for i in range(1,4)},message_id='m')
+    edits=allocation_edits(state,[allocation]);decision=ChatDecision(answer='',edits=edits);validate_proposal_evidence(state,decision)
+    changed=Requirement.model_validate({**state['draft']['requirements'][0],**edits[0].values})
+    assert [g['budget']['amount'] for g in campaign_tree(changed)[0]['adgroups']]==['33.34','33.34','33.33']
+
+
 def test_message_raw_value_cannot_replace_actual_message_evidence():
     state=allocation_state()
     offered={'kind':'confirmed','file_id':'','sheet':'','cell':'','message_id':'m','raw_value':'MODEL EXPLANATION'}
@@ -49,4 +58,3 @@ def test_truncated_structure_cannot_become_a_pending_validated_proposal():
     decision=ChatDecision(answer='',edits=[{'requirement_id':'plan','values':{'budget':'100.01','structure':{
         'budget_level':'adgroup','groups':[{'id':f'g{i}','budget':{'allocation_ratio':1}} for i in range(1,4)]}}}])
     with pytest.raises(ValueError,match='完整实体'):validate_proposal_evidence(state,decision)
-

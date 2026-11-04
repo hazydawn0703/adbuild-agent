@@ -228,7 +228,7 @@ def scope_required(state):
     if current.get('status')=='resolved':
         if latest.get('id') in current.get('message_ids',[]) or message.startswith('本任务回答：'):return False
         query=re.search(r'(?:查|查询|查看|检索|搜索|找).{0,12}(?:历史|以前|上次|投放记录)|(?:历史|投放记录).{0,12}(?:查|查询|查看|检索|搜索)|\b(?:query|search|look\s*up)\b.{0,20}\bhistory\b',message,re.I)
-        selection=re.search(r'重投|重新投放|新增(?:一条|广告|需求|计划|投放)|(?:本次|这次)(?:仅|只)?(?:搭建|投放)|排除|取消(?:投放|搭建|勾选)|\b(?:relaunch|exclude)\b',message,re.I)
+        selection=re.search(r'重投|重新投放|新增(?:一条|广告|需求|计划|投放)|(?:本次|这次)(?:仅|只)?(?:搭建|投放|处理)|排除|取消(?:投放|搭建|勾选)|纳入|选中|勾选|不投|不搭建|\b(?:relaunch|exclude|include|select)\b',message,re.I)
         edit=re.search(r'修改|改为|改成|调整|设置|\b(?:change|update|set)\b',message,re.I)
         return bool(query or selection or current.get('action')=='history' and edit)
     rows=(state.get('draft') or {}).get('requirements',[])
@@ -264,6 +264,10 @@ def validate_selection(state,decision):
                 edit.values.pop('included');edit.sources.pop('included',None)
             else:
                 message=None
+                if desired is not None and value!=(edit.requirement_id in desired):
+                    raise ProposalError('计划参与状态与核实范围不符，不能将部分素材的选择或排除升级为整个计划')
+                if row.get('structure') and desired is None:
+                    raise ProposalError('实体树的参与范围必须先经过范围节点核实，不能用计划代表帖子推断整批选择')
                 if desired is not None and value==(edit.requirement_id in desired):
                     message=next((m for m in reversed(state.get('messages',[])) if m.get('role')=='user' and m.get('id') in scope.get('message_ids',[])),None)
                 if message is None:

@@ -43,12 +43,28 @@ def validate_scope(scope, messages):
     refs = scope.get('message_ids', [])
     if not refs or any(ref not in users for ref in refs):
         raise ValueError('需求范围必须引用当前任务的用户消息')
-    text = '\n'.join(users[ref]['content'] for ref in refs)
+    def facts(message):
+        if 'answers' in message:
+            return '\n'.join(str(a['answer']) for a in message['answers'] if a.get('field') in ('scope','included'))
+        return str(message.get('content',''))
+    text = '\n'.join(facts(users[ref]) for ref in refs)
+    latest=next((m for m in reversed(messages) if m.get('role')=='user'),{})
+    scope_answer=any(a.get('field')=='scope' for a in latest.get('answers',[]))
+    if (scope_answer or re.search(r'(?:本次|这次)(?:仅|只)?(?:搭建|投放|处理)|排除|取消(?:投放|搭建|勾选)|纳入|选中|勾选|\b(?:exclude|include|select)\b',facts(latest),re.I)) and latest.get('id') not in refs:
+        raise ValueError('新的范围操作必须引用当前用户消息，不能沿用已被修改的旧选择')
     selectors = scope.get('selectors', [])
     if not selectors and not scope.get('all_records'):
         raise ValueError('需求范围尚未明确，不能默认纳入全部记录')
-    if scope.get('all_records') and not re.search(r'全部|所有|整[批份张表]|all\s+(?:rows|records|items)', text, re.I):
-        raise ValueError('全部纳入缺少用户明确依据')
+    if scope.get('all_records'):
+        all_pattern=r'全部|所有|整[批份张表]|all\s+(?:rows|records|items)'
+        def affirmative(clause):
+            if not re.search(all_pattern,clause,re.I):return False
+            if re.search(r'(?:不|不要|不是|并非)\s*(?:全部|所有)|(?:全部|所有).{0,12}(?:不投|不做|不搭|不纳入|不要|无需|参考|历史)',clause):return False
+            if re.search(r'其余|剩余|其他|其它',clause) and not scope.get('exclude_selectors'):return False
+            return bool(re.fullmatch(r'\s*(?:'+all_pattern+r')\s*',clause,re.I) or re.search(r'搭建|投放|新增|创建|纳入|选中|勾选|处理|加热|\b(?:build|create|include|select|launch)\b',clause,re.I))
+        authority=facts(latest) if (scope_answer or re.search(r'仅|只|\bonly\b',facts(latest),re.I)) and not scope.get('exclude_selectors') else text
+        if not any(affirmative(c) for c in re.split(r'[，,；;\n。]',authority)):
+            raise ValueError('全部纳入缺少用户明确的肯定依据；否定、参考资料和指代不明的其余不能授权全部记录')
     for group in (selectors, scope.get('exclude_selectors', [])):
         fields = [s['field'] for s in group]
         if len(fields) != len(set(fields)):

@@ -316,7 +316,7 @@ async def act(project_id,body,actor):
                     draft=edit_draft(c,draft.id,actor,draft.version,[{**e.model_dump(),'source_message_id':proposal.message_id} for e in proposal.edits])
                 if proposal.expansions:
                     from .service import apply_expansions
-                    draft=apply_expansions(c,draft,actor,proposal.expansions,proposal.message_id,task.context.model_dump(mode='json'),history)
+                    draft=apply_expansions(c,draft,actor,proposal.expansions,proposal.message_id,task.context.model_dump(mode='json'),history,task.messages)
                 if proposal.additions:
                     from .service import apply_additions
                     draft=apply_additions(c,draft,p,actor,proposal.additions,proposal.message_id,task)
