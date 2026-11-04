@@ -72,7 +72,7 @@ def score(run,oracle):
         ready=bool(preview and preview['can_confirm'])
         records.append({'case':case,'initial': 'needs_input' if wanted['clarification_field'] else 'complete',
             'correct':not errors and ready,'errors':sorted(set(errors)),
-            'false_ready':ready and bool(semantic_errors),'safe':safe,'normal_answers':summary.get('normal_answers_submitted',0)})
+            'false_ready':ready and (bool(semantic_errors) or not clarified),'safe':safe,'normal_answers':summary.get('normal_answers_submitted',0)})
     complete=[r for r in records if r['initial']=='complete'];ambiguous=[r for r in records if r['initial']=='needs_input']
     passed=sum(r['correct'] for r in complete);clarified=sum(r['correct'] for r in ambiguous)
     return {'run':str(run),'complete_correct':passed,'complete_total':len(complete),'clarification_correct':clarified,
