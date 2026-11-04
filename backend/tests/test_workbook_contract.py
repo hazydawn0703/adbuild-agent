@@ -25,9 +25,9 @@ def example():
     m=SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=3,
 
                    bindings={**row_bindings({'business_no':'A','post_url':'C','budget':'D','objective':'E'}), **{'account_id':Binding(kind='cell',sheet='Client',cell='B1'),
-                             'currency':Binding(kind='cell',cell='D1',transform='currency_code'),
-                             'start_at':Binding(kind='row',column='F',transform='interval_start'),
-                             'end_at':Binding(kind='row',column='F',transform='interval_end')}},
+                             'currency':Binding(kind='cell',cell='D1'),
+                             'start_at':Binding(kind='row',column='F'),
+                             'end_at':Binding(kind='row',column='F')}},
                    filters=[RowFilter(column='B',operator='eq',values=['TikTok'])])
     return w,m
 
@@ -62,7 +62,7 @@ def test_invalid_source_value_remains_visible_and_blocked():
     w,m=example();m.filters=[];m.bindings['currency']=Binding(kind='row',column='D')
     rows=parse_requirements(binary(w),'f',[m])
     assert rows[0].currency=='' and rows[0].sources['currency'].raw_value=='42'
-    assert any(i.code=='invalid_currency' for i in rows[0].issues)
+    assert any(i.field=='currency' and i.blocking for i in rows[0].issues)
 
 
 @pytest.mark.parametrize('value,number_format',[('2027-03-14','General'),(datetime(2027,3,14),'yyyy-mm-dd')])
@@ -157,4 +157,3 @@ def test_one_row_can_map_to_independent_goals_without_shared_requirement_ids():
 def test_budget_separator_ambiguity_is_not_silently_changed():
     with pytest.raises(ValueError,match='分隔符'):normalize_value('budget','1,00')
     assert str(normalize_value('budget','1,000.25'))=='1000.25'
-

@@ -11,7 +11,7 @@ EDITABLE = {"included","account_id","post_id","post_url","name","objective","bud
 
 
 def stored_draft(data):
-    if data.get('protocol_version')!=3:
+    if data.get('protocol_version')!=4:
         raise HTTPException(409,'草稿协议已更新，请保留原始资料并创建新任务重新分析；旧确认不能继续使用')
     return BuildDraft.model_validate(data)
 
@@ -23,7 +23,7 @@ def history_for(conn, project):
 def pending_questions(conn,draft_id):
     row=conn.execute('select data from intake_tasks where draft_id=%s',(draft_id,)).fetchone()
     if not row:return []
-    questions=list(row['data'].get('semantic_questions',[]))
+    questions=list(row['data'].get('questions',[]))
     analysis=row['data'].get('analysis') or {}
     if row['data'].get('lease') or analysis.get('resume_available') or (analysis.get('mapping_error') or {}).get('resume_available'):
         questions.append({'field':'scope','scope':'task','requirement_ids':[],
@@ -57,6 +57,9 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
         req = next((r for r in draft.requirements if r.id == edit["requirement_id"]),None)
         if not req or set(edit["values"]) - EDITABLE:
             raise HTTPException(422,"需求或编辑字段无效")
+        from .entities import check_edit_owner
+        try:check_edit_owner(req,edit.get('target_id'),edit['values'])
+        except ValueError as error:raise HTTPException(422,str(error)) from None
         if edit.get('target_id') and edit['target_id']!=req.id:
             from .entities import edit_entity,evidence_values
             try:
@@ -75,6 +78,7 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
         values = req.model_dump()
         patch=dict(edit["values"])
         verified_structure=None
+        verified_budget_level=None
         if patch.get('structure') is not None and edit.get('sources'):
             from .models import ChatDecision,ChatEdit
             from .provenance import validate_proposal_evidence
@@ -86,6 +90,7 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
             except (ValueError,OSError) as error:raise HTTPException(422,str(error)) from None
             patch=decision.edits[0].values
             verified_structure=decision.edits[0].sources.get('structure')
+            verified_budget_level=decision.edits[0].sources.get('budget_level')
         from .excel import normalize_value,post_id_from_url
         from .models import StructureSpec
         for field,value in list(patch.items()):
@@ -106,6 +111,7 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
                 raise HTTPException(422,'帖子 ID 与保留的视频链接冲突，请更新或清空原链接后再提交')
         values.update(patch)
         req = Requirement.model_validate(values)
+        if verified_budget_level:req.sources['budget_level']=verified_budget_level
         for field,value in patch.items():
             offered=edit.get('sources',{}).get(field)
             previous=req.sources.get(field)
@@ -139,23 +145,6 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
             req.sources[field].accepted_at=datetime.now(timezone.utc)
             if field not in req.confirmed_fields: req.confirmed_fields.append(field)
         req.issues = [i for i in req.issues if i.field not in patch]
-        if req.structure:
-            from .entities import edit_entity
-            group_fields={'audience','language','start_at','end_at','timezone','budget_mode','currency'}
-            group_patch={k:v for k,v in patch.items() if k in group_fields}
-            # Plan-shared currency/mode only belong to groups when group budgets are active.
-            if req.structure.budget_level!='adgroup':group_patch={k:v for k,v in group_patch.items() if k not in ('budget_mode','currency')}
-            if group_patch:
-                for group in list(req.structure.groups):
-                    req=edit_entity(req,group.id,group_patch,edit.get('source_message_id'),actor.user_id,{k:req.sources[k] for k in group_patch})
-            material_fields={'post_id','post_url','identity_id','cta','landing_url'}
-            material_patch={k:v for k,v in patch.items() if k in material_fields}
-            materials=[ad for g in req.structure.groups for ad in g.ads]
-            if {'post_id','post_url'} & set(material_patch) and len(materials)!=1:
-                raise HTTPException(422,'修改多个素材的帖子需要明确目标素材')
-            if material_patch:
-                for material in materials:
-                    req=edit_entity(req,material.id,material_patch,edit.get('source_message_id'),actor.user_id,{k:req.sources[k] for k in material_patch})
         draft.requirements = [evaluate(req,history) if r.id == req.id else r for r in draft.requirements]
     draft.version += 1
     draft.approval = None
@@ -275,4 +264,3 @@ def apply_additions(conn,draft,project,actor,additions,message_id,task):
         draft.version+=1
         conn.execute('update drafts set version=%s,data=%s where id=%s',(draft.version,json_value(draft),draft.id))
     return draft
-

@@ -87,8 +87,8 @@ def assemble(rows):
                 if source:req.sources['budget']=source
             else:
                 req.sources['budget']=SourceRef(file_id='',sheet='',cell='',raw_value=str(total),kind='calculated',derived_from=[g.id+':budget' for g in groups])
-        if level in ('campaign', 'adgroup'):
-            req.structure = StructureSpec(budget_level=level, groups=groups)
+        source=next((refs['budget_level'] for _,e,refs in entries if e.get('budget_level')==level and 'budget_level' in refs),None)
+        if source:req.sources['budget_level']=source
+        req.structure = StructureSpec(budget_level=level if level in ('campaign','adgroup') else None, groups=groups)
         result.append(req)
     return result
-

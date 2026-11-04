@@ -64,7 +64,9 @@ def test_candidate_beyond_catalog_front_is_retrieved_from_all_scope_records():
 
 
 def test_changed_verified_field_evidence_resolves_old_question_only_for_that_field():
+    from app.models import Issue
     req=Requirement(id='r',included=True,budget='50',language='en',sources={'budget':SourceRef(file_id='f',sheet='S',cell='A1',raw_value='50')})
+    req.issues=[Issue(code='invalid_budget',field='budget',message='两个文件预算冲突')]
     draft=BuildDraft(id='d',project_id='p',requirements=[req])
     q=Clarification(id='q',field='budget',scope='requirements',requirement_ids=['r'],question='预算冲突，请确认')
     task=IntakeTask(id='t',project_id='p',semantic_questions=[q])
@@ -73,6 +75,7 @@ def test_changed_verified_field_evidence_resolves_old_question_only_for_that_fie
     refresh(task,draft)
     assert task.semantic_questions
     req.sources['budget']=SourceRef(file_id='',sheet='',cell='',kind='confirmed',raw_value='50',message_id='m')
+    req.issues=[]
     refresh(task,draft)
     assert not task.semantic_questions
 
@@ -81,4 +84,3 @@ def test_compact_context_includes_bounded_masked_table_evidence():
     state={'messages':[],'draft':None,'documents':[{'id':'file','inspection':{'sheets':[{'sheet':'S','regions':[{'range':'A1:B10','sample':[{'A1':'Budget','B1':'USD'}], 'header_candidates':[{'row':1,'cells':{'A1':'Budget','B1':'USD'}}]}]}]}}]}
     payload=compact_state(state)
     assert payload['documents'][0]['sheets'][0]['regions'][0]['sample'][0]['B1']=='USD'
-

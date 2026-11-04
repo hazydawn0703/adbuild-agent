@@ -57,7 +57,7 @@ def campaign_tree(req: Requirement):
     if spec.budget_level == 'campaign':
         if any(b is not None for b in budgets):
             problem('structure', '计划预算与广告组预算不能同时生效，请明确预算层级')
-    else:
+    elif spec.budget_level == 'adgroup':
         if any(b is None for b in budgets):
             problem('structure', '广告组预算模式下，每组都需要金额或分配比例')
         elif all(b.allocation_ratio is not None and b.amount is None for b in budgets):
@@ -78,6 +78,8 @@ def campaign_tree(req: Requirement):
                 problem('structure', '广告组币种必须与需求总预算一致')
             if b and b.mode and b.mode != req.budget_mode:
                 problem('structure', '广告组预算类型必须与需求总预算口径一致')
+    else:
+        problem('structure','预算层级尚未明确，请说明计划预算或广告组预算；已识别的组和素材仍保留')
 
     groups = []
     material_ids = set()
@@ -151,9 +153,8 @@ def campaign_tree(req: Requirement):
             'account_id':req.account_id, 'objective':req.objective, 'budget_level':spec.budget_level,
             'budget':{'amount':str(req.budget) if req.budget is not None else None,
                       'currency':req.currency, 'mode':req.budget_mode} if spec.budget_level == 'campaign' else None,
-            'planned_total':str(req.budget) if req.budget is not None else None, 'adgroups':groups}, issues
+            'planned_total':str(req.budget) if req.budget is not None and spec.budget_level is not None else None, 'adgroups':groups}, issues
 
 
 def validate_structure(req: Requirement):
     return campaign_tree(req)[1]
-

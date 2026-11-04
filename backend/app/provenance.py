@@ -78,6 +78,9 @@ def message_supports(field,value,text,tz=''):
         return any(objective(part)==target for part in re.split(r'[，,；;\n/]|和|以及|及|\band\b',text,flags=re.I))
     if field=='budget_mode':
         return bool(re.search(r'日预算|每日预算|(?<![A-Za-z0-9_])daily(?![A-Za-z0-9_])',text,re.I)) if target=='daily' else bool(re.search(r'总预算|终身预算|(?<![A-Za-z0-9_])(?:lifetime|total)(?![A-Za-z0-9_])',text,re.I))
+    if field=='budget_level':
+        noun=r'(?:广告组|ad[ _-]?group)' if target=='adgroup' else r'(?:计划|campaign)'
+        return bool(re.search(noun+r'\s*(?:层级|层|级)?\s*预算|预算(?:层级|归属|层|级)[^\n，,；;]{0,18}'+noun,text,re.I))
     if field=='language':
         aliases={'en':r'英语|英文|(?<![A-Za-z0-9_])(?:english|en)(?![A-Za-z0-9_])','all':r'全部语言|不限语言|语言不限|(?<![A-Za-z0-9_])all(?![A-Za-z0-9_])'}
         return bool(re.search(aliases.get(target,re.escape(str(target))),text,re.I))
@@ -105,6 +108,16 @@ def _context_supports(state,row,field,value):
     return equivalent(field,value,default,row.get('timezone',''))
 
 
+def _message_supports_row(message,row,field,value,tz):
+    if 'answers' not in message:return message_supports(field,value,str(message.get('content','')),tz)
+    for answer in message['answers']:
+        owners=answer.get('target_ids') or answer.get('requirement_ids') or []
+        if owners and row.get('id') not in owners:continue
+        if answer.get('field')==field and equivalent(field,value,answer.get('answer'),tz):return True
+        if field=='budget_level' and answer.get('field')=='structure' and message_supports(field,value,answer.get('answer',''),tz):return True
+    return False
+
+
 def supported_source(state,row,field,value,offered=None):
     """Return the verified provenance without converting a suggestion into user fact."""
     tz=row.get('timezone','');previous=row.get('sources',{}).get(field)
@@ -116,20 +129,23 @@ def supported_source(state,row,field,value,offered=None):
         if ref.kind=='excel':
             document=next((d for d in state.get('documents',[]) if str(d['id'])==ref.file_id),None)
             if document:
-                return verify_excel_source(document,field,value,ref,tz)
+                verified=verify_excel_source(document,field,value,ref,tz)
+                if previous and row.get(field) not in (None,'') and not equivalent(field,value,row[field],tz):
+                    raise ValueError(f'{field} 的新文件证据与当前实体明确值冲突，请先澄清；明确用户修正应引用对应消息')
+                return verified
         if ref.kind=='history':
             if match_history_reference(ref,field,value,row.get('history',[]),tz):return ref
             raise ValueError(f'{field} 的历史来源或值不支持本提案')
         if previous and _same_reference(ref,previous) and equivalent(field,value,row.get(field),tz):return previous
         if ref.kind=='confirmed' and not ref.file_id and ref.message_id:
             message=next((m for m in state.get('messages',[]) if m.get('id')==ref.message_id and m.get('role')=='user'),None)
-            if message and message_supports(field,value,str(message.get('content','')),tz):return ref.model_copy(update={'raw_value':str(value)})
+            if message and _message_supports_row(message,row,field,value,tz):return ref.model_copy(update={'raw_value':str(value)})
         if ref.kind=='confirmed' and ref.file_id:
             raise ValueError(f'{field} 的消息来源必须kind=confirmed、file_id为空、message_id为真实用户消息ID；不要伪造文件ID')
         if ref.kind=='template' and not ref.file_id and ref.context_version==state.get('context',{}).get('version') and _context_supports(state,row,field,value):return ref.model_copy(update={'raw_value':str(value)})
         raise ValueError(f'{field} 的新来源尚未经过服务端核实')
     for message in reversed(state.get('messages',[])):
-        if message.get('role')=='user' and message_supports(field,value,str(message.get('content','')),tz):
+        if message.get('role')=='user' and _message_supports_row(message,row,field,value,tz):
             return SourceRef(kind='confirmed',file_id='',sheet='',cell='',raw_value=str(value),message_id=message.get('id'))
         if message.get('role')=='user' and field=='budget' and _budget_values(str(message.get('content',''))):
             # A newer explicit budget correction supersedes an older amount.
@@ -144,7 +160,7 @@ def verify_excel_source(document,field,value,ref,tz=''):
     """Document metadata must come from the project-scoped server query."""
     from hashlib import sha256
     from .storage import target
-    from .excel import read_workbook,sensitive_cells,_anchor,_transform,clean
+    from .excel import read_workbook,sensitive_cells,_anchor,_transform,source_transform,clean
     from datetime import date
     data=target(document['storage_path']).read_bytes()
     if sha256(data).hexdigest()!=document['sha256']:raise ValueError('字段来源文件指纹已变化')
@@ -157,15 +173,16 @@ def verify_excel_source(document,field,value,ref,tz=''):
     if raw is None or cell.data_type=='e':raise ValueError('字段来源为空或为错误值')
     if field in ('account_id','post_id','identity_id') and isinstance(raw,(int,float)) and abs(raw)>=10**15:raise ValueError('长 ID 数值精度未核实')
     if field in ('start_at','end_at') and isinstance(raw,date) and (not isinstance(raw,datetime) or not re.search(r'[hHsS]',re.sub(r'"[^"]*"','',cell.number_format))):raise ValueError('日期来源缺少时刻精度')
-    actual=_transform(raw,ref.transform)
+    transform=source_transform(field,raw)
+    actual=_transform(raw,transform)
     # The parser already derives these two fields from a verified TikTok URL.
     # Reapply the same controlled derivation to the server-read cell value.
-    if ref.transform=='value' and field in ('post_id','platform'):
+    if transform=='value' and field in ('post_id','platform'):
         from .excel import post_id_from_url
         post=post_id_from_url(actual)
         if post:actual=post if field=='post_id' else 'TikTok'
     if not equivalent(field,value,actual,tz):raise ValueError(f'{field} 字段值与原始单元格 {ref.sheet}!{cell.coordinate} 不一致')
-    return ref.model_copy(update={'raw_value':clean(raw),'cell':cell.coordinate})
+    return ref.model_copy(update={'raw_value':clean(raw),'cell':cell.coordinate,'transform':transform})
 
 
 def validate_proposal_evidence(state,decision):
@@ -173,6 +190,9 @@ def validate_proposal_evidence(state,decision):
     for edit in decision.edits:
         row=rows.get(edit.requirement_id)
         if not row:continue # Scope validation supplies the more specific error.
+        from .entities import check_edit_owner
+        from .models import Requirement
+        check_edit_owner(Requirement.model_validate(row),edit.target_id,edit.values)
         if edit.target_id and edit.target_id!=edit.requirement_id:
             from .entities import evidence_values
             from .models import Requirement
@@ -193,11 +213,20 @@ def validate_proposal_evidence(state,decision):
                     if set(prior_order)!=set(by_id):raise ValueError('比例分配需要先核实全部广告组身份')
                     ratio_message=allocation_message(state,[by_id[key].budget.allocation_ratio for key in prior_order])
                     if ratio_message is None:raise ValueError('广告组预算比例缺少明确用户依据')
+                level_source=None
+                if structure.budget_level!=existing.get('budget_level'):
+                    if ratio_message and structure.budget_level=='adgroup':
+                        level_source=SourceRef(kind='calculated',file_id='',sheet='',cell='',raw_value='adgroup',derived_from=[ratio_message['id']+':group_allocation'])
+                    else:
+                        try:level_source=supported_source(state,{**row,'budget_level':existing.get('budget_level')},'budget_level',structure.budget_level,edit.sources.get('budget_level'))
+                        except ValueError as error:raise ValueError('预算层级修改缺少明确依据；请用sources.budget_level引用真实单元格或明确的用户回答：'+str(error)) from None
+                    edit.sources['budget_level']=level_source
                 for group in structure.groups:
+                    if level_source:group.sources['budget_level']=level_source
                     old=next((g for g in existing.get('groups',[]) if g['id']==group.id),{})
                     if group.name and group.name!=old.get('name'):
                         group.sources['name']=supported_source(state,old,'name',group.name,group.sources.get('name'))
-                    child={**row,**{key:old[key] for key in ('audience','language') if old.get(key) not in (None,'')},'sources':{**row.get('sources',{}),**old.get('sources',{})}}
+                    child={**row,**old,'id':group.id,'sources':old.get('sources',{})}
                     if group.budget:
                         for target,new_value in (('budget',group.budget.amount),('budget_mode',group.budget.mode),('currency',group.budget.currency)):
                             if new_value not in (None,''):
@@ -210,7 +239,7 @@ def validate_proposal_evidence(state,decision):
                         if new_value not in (None,''):group.sources[target]=supported_source(state,child,target,new_value,group.sources.get(target))
                     for ad in group.ads:
                         old_ad=next((a for a in old.get('ads',[]) if a['id']==ad.id),{})
-                        material={**row,**old_ad,'sources':{**row.get('sources',{}),**old_ad.get('sources',{})}}
+                        material={**row,**old_ad,'id':ad.id,'sources':old_ad.get('sources',{})}
                         for target in ('post_id','post_url','identity_id','cta','landing_url'):
                             new_value=getattr(ad,target)
                             if new_value:ad.sources[target]=supported_source(state,material,target,new_value,ad.sources.get(target))
@@ -284,4 +313,3 @@ def verified_history_file(conn,project_id,ref,field,value,tz=''):
     if not match_history_reference(ref,field,value,[{**r,'source_file':ref.file_id} for r in rows],tz):
         raise ValueError('历史字段原始行、原始值或规范化值与提案不一致')
     return ref
-

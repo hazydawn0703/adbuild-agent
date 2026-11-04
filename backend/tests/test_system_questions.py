@@ -14,14 +14,14 @@ def test_same_system_field_and_record_set_has_one_answer_id_and_all_reasons():
     task=IntakeTask(id='task',project_id='project')
     refresh(task,draft)
     questions=[q for q in task.questions if q.field=='audience']
-    assert len(questions)==1 and questions[0].requirement_ids==['row-a','row-b']
-    assert all(text in questions[0].question for text in ('缺少受众','广告组 row-a 缺少受众','广告组 row-b 缺少受众'))
-    qid=questions[0].id
+    assert len(questions)==2 and {tuple(q.requirement_ids) for q in questions}=={('row-a',),('row-b',)}
+    assert all('缺少受众' in q.question and '广告组 '+q.requirement_ids[0]+' 缺少受众' in q.question for q in questions)
+    qids={q.id for q in questions}
     refresh(task,draft)
-    assert task.questions[0].id==qid
+    assert {q.id for q in task.questions}==qids
     draft.requirements.reverse()
     refresh(task,draft)
-    assert task.questions[0].id==qid
+    assert {q.id for q in task.questions}==qids
 
 
 def test_overlapping_but_different_record_sets_are_not_merged():
@@ -31,7 +31,7 @@ def test_overlapping_but_different_record_sets_are_not_merged():
     refresh(task,BuildDraft(id='draft',project_id='project',requirements=rows))
     questions=[q for q in task.questions if q.field=='audience']
     assert len(questions)==2 and len({q.id for q in questions})==2
-    assert {tuple(q.requirement_ids) for q in questions}=={('row-a',),('row-a','row-b')}
+    assert {tuple(q.requirement_ids) for q in questions}=={('row-a',),('row-b',)}
 
 
 def test_semantic_candidate_conflicts_keep_their_own_answer_ids():
@@ -51,8 +51,8 @@ def test_recomputed_default_structure_retires_both_missing_reasons_after_answer(
     draft=BuildDraft(id='draft',project_id='project',requirements=rows)
     task=IntakeTask(id='task',project_id='project')
     refresh(task,draft)
-    assert len([q for q in task.questions if q.field=='audience'])==1
-    assert len([q for q in task.questions if q.field=='identity_id'])==1
+    assert len([q for q in task.questions if q.field=='audience'])==2
+    assert len([q for q in task.questions if q.field=='identity_id'])==2
     for row in draft.requirements:row.audience='Explicit audience';row.identity_id='7700000000000000044'
     draft.requirements=[evaluate(row,[],now) for row in draft.requirements]
     draft.version+=1

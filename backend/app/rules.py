@@ -140,7 +140,9 @@ def business_now():
 def evaluate(req: Requirement, history: list[dict], now=None):
     now = now or business_now()
     req = req.model_copy(deep=True)
-    req.issues = [i for i in req.issues if i.code.startswith("invalid_")]
+    active_targets={req.id}
+    if req.structure:active_targets.update(node.id for group in req.structure.groups for node in [group,*group.ads])
+    req.issues = [i for i in req.issues if i.code.startswith("invalid_") and (not i.target_id or i.target_id in active_targets)]
     req.history = history_candidates(req,history)
     for field in ("name", "account_id", "post_id", "objective", "budget", "budget_mode", "currency", "start_at", "end_at", "timezone", "audience", "identity_id"):
         if req.structure and field in ('post_id','identity_id','audience','start_at','end_at','timezone'):
@@ -234,4 +236,3 @@ def check_policy(req: Requirement, policy: ProjectPolicy, now=None):
         if source.kind == "history" and field not in req.confirmed_fields:
             failures.append(f"{field} 的历史推断尚未确认")
     return failures
-

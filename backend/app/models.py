@@ -71,7 +71,7 @@ class GroupSpec(Model):
 
 
 class StructureSpec(Model):
-    budget_level: Literal['campaign', 'adgroup'] = 'campaign'
+    budget_level: Literal['campaign', 'adgroup'] | None = None
     groups: list[GroupSpec] = Field(min_length=1, max_length=50)
 
 
@@ -115,7 +115,7 @@ class BuildApproval(Model):
 class BuildDraft(Model):
     id: str
     project_id: str
-    protocol_version: Literal[3] = 3
+    protocol_version: Literal[4] = 4
     version: int = 1
     status: Literal["mapping", "draft", "approved", "queued", "executing", "complete", "attention"] = "draft"
     approval: BuildApproval | None = None
@@ -146,7 +146,6 @@ class Binding(Model):
     column: str = Field(default='',pattern=r'^(?:[A-Z]{1,3})?$')
     sheet: str = ''
     cell: str = ''
-    transform: Literal['value','interval_start','interval_end','currency_code'] = 'value'
 
 
 class RowFilter(Model):
@@ -346,4 +345,3 @@ MappingProposal.model_rebuild()
 
 DraftPatch.model_rebuild()
 ChatDecision.model_rebuild()
-

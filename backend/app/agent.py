@@ -7,7 +7,7 @@ from .rules import business_now
 from .settings import settings
 from openai import APIError,APIConnectionError,APITimeoutError,APIStatusError
 
-FLOW_VERSION='entity-graph-3'
+FLOW_VERSION='entity-graph-4'
 
 
 class ModelServiceError(RuntimeError):
@@ -467,4 +467,3 @@ def conversation_graph(checkpointer):
     builder.add_conditional_edges('resolve_scope',lambda state:'validate' if state.get('scope_question') or state.get('progress',{}).get('phase')=='awaiting_input' else 'understand')
     builder.add_edge('understand','validate');builder.add_edge('validate',END)
     return builder.compile(checkpointer=checkpointer)
-

@@ -259,6 +259,12 @@ def normalize_value(field,value,tz=''):
     if value is None or value=='': return None if field in ('budget','objective','start_at','end_at') else ''
     text=clean(value)
     if field=='platform':return {'tiktok':'TikTok','tt':'TikTok'}.get(text.casefold().replace(' ',''),text)
+    if field=='budget_level':
+        level=re.sub(r'[\s_-]','',text).casefold()
+        result={'campaign':'campaign','campaignbudget':'campaign','计划':'campaign','计划预算':'campaign','计划层':'campaign','计划级':'campaign',
+            'adgroup':'adgroup','adgroupbudget':'adgroup','广告组':'adgroup','广告组预算':'adgroup','广告组层':'adgroup','广告组级':'adgroup'}.get(level)
+        if result is None:raise ValueError('预算层级必须明确为计划或广告组，预算金额本身不能说明层级')
+        return result
     if field in ('account_id','post_id'):
         result=platform_id(value)
         if not re.fullmatch(r'[0-9]{1,30}',result): raise ValueError('平台 ID 必须是数字字符串，姓名、链接和授权码不能作为 ID')
@@ -315,7 +321,7 @@ def _transform(value,kind):
     raise ValueError('映射变换类型不支持')
 
 
-def validate_mapping_layout(mapping,wb):
+def validate_mapping(mapping,wb):
     """Validate the complete mapping before reading rows, including foreign sources."""
     if mapping.sheet not in wb.sheetnames or mapping.last_row<mapping.first_row: raise ValueError('工作表或数据范围无效')
     if mapping.last_row>wb[mapping.sheet].max_row or mapping.last_row-mapping.first_row>=10000: raise ValueError('数据范围超出工作表或 10,000 行限制')
@@ -334,29 +340,13 @@ def validate_mapping_layout(mapping,wb):
         if rule.operator=='eq' and len(rule.values)!=1 or rule.operator=='in' and not rule.values: raise ValueError('行筛选缺少明确候选值')
 
 
-def validate_mapping(mapping,wb):
-    validate_mapping_layout(mapping,wb)
-    for field,binding in mapping.bindings.items():
-        if binding.transform=='value':continue
-        source=wb[binding.sheet or mapping.sheet]
-        if binding.kind in ('cell',):
-            cell=_anchor(source,source[binding.cell])
-            try:
-                if cell.value is None or not clean(cell.value) or cell.data_type=='e':raise ValueError('固定来源为空或为 Excel 错误值')
-                _transform(cell.value,binding.transform)
-            except ValueError as error:
-                raise ValueError(f'{field} 的固定来源 {source.title}!{cell.coordinate} 不支持 {binding.transform}：{error}') from None
-        else:
-            supported=False
-            for index in range(mapping.first_row,mapping.last_row+1):
-                if not _row_selected(source,index,mapping.filters):continue
-                cell=_anchor(source,source.cell(index,column_index_from_string(binding.column)))
-                if cell.value is None or not clean(cell.value) or cell.data_type=='e':continue
-                try:_transform(cell.value,binding.transform)
-                except ValueError:continue
-                supported=True;break
-            if not supported:
-                raise ValueError(f'{field} 的实际选区没有非空来源支持 {binding.transform}，请更正来源或变换')
+def source_transform(field,value):
+    """Select a controlled conversion from field semantics and actual cell shape."""
+    if field in ('start_at','end_at') and not isinstance(value,(date,datetime)):
+        parts=re.split(r'\s+(?:-|–|—|to)\s+|\s*[至~～]\s*',clean(value),flags=re.I)
+        if len(parts)==2:return 'interval_start' if field=='start_at' else 'interval_end'
+    if field=='currency' and not re.fullmatch(r'[A-Za-z]{3}',clean(value)):return 'currency_code'
+    return 'value'
 
 
 def _row_selected(sheet,index,filters):
@@ -372,7 +362,8 @@ def _binding_sources(mapping,wb,index):
     for field,binding in mapping.bindings.items():
         sheet=wb[binding.sheet or mapping.sheet]
         cell=sheet.cell(index,column_index_from_string(binding.column)) if binding.kind=='row' else sheet[binding.cell]
-        yield field,sheet,_anchor(sheet,cell),binding.transform
+        cell=_anchor(sheet,cell)
+        yield field,sheet,cell,source_transform(field,cell.value)
 
 
 def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
@@ -384,7 +375,7 @@ def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
     fields |= entity_fields
     hidden_by_sheet={sheet.title:sensitive_cells(sheet) for sheet in wb}
     for mapping in mappings:
-        validate_mapping_layout(mapping,wb)
+        validate_mapping(mapping,wb)
         if set(mapping.bindings)-fields:
             raise ValueError("存在未知的需求字段")
         sheet = wb[mapping.sheet]
@@ -422,6 +413,11 @@ def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
                 continue
             entity={field:values.pop(field) for field in list(values) if field in entity_fields}
             entity_refs={field:refs.pop(field) for field in list(refs) if field in entity_fields}
+            if entity.get('budget_level') not in (None,''):
+                try:entity['budget_level']=normalize_value('budget_level',entity['budget_level'])
+                except ValueError as error:
+                    entity['budget_level']=None
+                    issues.append(Issue(code='invalid_budget_level',field='structure',message=str(error)))
             for field in ('campaign_budget','adgroup_budget'):
                 if entity.get(field) not in (None,''):
                     try:entity[field]=normalize_value('budget',entity[field])
@@ -476,4 +472,3 @@ def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
                 result.append((Requirement(id=row_id,**values,sources=refs,issues=issues),entity,entity_refs))
     from .assembly import assemble
     return assemble(result)
-

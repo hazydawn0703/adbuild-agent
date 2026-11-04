@@ -13,5 +13,4 @@ def test_old_stored_draft_cannot_reuse_confirmation_or_edit_contract():
 
 def test_new_stored_draft_has_explicit_protocol():
     draft=BuildDraft(id='new',project_id='p')
-    assert stored_draft(draft.model_dump()).protocol_version==3
-
+    assert stored_draft(draft.model_dump()).protocol_version==4

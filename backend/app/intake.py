@@ -57,6 +57,8 @@ def reconcile_questions(task,draft):
             if not selected:continue
             if question.field in ('cta','landing_url') and all(r.objective!='traffic' for r in selected):continue
             if question.field=='structure' and all(r.structure and not any(i.field=='structure' and i.blocking for i in r.issues) for r in selected):continue
+            if not any(i.blocking and i.field==question.field and (not question.target_ids or not i.target_id or i.target_id in question.target_ids)
+                       for row in selected for i in row.issues):continue
         current=question_observation(question,draft)
         old=basis.get(question.id)
         if question.field=='scope':
@@ -77,6 +79,26 @@ def reconcile_questions(task,draft):
 
 
 def refresh(task,draft):
+    if draft is not None:
+        from .provenance import _budget_values,equivalent
+        from .models import Issue
+        for row in draft.requirements:
+            row.issues=[i for i in row.issues if i.code!='message_conflict']
+            if not row.included or row.budget is None:continue
+            for message in reversed(task.messages):
+                if message.get('role')!='user':continue
+                if message.get('id')==getattr(row.sources.get('budget'),'message_id',None):break
+                if 'answers' in message:
+                    relevant=[a for a in message['answers'] if a['field']=='budget' and row.id in (a.get('target_ids') or a.get('requirement_ids') or [])]
+                    values=[a['answer'] for a in relevant]
+                else:
+                    text=str(message.get('content',''))
+                    if row.business_no and '业务编号' in text and row.business_no not in text:continue
+                    values=_budget_values(text)
+                if not values:continue
+                if any(not equivalent('budget',row.budget,value) for value in values):
+                    row.issues.append(Issue(code='message_conflict',field='budget',target_id=row.id,message='当前用户预算依据与文件或已存方案存在冲突，请明确本批最终总额'))
+                break
     reconcile_questions(task,draft)
     if draft is None:
         task.questions=list(task.semantic_questions)
@@ -98,25 +120,26 @@ def refresh(task,draft):
         if req.included and req.classification not in ('existing','change','ignored'):
             for issue in req.issues:
                 if issue.blocking:
-                    group=grouped.setdefault((issue.field,issue.code),{'ids':set(),'targets':set(),'messages':[]})
+                    target=issue.target_id or req.id
+                    from .entities import entity_label
+                    group=grouped.setdefault((issue.field,issue.code,req.id,target),{'ids':set(),'targets':set(),'messages':[],'label':entity_label(req,target)})
                     group['ids'].add(req.id)
-                    group['targets'].add(issue.target_id or req.id)
+                    group['targets'].add(target)
                     if issue.message not in group['messages']:group['messages'].append(issue.message)
     task.evidence=evidence
-    # A flat missing-field check and the default hierarchy can report the same
-    # field for exactly the same records. One answer addresses that whole set.
-    # Preserve distinct record sets, and leave semantic/candidate questions alone.
+    # Merge reasons for the same field and actual owner. Different owners may
+    # need different answers and must retain separate controls in the batch form.
     combined={}
-    for (field,code),group in grouped.items():
+    for (field,code,_owner,_target),group in grouped.items():
         key=(field,'requirements',tuple(sorted(group['ids'])),tuple(sorted(group['targets'])))
-        entry=combined.setdefault(key,{'messages':[],'codes':set()})
+        entry=combined.setdefault(key,{'messages':[],'codes':set(),'label':group['label']})
         entry['messages'].extend(message for message in group['messages'] if message not in entry['messages'])
         entry['codes'].add(code)
     task.questions=[]
     for (field,scope,ids,targets),entry in combined.items():
         reason='conflict' if any(c.startswith('invalid_') or c in ('duplicate','history_review','language_conflict') for c in entry['codes']) else 'missing'
         question=Clarification(id='',field=field,scope=scope,reason_code=reason,
-            requirement_ids=list(ids),target_ids=list(targets),evidence_version=draft.version,question='；'.join(entry['messages']))
+            requirement_ids=list(ids),target_ids=list(targets),evidence_version=draft.version,question=entry['label']+'：'+'；'.join(entry['messages']))
         key=json.dumps({'origin':'system','task':task.id,'field':field,'scope':scope,'requirements':ids,
             'targets':targets,'reason':reason,'evidence':question_observation(question,draft)},sort_keys=True)
         question.id=sha256(key.encode()).hexdigest()[:20]
@@ -315,11 +338,11 @@ async def act(project_id,body,actor):
                             edits.append({'requirement_id':owner.id,'target_id':target,'values':{q.field:value},'source_message_id':message_id})
                     else:
                         edits.extend({'requirement_id':rid,'values':{q.field:value},'source_message_id':message_id} for rid in q.requirement_ids)
-                answered.append({'question':q.question,'field':q.field,'answer':value})
+                answered.append({'question':q.question,'field':q.field,'answer':value,'requirement_ids':q.requirement_ids,'target_ids':q.target_ids})
             if not answered: raise HTTPException(422,'请填写答案')
             if edits: draft=edit_draft(c,draft.id,actor,draft.version,edits)
             elif scope_answered and draft: draft=edit_draft(c,draft.id,actor,draft.version,[])
-            task.messages.append({'id':message_id,'role':'user','content':'本任务回答：'+json.dumps(answered,ensure_ascii=False),'created_at':now.isoformat()})
+            task.messages.append({'id':message_id,'role':'user','content':'本任务回答：'+json.dumps(answered,ensure_ascii=False),'answers':answered,'created_at':now.isoformat()})
             task.proposal=None
             task.semantic_questions=[q for q in task.semantic_questions if q.id not in body.answers]
         elif body.action in ('message','analyze','resume'):
@@ -437,4 +460,3 @@ async def act(project_id,body,actor):
                     current.requests[body.request_id]['error']=error.public_error()
                 save(c,current)
         raise
-

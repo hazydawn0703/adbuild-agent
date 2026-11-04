@@ -91,6 +91,7 @@ def test_invalid_structure_blocks_confirmation(structure):
 
 def test_material_authorization_is_separate_and_secret_not_in_preview():
     req = requirement(post_id='', post_url='', identity_id='', audience='', structure={
+        'budget_level':'campaign',
         'groups':[{'id':'group', 'audience':'Explicit group audience', 'ads':[
             {'id':'material','kind':'authorization_code','authorization_code':'private-source-material-code'}]}]})
     tree, issues = campaign_tree(req)
@@ -137,4 +138,3 @@ def test_structured_draft_cannot_reach_flat_executor_even_if_global_switch_chang
         submit_approved_draft(None,draft,{})
     assert error.value.status_code==423
     assert '平台写入验收' in error.value.detail
-
