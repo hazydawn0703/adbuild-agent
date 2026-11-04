@@ -1,3 +1,4 @@
+from .usage import measured, record_usage, record_attempt
 import json
 from typing import TypedDict
 from langgraph.graph import StateGraph, START, END
@@ -165,9 +166,11 @@ async def structured(schema,messages,validator=None):
         started=time.monotonic()
         raw=None
         try:
+            record_attempt()
             envelope=await asyncio.wait_for(llm(schema).ainvoke(messages),60)
             from .scope import redact_private
             raw=envelope['raw']
+            record_usage(raw)
             logging.getLogger('adbuild.analysis').info('model_output %s',json.dumps(redact_private({'schema':schema.__name__,'attempt':attempt+1,'raw':raw.model_dump(mode='json'),'parsing_error':str(envelope['parsing_error']) if envelope['parsing_error'] else None}),ensure_ascii=False))
             result=schema.model_validate(envelope['parsed'])
             if validator: validator(result)
@@ -458,10 +461,10 @@ def conversation_graph(checkpointer):
         validate_decision(state,ChatDecision.model_validate(state['decision']))
         return {}
     builder=StateGraph(ConversationState)
-    builder.add_node('prepare_evidence',prepare)
-    builder.add_node('resolve_scope',resolve_scope)
-    builder.add_node('understand',understand)
-    builder.add_node('validate',validate)
+    builder.add_node('prepare_evidence',measured('prepare_evidence',prepare))
+    builder.add_node('resolve_scope',measured('resolve_scope',resolve_scope))
+    builder.add_node('understand',measured('understand',understand))
+    builder.add_node('validate',measured('validate',validate))
     builder.add_edge(START,'prepare_evidence')
     builder.add_edge('prepare_evidence','resolve_scope')
     builder.add_conditional_edges('resolve_scope',lambda state:'validate' if state.get('scope_question') or state.get('progress',{}).get('phase')=='awaiting_input' else 'understand')
