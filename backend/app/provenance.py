@@ -139,7 +139,7 @@ def supported_source(state,row,field,value,offered=None):
         if ref.kind=='excel':
             document=next((d for d in state.get('documents',[]) if str(d['id'])==ref.file_id),None)
             if document:
-                verified=verify_excel_source(document,field,value,ref,tz)
+                verified=verify_excel_source(document,field,value,ref,tz,owner=row)
                 if field=='budget' and row.get('budget_constraint') is not None and not equivalent(field,value,row['budget_constraint'],tz):
                     raise ValueError('新文件预算与明确的计划总额约束冲突，请先澄清')
                 if any(i.get('field')==field and i.get('code') in ('invalid_structure','invalid_conflict','invalid_budget_level_conflict') for i in row.get('issues',[])):
@@ -170,7 +170,7 @@ def supported_source(state,row,field,value,offered=None):
     raise ValueError(f'{field} 缺少支持该值的用户输入、项目默认或字段证据，请先澄清')
 
 
-def verify_excel_source(document,field,value,ref,tz=''):
+def verify_excel_source(document,field,value,ref,tz='',owner=None):
     """Document metadata must come from the project-scoped server query."""
     from hashlib import sha256
     from .storage import target
@@ -196,6 +196,9 @@ def verify_excel_source(document,field,value,ref,tz=''):
         post=post_id_from_url(actual)
         if post:actual=post if field=='post_id' else 'TikTok'
     if not equivalent(field,value,actual,tz):raise ValueError(f'{field} 字段值与原始单元格 {ref.sheet}!{cell.coordinate} 不一致')
+    if owner is not None:
+        from .evidence_ownership import verify_owner
+        verify_owner(wb,document,ref,owner,field)
     return ref.model_copy(update={'raw_value':clean(raw),'cell':cell.coordinate,'transform':transform})
 
 
@@ -248,10 +251,13 @@ def validate_proposal_evidence(state,decision):
                 for group in structure.groups:
                     if level_source:group.sources['budget_level']=level_source
                     old=next((g for g in existing.get('groups',[]) if g['id']==group.id),{})
-                    if group.name and group.name!=old.get('name'):
-                        group.sources['name']=supported_source(state,old,'name',group.name,group.sources.get('name'))
                     child={**row,**old,'id':group.id,'sources':old.get('sources',{}),
+                        '_entity_kind':'adgroup','name':group.name,'_campaign_name':row.get('name'),
                         'issues':[i for i in row.get('issues',[]) if i.get('target_id')==group.id]}
+                    if group.name and group.name!=old.get('name'):
+                        group.sources['name']=supported_source(state,{**child,'name':old.get('name')},'name',group.name,group.sources.get('name'))
+                    elif old.get('sources',{}).get('name'):group.sources['name']=SourceRef.model_validate(old['sources']['name'])
+                    else:group.sources.pop('name',None)
                     if group.budget:
                         for target,new_value in (('budget',group.budget.amount),('budget_mode',group.budget.mode),('currency',group.budget.currency)):
                             if new_value not in (None,''):
@@ -265,6 +271,7 @@ def validate_proposal_evidence(state,decision):
                     for ad in group.ads:
                         old_ad=next((a for a in old.get('ads',[]) if a['id']==ad.id),{})
                         material={**row,**old_ad,'id':ad.id,'sources':old_ad.get('sources',{}),
+                            '_entity_kind':'material','_campaign_name':row.get('name'),'_group_name':group.name,
                             'issues':[i for i in row.get('issues',[]) if i.get('target_id')==ad.id]}
                         for target in ('post_id','post_url','identity_id','cta','landing_url'):
                             new_value=getattr(ad,target)
@@ -272,11 +279,22 @@ def validate_proposal_evidence(state,decision):
                         if ad.authorization_code:
                             if not any(ad.authorization_code in str(m.get('content','')) for m in state.get('messages',[]) if m.get('role')=='user'):
                                 raise ValueError('素材授权码缺少用户提供的依据')
+                        verified_fields={'post_id','post_url','identity_id','cta','landing_url'}
+                        ad.sources={key:ref for key,ref in ad.sources.items() if key in verified_fields and getattr(ad,key)}
+                        for key in ('included','entity_key','group_key','campaign_key','account_id','business_no'):
+                            if old_ad.get('sources',{}).get(key):ad.sources[key]=SourceRef.model_validate(old_ad['sources'][key])
+                    verified_fields={'name','budget','budget_mode','currency','allocation_ratio','audience','language','start_at','end_at','timezone','budget_level'}
+                    group.sources={key:ref for key,ref in group.sources.items() if key in verified_fields}
+                    if not level_source:
+                        group.sources.pop('budget_level',None)
+                        if old.get('sources',{}).get('budget_level'):group.sources['budget_level']=SourceRef.model_validate(old['sources']['budget_level'])
+                    for key in ('entity_key','campaign_key','group_key','record_key','account_id','business_no'):
+                        if old.get('sources',{}).get(key):group.sources[key]=SourceRef.model_validate(old['sources'][key])
                 from .models import Requirement
                 from .structure import validate_structure
                 candidate=Requirement.model_validate({**row,**edit.values,'structure':structure.model_dump(mode='json')})
                 issues=validate_structure(candidate)
-                if issues:raise ValueError('structure 必须保留完整实体配置，不能以省略字段清空已有节点：'+str([i.model_dump(mode='json') for i in issues]))
+                if issues and existing.get('groups'):raise ValueError('structure 必须保留完整实体配置，不能以省略字段清空已有节点：'+str([i.model_dump(mode='json') for i in issues]))
                 edit.values['structure']=structure.model_dump(mode='json')
                 edit.sources['structure']=SourceRef(kind='calculated',file_id='',sheet='',cell='',raw_value='服务端核实的完整三层结构',
                     derived_from=sorted({f'{node.id}:{key}:{ref.kind}:{ref.file_id}:{ref.sheet}:{ref.cell}:{ref.message_id or ""}:{ref.context_version or ""}'
@@ -317,6 +335,8 @@ def validate_candidate_structure(state,values,sources,structure):
         explicit_name=bool(group.name and message_supports('name',group.name,text))
         explicit_single=len(structure.groups)==1 and bool(re.search(r'(?:一个|1\s*个|单个)\s*广告组',text))
         if not explicit_name and not explicit_single:raise ValueError('新增广告组的身份或数量缺少用户依据')
+    if values.get('post_id') and not any(a.post_id==values['post_id'] for g in structure.groups for a in g.ads):
+        raise ValueError('新增结构不能丢弃用户已明确的帖子')
     row=Requirement(id='candidate',**values,sources=sources)
     decision=ChatDecision(answer='',edits=[ChatEdit(requirement_id=row.id,values={'structure':structure.model_dump(mode='json')})])
     validate_proposal_evidence({**state,'draft':{'requirements':[row.model_dump(mode='json')]}},decision)

@@ -339,6 +339,9 @@ def validate_decision(state,decision):
     restricted=bool(re.search(r'仅|只',message)) and not re.search(r'其余|其他|其它|全部|所有',message)
     if decision.expansions and not re.search(r'同时|分别|各|新增目标|拆|两种|多目标|\bboth\b|\balso\b|\bmultiple\b',instruction_context,re.I):
         raise ProposalError('目标拆分需要用户明确要求，不能自动扩大需求')
+    for base_id in {item.base_requirement_id for item in decision.expansions}:
+        if len({item.objective for item in decision.expansions if item.base_requirement_id==base_id})<2:
+            raise ProposalError('目标拆分必须提交该计划完整的多个目标，不能用一个新目标替换原计划并丢失其他明确目标')
     for expansion in decision.expansions:
         base=next((r for r in rows if r['id']==expansion.base_requirement_id),None)
         if not base: raise ProposalError('目标拆分包含未知需求')

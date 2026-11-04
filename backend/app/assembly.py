@@ -23,6 +23,8 @@ def assemble(rows):
     for key, entries in campaigns.items():
         req = entries[0][0].model_copy(deep=True)
         req.id = identity('campaign', key)
+        identity_source=entries[0][2].get('campaign_key') or req.sources.get('name')
+        if identity_source:req.sources['entity_key']=identity_source.model_copy(deep=True)
         req.issues = []
         conflict_target=req.id
         def conflict(field, message,code=None):
@@ -66,11 +68,15 @@ def assemble(rows):
                         conflict('structure', '同一素材标识包含冲突配置')
                     continue
                 seen[material_key] = values
-                ads.append(MaterialSpec(id=material_id, **values,
-                    sources={f: row.sources[f] for f in values if f in row.sources}))
+                material_sources={f:row.sources[f] for f in values if f in row.sources}
+                material_sources.update({f:refs[f] for f in ('group_key','campaign_key') if f in refs})
+                material_sources.update({f:row.sources[f] for f in ('account_id','business_no') if f in row.sources})
+                if req.sources.get('entity_key'):material_sources['entity_key']=req.sources['entity_key']
+                ads.append(MaterialSpec(id=material_id, **values,sources=material_sources))
             group_sources={**{f:first.sources[f] for f in ('budget','currency','budget_mode','audience','language','start_at','end_at','timezone') if f in first.sources},**members[0][2]}
             if members[0][1].get('group_key') and 'group_key' in members[0][2]:group_sources['name']=members[0][2]['group_key']
             if 'adgroup_budget' in group_sources:group_sources['budget']=group_sources['adgroup_budget']
+            if req.sources.get('entity_key'):group_sources['entity_key']=req.sources['entity_key']
             groups.append(GroupSpec(id=group_id, name=str(members[0][1].get('group_key') or ''), **attributes,
                 budget=BudgetSpec(amount=amount, currency=req.currency, mode=req.budget_mode) if level == 'adgroup' or amount is not None else None,
                 ads=ads, sources=group_sources))

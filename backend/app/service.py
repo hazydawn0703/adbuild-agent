@@ -43,6 +43,13 @@ def ensure_draft_active(conn,draft_id):
     if row and row['data'].get('archived_at'): raise HTTPException(409,'任务已归档，请先恢复')
 
 
+def task_evidence(conn,project,task):
+    """Every adoption path uses the same project- and task-bound file registry."""
+    allowed=set(task.get('file_ids',[]))
+    documents=[row for row in conn.execute('select id,storage_path,sha256,mapping from files where project_id=%s and kind=%s',(project['id'],'requirements')) if str(row['id']) in allowed] if allowed else []
+    return {**task,'project_account_id':project.get('account_id',''),'documents':documents}
+
+
 def edit_draft(conn, draft_id, actor, expected_version, edits):
     row = conn.execute("select * from drafts where id=%s for update",(draft_id,)).fetchone()
     if not row:
@@ -53,6 +60,8 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
     if draft.version != expected_version or draft.status not in ("draft","attention","approved"):
         raise HTTPException(409,"草稿版本已变化或已经冻结，请刷新")
     history = history_for(conn, project)
+    taskrow=conn.execute('select data from intake_tasks where draft_id=%s',(draft.id,)).fetchone()
+    state=task_evidence(conn,project,taskrow['data'] if taskrow else {})
     for edit in edits:
         req = next((r for r in draft.requirements if r.id == edit["requirement_id"]),None)
         if not req or set(edit["values"]) - EDITABLE:
@@ -64,13 +73,10 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
             if set(edit['values'])!={'budget_level'}:raise HTTPException(422,'预算层级须单独提交，其他字段分别指定实际目标')
             from .entities import set_budget_level,recover_group_budgets
             try:
-                documents=list(conn.execute('select id,storage_path,sha256 from files where project_id=%s and kind=%s',(project['id'],'requirements')))
+                documents=state['documents']
                 source=edit.get('sources',{}).get('budget_level')
                 if source:
                     from .provenance import supported_source
-                    taskrow=conn.execute('select data from intake_tasks where draft_id=%s',(draft.id,)).fetchone()
-                    state=taskrow['data'] if taskrow else {}
-                    state={**state,'documents':documents}
                     source=supported_source(state,{**req.model_dump(mode='json'),'budget_level':req.structure.budget_level if req.structure else None},'budget_level',edit['values']['budget_level'],source)
                 updated=set_budget_level(req,edit['values']['budget_level'],edit.get('source_message_id'),actor.user_id,source)
                 updated=recover_group_budgets(updated,documents)
@@ -83,9 +89,6 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
                 sources={}
                 if edit.get('sources'):
                     from .provenance import supported_source
-                    taskrow=conn.execute('select data from intake_tasks where draft_id=%s',(draft.id,)).fetchone()
-                    state=taskrow['data'] if taskrow else {}
-                    state={**state,'project_account_id':project.get('account_id',''),'documents':list(conn.execute('select id,storage_path,sha256 from files where project_id=%s and kind=%s',(project['id'],'requirements')))}
                     original=evidence_values(req,edit['target_id'])
                     sources={field:supported_source(state,original,field,value,edit['sources'][field]) for field,value in edit['values'].items() if field in edit['sources']}
                 updated=edit_entity(req,edit['target_id'],edit['values'],edit.get('source_message_id'),actor.user_id,sources)
@@ -99,11 +102,8 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
         if patch.get('structure') is not None and edit.get('sources'):
             from .models import ChatDecision,ChatEdit
             from .provenance import validate_proposal_evidence
-            taskrow=conn.execute('select data from intake_tasks where draft_id=%s',(draft.id,)).fetchone()
-            taskstate=taskrow['data'] if taskrow else {}
-            documents=list(conn.execute('select id,storage_path,sha256 from files where project_id=%s and kind=%s',(project['id'],'requirements')))
             decision=ChatDecision(answer='',edits=[ChatEdit(requirement_id=req.id,values=patch,sources=edit['sources'])])
-            try:validate_proposal_evidence({**taskstate,'project_account_id':project.get('account_id',''),'documents':documents,'draft':draft.model_dump(mode='json')},decision)
+            try:validate_proposal_evidence({**state,'draft':draft.model_dump(mode='json')},decision)
             except (ValueError,OSError) as error:raise HTTPException(422,str(error)) from None
             patch=decision.edits[0].values
             verified_structure=decision.edits[0].sources.get('structure')
@@ -151,10 +151,7 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
                     if ref.kind=='history':
                         ref=verified_history_file(conn,project['id'],ref,field,value,req.timezone)
                     else:
-                        taskrow=conn.execute('select data from intake_tasks where draft_id=%s',(draft.id,)).fetchone()
-                        taskstate=taskrow['data'] if taskrow else {}
-                        documents=list(conn.execute('select id,storage_path,sha256 from files where project_id=%s and kind=%s',(project['id'],'requirements')))
-                        ref=supported_source({'messages':taskstate.get('messages',[]),'context':taskstate.get('context',{}),'project_account_id':project.get('account_id',''),'documents':documents},original.model_dump(),field,value,ref)
+                        ref=supported_source(state,original.model_dump(),field,value,ref)
                 except (ValueError,OSError) as error:raise HTTPException(422,str(error)) from None
                 req.sources[field]=ref
             elif previous and str(getattr(next(r for r in draft.requirements if r.id==req.id),field))==str(value):
@@ -230,6 +227,8 @@ def apply_expansions(conn,draft,actor,expansions,message_id,context,history):
         raise HTTPException(422,'拆分包含未知需求')
     keys=[(x.base_requirement_id,x.objective) for x in variants]
     if len(set(keys))!=len(keys): raise HTTPException(422,'拆分目标重复')
+    if any(sum(x.base_requirement_id==base for x in variants)<2 for base in {x.base_requirement_id for x in variants}):
+        raise HTTPException(422,'目标拆分须包含该计划完整的多个目标')
     added=[]
     for item in variants:
         base=bases[item.base_requirement_id]
@@ -249,7 +248,7 @@ def apply_additions(conn,draft,project,actor,additions,message_id,task):
     from .provenance import supported_source
     from .excel import normalize_value
     from .rules import fingerprint
-    state={'messages':task.messages,'context':task.context.model_dump(mode='json'),'project_account_id':project.get('account_id','')}
+    state=task_evidence(conn,project,task.model_dump(mode='json'))
     added=[]
     for raw in additions:
         candidate=DemandCandidate.model_validate(raw)

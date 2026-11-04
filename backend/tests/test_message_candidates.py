@@ -24,6 +24,17 @@ def test_message_only_candidate_has_verified_field_provenance():
     assert decision.additions[0].values['budget']==Decimal('45')
 
 
+def test_explicit_partial_message_tree_produces_business_questions():
+    from app.models import StructureSpec,GroupSpec,MaterialSpec
+    from app.provenance import validate_candidate_structure
+    from app.rules import evaluate
+    state={'messages':messages('新增一个广告组 G1，帖子123，目标涨粉'),'context':{}}
+    structure=StructureSpec(groups=[GroupSpec(id='g',name='G1',ads=[MaterialSpec(id='a',post_id='123')])])
+    verified=validate_candidate_structure(state,{'post_id':'123','objective':'followers'},{},structure)
+    req=evaluate(Requirement(id='r',post_id='123',objective='followers',structure=verified),[])
+    assert {'budget_level','identity_id','start_at'} <= {i.field for i in req.issues}
+
+
 @pytest.mark.parametrize('values',[{'post_id':'789','objective':'followers'},{'post_id':'789'},{'objective':'followers'}])
 def test_new_candidate_cannot_fabricate_identity_or_omit_required_identity(values):
     with pytest.raises(ProposalError):
@@ -43,8 +54,10 @@ def test_prior_multi_goal_instruction_survives_later_continue_message():
     from app.models import RequirementExpansion
     state={'messages':messages('业务编号731同时做涨粉和视频观看，预算各50美元。')+[{'id':'continue','role':'user','content':'继续分析'}],
            'draft':{'requirements':[{'id':'r','business_no':'731','budget':'50','objective':'followers','sources':{}}]}}
-    decision=ChatDecision(answer='split',expansions=[RequirementExpansion(base_requirement_id='r',objective='video_views',budget='50')])
+    decision=ChatDecision(answer='split',expansions=[RequirementExpansion(base_requirement_id='r',objective=goal,budget='50') for goal in ('followers','video_views')])
     validate_decision(state,decision)
+    decision.expansions=decision.expansions[1:]
+    with pytest.raises(ProposalError,match='完整'):validate_decision(state,decision)
 
 
 def test_owner_name_is_not_an_implicit_additional_identity_filter():
