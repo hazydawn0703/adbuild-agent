@@ -5,7 +5,7 @@
 ## 可复现检查
 
 * 后端：`cd backend && python -m pytest tests -q`。
-* 原始私有样例：设置 `ADBUILD_FIXTURE_DIR`，不得提交源文件。
+* 原始私有样例：使用 `backend/evals/README.md` 的白名单输入协议与独立封存评分；源文件和参考答案不得提交。
 * MySQL 集成：`TEST_DATABASE_URL` 仅允许指向以 `_test` 结尾的隔离数据库，先使用当前 schema 初始化业务表及成熟 SDK checkpoint 表。
 * 浏览器：启动前端后在 frontend 目录执行 `npx playwright test`；`TEST_APP_URL` 可指定测试地址。每次使用新的结果目录，禁止复用旧 `--output`。浏览器用例使用受控接口数据验证状态恢复，真实 API 完整链路使用 `scripts/browser-workflow.cjs` 独立记录。
 * 构建：`npm run typecheck && npm run build`。
