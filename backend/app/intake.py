@@ -79,6 +79,7 @@ def reconcile_questions(task,draft):
 
 
 def refresh(task,draft):
+    budget_conflicts={}
     if draft is not None:
         from .provenance import _budget_values,equivalent
         from .models import Issue
@@ -98,6 +99,7 @@ def refresh(task,draft):
                 if not values:continue
                 if any(not equivalent('budget',row.budget,value) for value in values):
                     row.issues.append(Issue(code='message_conflict',field='budget',target_id=row.id,message='当前用户预算依据与文件或已存方案存在冲突，请明确本批最终总额'))
+                    budget_conflicts[row.id]=message.get('id')
                 break
     reconcile_questions(task,draft)
     if draft is None:
@@ -137,11 +139,12 @@ def refresh(task,draft):
         entry['codes'].add(code)
     task.questions=[]
     for (field,scope,ids,targets),entry in combined.items():
-        reason='conflict' if any(c.startswith('invalid_') or c in ('duplicate','history_review','language_conflict') for c in entry['codes']) else 'missing'
+        reason='conflict' if any(c.startswith('invalid_') or c in ('duplicate','history_review','language_conflict','message_conflict') for c in entry['codes']) else 'missing'
         question=Clarification(id='',field=field,scope=scope,reason_code=reason,
             requirement_ids=list(ids),target_ids=list(targets),evidence_version=draft.version,question=entry['label']+'：'+'；'.join(entry['messages']))
         key=json.dumps({'origin':'system','task':task.id,'field':field,'scope':scope,'requirements':ids,
-            'targets':targets,'reason':reason,'evidence':question_observation(question,draft)},sort_keys=True)
+            'targets':targets,'reason':reason,'evidence':question_observation(question,draft),
+            'message_evidence':{rid:budget_conflicts[rid] for rid in ids if field=='budget' and rid in budget_conflicts}},sort_keys=True)
         question.id=sha256(key.encode()).hexdigest()[:20]
         task.questions.append(question)
     task.questions.extend(task.semantic_questions)
