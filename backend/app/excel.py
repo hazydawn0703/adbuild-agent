@@ -302,6 +302,7 @@ def normalize_value(field,value,tz=''):
         if result is None: raise ValueError('广告目标不支持或包含多个目标，需要明确目标及各自配置')
         return result
     if field=='budget':
+        if isinstance(value,str) and re.fullmatch(r'[0-9]{1,3}[,.][0-9]{3}',text):raise ValueError('金额分隔符口径不明确，请提供明确的两位小数格式')
         if ',' in text and not re.fullmatch(r'[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?',text): raise ValueError('金额分隔符口径不明确，请提供明确的小数格式')
         try: result=Decimal(text.replace(',',''))
         except InvalidOperation as e: raise ValueError('预算不是有效金额') from e

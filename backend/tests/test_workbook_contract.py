@@ -163,3 +163,6 @@ def test_one_row_can_map_to_independent_goals_without_shared_requirement_ids():
 def test_budget_separator_ambiguity_is_not_silently_changed():
     with pytest.raises(ValueError,match='分隔符'):normalize_value('budget','1,00')
     assert str(normalize_value('budget','1,000.25'))=='1000.25'
+    for text in ['1,250','1.250','100,000','100.000']:
+        with pytest.raises(ValueError,match='分隔符'):normalize_value('budget',text)
+    assert str(normalize_value('budget',1250))=='1250'

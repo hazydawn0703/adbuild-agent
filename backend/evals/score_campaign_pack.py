@@ -12,6 +12,8 @@ from pathlib import Path
 from evals.score_regression import verify_seal
 from evals.score_acceptance import instant
 
+SCORING_RULE_VERSION='campaign-pack-clarification-2'
+
 
 def load(path):return json.loads(Path(path).read_text(encoding='utf-8-sig'))
 
@@ -83,6 +85,8 @@ def score(run,references,normal=False):
         missing=[field for field in required if not (aliases.get(field,{field})&observed)]
         final=expected['final_result_for_grading'];initial=expected['initial_decision']
         errors=compare(preview,final,bool(expected.get('rounding_alternatives'))) if final else []
+        format_bypass=normal and 'decimal_separator' in expected.get('permitted_answers',{}) and 'budget' in missing
+        if format_bypass:errors.append('money_format_clarification_bypassed')
         false_ready=ready and (final is None or bool(errors) or initial=='clarify' and not normal)
         if normal and initial=='clarify':
             initially_blocked=not (initial_state.get('preview') or {}).get('can_confirm',False)
@@ -95,7 +99,7 @@ def score(run,references,normal=False):
         records.append({'case':case,'expected':initial,'result':result,'can_confirm':ready,'semantic_errors':errors,
             'false_ready':false_ready,'technical_errors':summary['stage_errors'],'required_questions':required,
             'missing_required_questions':missing,'observed_questions':sorted(observed),'safe':safe})
-    return {'commit':load(run/'freeze.json')['commit'],'cases':len(records),'expected_classes':dict(Counter(r['expected'] for r in records)),
+    return {'commit':load(run/'freeze.json')['commit'],'scoring_rule_version':SCORING_RULE_VERSION,'cases':len(records),'expected_classes':dict(Counter(r['expected'] for r in records)),
         'results':dict(Counter(r['result'] for r in records)),'false_ready':sum(r['false_ready'] for r in records),
         'safety_failures':sum(not r['safe'] for r in records),'label':'supplied_pack_normal_interaction_regression' if normal else 'supplied_pack_single_attempt_regression',
         'reference_set_sha256':hashlib.sha256(json.dumps(reference_hashes,sort_keys=True).encode()).hexdigest(),

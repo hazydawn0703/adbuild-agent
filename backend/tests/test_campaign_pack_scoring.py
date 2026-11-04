@@ -28,3 +28,9 @@ def test_normal_lane_requires_initial_clarification_then_correct_final_plan(tmp_
     assert score(run,refs)['results']=={'incorrect_or_incomplete_clarification':1}
     write('raw/C1/01-before-normal-answers.body',{'task':{'questions':[]},'preview':{'can_confirm':True}});seal()
     assert score(run,refs,True)['results']=={'incorrect_or_incomplete_clarification':1}
+    reference_path=refs/'C1.json'
+    data=json.loads(reference_path.read_text());data['expected']['permitted_answers']={'decimal_separator':'.'}
+    reference_path.write_text(json.dumps(data),encoding='utf-8')
+    result=score(run,refs,True)
+    assert result['false_ready']==1 and result['results']=={'wrong_confirmable':1}
+    assert 'money_format_clarification_bypassed' in result['records'][0]['semantic_errors']
