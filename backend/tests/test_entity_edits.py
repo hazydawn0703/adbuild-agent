@@ -21,6 +21,16 @@ def test_group_edit_updates_only_target_and_recomputes_total():
     assert changed.structure.groups[1].sources['budget'].message_id=='m'
 
 
+def test_group_totals_do_not_overwrite_explicit_plan_constraint():
+    from app.rules import evaluate
+    from app.structure import campaign_tree
+    original=campaign();original.budget_constraint=Decimal(30)
+    changed=evaluate(edit_entity(original,'g2',{'budget':'25'},'m','u'),[])
+    tree,issues=campaign_tree(changed)
+    assert tree['planned_total']=='35' and changed.budget==35 and changed.budget_constraint==30
+    assert any(i.field=='budget' and i.target_id==changed.id for i in issues)
+
+
 def test_material_edit_keeps_siblings_and_rejects_wrong_owner_or_conflict():
     changed=edit_entity(campaign(),'a2',{'identity_id':'300'},'m','u')
     assert changed.structure.groups[0].ads[0].identity_id==''
@@ -41,4 +51,3 @@ def test_mixed_existing_and_new_materials_cannot_skip_the_whole_campaign():
     result=evaluate(req,history,datetime(2026,11,4,tzinfo=timezone.utc))
     assert result.classification=='incomplete'
     assert any(i.code=='history_review' and i.field=='included' for i in result.issues)
-

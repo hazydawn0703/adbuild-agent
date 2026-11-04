@@ -11,6 +11,8 @@ from app.structure import allocate_budget
 def test_model_schema_exposes_entity_binding_keys():
     schema=SheetMapping.model_json_schema()['properties']['bindings']
     assert {'campaign_key','group_key','record_key','budget_level','campaign_budget','adgroup_budget'} <= set(schema['propertyNames']['enum'])
+    from app.models import ChatEdit
+    assert {'budget_level','structure','budget'} <= set(ChatEdit.model_json_schema()['properties']['values']['propertyNames']['enum'])
 
 
 def parse(level='campaign', groups=('G1','G2','G3'), amount='100.01'):
@@ -75,6 +77,20 @@ def test_same_names_in_different_accounts_do_not_merge():
     assert len(assemble(rows))==2
 
 
+def test_reviewed_campaign_name_is_identity_without_duplicate_binding():
+    from app.assembly import assemble
+    from app.models import SourceRef
+    rows=[]
+    for account,business,group in [('123','B1','G1'),('123','B1','G2'),('123','B2','G1'),('456','B1','G1')]:
+        row=Requirement(id=account+business+group,account_id=account,business_no=business,name='Launch',
+            sources={'name':SourceRef(file_id='f',sheet='S',cell='C2',raw_value='Launch')})
+        rows.append((row,{'group_key':group,'budget_level':'campaign'},{}))
+    plans=assemble(rows)
+    assert len(plans)==3
+    assert len(plans[0].structure.groups)==2
+    assert not any('计划身份' in issue.message for issue in plans[0].issues)
+
+
 def test_selecting_a_material_does_not_include_its_siblings():
     from app.scope import select_requirements
     from app.models import TaskScope, ScopeSelector
@@ -83,4 +99,3 @@ def test_selecting_a_material_does_not_include_its_siblings():
     selected=select_requirements(reqs,scope,[{'id':'m','role':'user','content':'只搭建帖子101'}])
     assert selected[0].included
     assert [a.post_id for g in selected[0].structure.groups for a in g.ads]==['101']
-

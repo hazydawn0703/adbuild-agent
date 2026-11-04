@@ -61,7 +61,7 @@ def score(run,references,normal=False):
     if not audit['complete'] or audit['source_mismatches_after'] or audit['input_mismatches_after'] or audit['advertising_calls']:
         raise ValueError('Run is incomplete or changed')
     records=[]
-    aliases={'budget_level':{'structure'},'history_batch':{'scope','included','audience'},'post_url':{'post_url','post_id'}}
+    aliases={'budget_level':{'budget_level','structure'},'history_batch':{'scope','included','audience'},'post_url':{'post_url','post_id'}}
     for case in protocol['cases']:
         oracle=load(Path(references)/(case+'.json'));expected=oracle['expected'];folder=run/'raw'/case
         summary=load(folder/'summary.json')

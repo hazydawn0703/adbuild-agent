@@ -22,7 +22,7 @@ def permitted_facts(answers):
     for field in ('start_time','end_time'):
         if field in answers:facts[{'start_time':'start_at_time','end_time':'end_at_time'}[field]]=answers[field]
     if 'level' in answers:
-        facts['structure']='预算层级为 '+answers['level']+'；用户补充事实：'+json.dumps(answers,ensure_ascii=False)
+        facts['budget_level']=answers['level']
     for name,target in (('audiences','audience'),('group_allocation','budget')):
         for group,value in (answers.get(name) or {}).items():
             if value is not None:entities.append({'field':target,'value':str(value),'group_index':int(group.removeprefix('G'))})

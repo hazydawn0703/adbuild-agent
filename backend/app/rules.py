@@ -3,7 +3,7 @@ from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 import json
 import re
-from .models import Requirement, Issue, ProjectPolicy
+from .models import Requirement, Issue, ProjectPolicy, SourceRef
 from .excel import date_value,zone_value
 
 
@@ -147,6 +147,7 @@ def evaluate(req: Requirement, history: list[dict], now=None):
     for field in ("name", "account_id", "post_id", "objective", "budget", "budget_mode", "currency", "start_at", "end_at", "timezone", "audience", "identity_id"):
         if req.structure and field in ('post_id','identity_id','audience','start_at','end_at','timezone'):
             continue
+        if req.structure and req.structure.budget_level!='campaign' and field=='budget':continue
         if getattr(req, field) in (None, ""):
             req.issues.append(Issue(code="missing",field=field,message=f"缺少 {field}"))
     if req.budget is not None and (not req.budget.is_finite() or req.budget <= 0):
@@ -175,8 +176,12 @@ def evaluate(req: Requirement, history: list[dict], now=None):
             req.issues.append(Issue(code="schedule",field="end_at",message="结束时间必须晚于开始时间"))
     if not req.structure and req.objective == "traffic" and (not req.landing_url.startswith("https://") or not req.cta):
         req.issues.append(Issue(code="destination",field="landing_url",message="流量目标需要 HTTPS 落地页和 CTA"))
-    from .structure import validate_structure
-    req.issues.extend(validate_structure(req))
+    from .structure import campaign_tree
+    tree,structure_issues=campaign_tree(req)
+    req.issues.extend(structure_issues)
+    if req.structure and req.structure.budget_level=='adgroup' and tree['planned_total'] is not None:
+        req.budget=Decimal(tree['planned_total'])
+        req.sources['budget']=SourceRef(kind='calculated',file_id='',sheet='',cell='',raw_value=str(req.budget),derived_from=[g.id+':budget' for g in req.structure.groups])
     if req.structure:
         for group in req.structure.groups:
             if group.end_at and group.end_at.tzinfo and group.end_at <= now:

@@ -34,15 +34,15 @@ def test_overlapping_but_different_record_sets_are_not_merged():
     assert {tuple(q.requirement_ids) for q in questions}=={('row-a',),('row-b',)}
 
 
-def test_semantic_candidate_conflicts_keep_their_own_answer_ids():
+def test_semantic_wording_of_one_field_does_not_create_duplicate_answer_controls():
     semantic=[Clarification(id='choice-a',field='audience',requirement_ids=['row'],question='请选择A方案',answer_type='choice',options=['A','B']),
               Clarification(id='choice-b',field='audience',requirement_ids=['row'],question='请选择B方案',answer_type='choice',options=['C','D'])]
     task=IntakeTask(id='task',project_id='project',semantic_questions=semantic)
     draft=BuildDraft(id='draft',project_id='project',requirements=[Requirement(id='row',issues=[issue('missing','缺少受众'),issue('structure','广告组缺少受众')])])
     refresh(task,draft)
-    assert len(task.questions)==3
-    assert [q.id for q in task.questions if q.answer_type=='choice']==['choice-a','choice-b']
-    assert [q.options for q in task.questions if q.answer_type=='choice']==[['A','B'],['C','D']]
+    assert len(task.questions)==1
+    assert '请选择A方案' in task.questions[0].question and '请选择B方案' in task.questions[0].question
+    assert task.questions[0].target_ids==['row']
 
 
 def test_recomputed_default_structure_retires_both_missing_reasons_after_answer():

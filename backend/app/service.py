@@ -7,7 +7,7 @@ from .rules import evaluate, check_policy, fingerprint
 from .db import transaction, json_value
 from .auth import project_access
 
-EDITABLE = {"included","account_id","post_id","post_url","name","objective","budget","budget_mode","currency","start_at","end_at","timezone","audience","language","identity_id","cta","landing_url","structure","platform"}
+EDITABLE = {"included","account_id","post_id","post_url","name","objective","budget","budget_mode","currency","start_at","end_at","timezone","audience","language","identity_id","cta","landing_url","structure","platform","budget_level"}
 
 
 def stored_draft(data):
@@ -60,6 +60,21 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
         from .entities import check_edit_owner
         try:check_edit_owner(req,edit.get('target_id'),edit['values'])
         except ValueError as error:raise HTTPException(422,str(error)) from None
+        if 'budget_level' in edit['values']:
+            if set(edit['values'])!={'budget_level'}:raise HTTPException(422,'预算层级须单独提交，其他字段分别指定实际目标')
+            from .entities import set_budget_level
+            try:
+                source=edit.get('sources',{}).get('budget_level')
+                if source:
+                    from .provenance import supported_source
+                    taskrow=conn.execute('select data from intake_tasks where draft_id=%s',(draft.id,)).fetchone()
+                    state=taskrow['data'] if taskrow else {}
+                    state={**state,'documents':list(conn.execute('select id,storage_path,sha256 from files where project_id=%s and kind=%s',(project['id'],'requirements')))}
+                    source=supported_source(state,{**req.model_dump(mode='json'),'budget_level':req.structure.budget_level if req.structure else None},'budget_level',edit['values']['budget_level'],source)
+                updated=set_budget_level(req,edit['values']['budget_level'],edit.get('source_message_id'),actor.user_id,source)
+            except ValueError as error:raise HTTPException(422,str(error)) from None
+            draft.requirements=[evaluate(updated,history) if r.id==req.id else r for r in draft.requirements]
+            continue
         if edit.get('target_id') and edit['target_id']!=req.id:
             from .entities import edit_entity,evidence_values
             try:
@@ -111,7 +126,11 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
                 raise HTTPException(422,'帖子 ID 与保留的视频链接冲突，请更新或清空原链接后再提交')
         values.update(patch)
         req = Requirement.model_validate(values)
-        if verified_budget_level:req.sources['budget_level']=verified_budget_level
+        if 'budget' in patch and req.structure and req.structure.budget_level=='adgroup':
+            req.budget_constraint=patch['budget']
+        if verified_budget_level:
+            req.sources['budget_level']=verified_budget_level
+            req.issues=[i for i in req.issues if i.field!='budget_level']
         for field,value in patch.items():
             offered=edit.get('sources',{}).get(field)
             previous=req.sources.get(field)
@@ -144,6 +163,8 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
             req.sources[field].accepted_by=actor.user_id
             req.sources[field].accepted_at=datetime.now(timezone.utc)
             if field not in req.confirmed_fields: req.confirmed_fields.append(field)
+        if 'budget' in patch and req.structure and req.structure.budget_level=='adgroup':
+            req.sources['budget_constraint']=req.sources['budget'].model_copy(deep=True)
         req.issues = [i for i in req.issues if i.field not in patch]
         draft.requirements = [evaluate(req,history) if r.id == req.id else r for r in draft.requirements]
     draft.version += 1

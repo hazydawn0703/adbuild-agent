@@ -9,7 +9,9 @@ type EditField=typeof fieldNames[number];
 export type RequirementEditValues=Partial<Pick<Requirement,EditField>>;
 
 export default function RequirementEditForm({requirement,busy,readOnly=false,onSave,onCancel}:{requirement:Requirement;busy:boolean;readOnly?:boolean;onSave:(values:RequirementEditValues)=>Promise<void>;onCancel:()=>void}) {
-  const [values,setValues]=useState(()=>Object.fromEntries(fieldNames.map(field=>[field,String(requirement[field]??'')])) as Record<EditField,string>);
+  const initial=()=>Object.fromEntries(fieldNames.map(field=>[field,String(field==='budget'&&requirement.structure?.budget_level==='adgroup'?requirement.budget_constraint??'':requirement[field]??'')])) as Record<EditField,string>;
+  const [original]=useState(initial);
+  const [values,setValues]=useState(initial);
   const [error,setError]=useState('');
   const structured=!!requirement.structure;
   const planFields=new Set<string>(['name','account_id','objective','budget',...(requirement.structure?.budget_level==='adgroup'?[]:['budget_mode','currency'])]);
@@ -20,7 +22,9 @@ export default function RequirementEditForm({requirement,busy,readOnly=false,onS
     const linked=values.post_url.match(/\/video\/(\d+)/)?.[1];
     if(!structured&&linked&&values.post_id&&linked!==values.post_id){setError('帖子 ID 与链接中的视频 ID 不一致，请修改链接或清空旧链接后再保存。');return}
     const payload={...values,objective:values.objective||null,budget:values.budget||null,budget_mode:values.budget_mode||null,start_at:values.start_at||null,end_at:values.end_at||null};
-    await onSave(structured?Object.fromEntries(Object.entries(payload).filter(([key])=>planFields.has(key))):payload);
+    const changed=Object.fromEntries(Object.entries(payload).filter(([key,value])=>planFields.has(key)&&String(value??'')!==original[key as EditField]));
+    if(structured&&!Object.keys(changed).length){onCancel();return}
+    await onSave(structured?changed:payload);
   }
   function dateField(field:'start_at'|'end_at',label:string){return <label>{label}<input aria-label={label} type="datetime-local" step="1" value={beijingTime(values[field])} onChange={e=>update(field,e.target.value?`${e.target.value}+08:00`:'')}/><span className="policy-help">北京时间（UTC+8）；留空表示待补充。</span></label>}
   return <form className="policy-form modal-form" onSubmit={submit}>
@@ -37,7 +41,7 @@ export default function RequirementEditForm({requirement,busy,readOnly=false,onS
           <label>TikTok 帖子链接<input type="url" value={values.post_url} onChange={e=>update('post_url',e.target.value)} placeholder="https://www.tiktok.com/@brand/video/…"/></label></>}
         </div></section>
         <section className="policy-section"><h3>预算与排期</h3><div className="policy-grid">
-          <label>预算金额<input inputMode="decimal" pattern="[0-9]+([.][0-9]+)?" value={values.budget} onChange={e=>update('budget',e.target.value)} placeholder="待补充"/></label>
+          <label>{requirement.structure?.budget_level==='adgroup'?'计划总额约束（可选）':'预算金额'}<input inputMode="decimal" pattern="[0-9]+([.][0-9]+)?" value={values.budget} onChange={e=>update('budget',e.target.value)} placeholder={requirement.structure?.budget_level==='adgroup'?'留空时按组预算汇总':'待补充'}/></label>
           {(!structured||planFields.has('budget_mode'))&&<><label>预算类型<select aria-label="预算类型" value={values.budget_mode} onChange={e=>update('budget_mode',e.target.value)}><option value="">待补充</option><option value="lifetime">总预算</option><option value="daily">日预算</option></select></label>
           <label>币种<input list="requirement-currencies" pattern="[A-Z]{3}" maxLength={3} value={values.currency} onChange={e=>update('currency',e.target.value.toUpperCase())}/></label></>}
           {!structured&&<><label>排期时区<input list="requirement-timezones" value={values.timezone} onChange={e=>update('timezone',e.target.value)} placeholder="例如：UTC 或 Asia/Shanghai"/></label>

@@ -5,7 +5,7 @@ import {Plus} from 'lucide-react';
 import Modal from './Modal';
 import type {Structure,StructureGroup as Group} from '../lib/types';
 type Material=Group['ads'][number];
-type Base={id:string;name:string;audience:string;language:string;budget:string|null;budget_mode:string|null;currency:string;structure?:Structure|null};
+type Base={id:string;name:string;audience:string;language:string;budget:string|null;budget_constraint?:string|null;budget_mode:string|null;currency:string;structure?:Structure|null};
 export default function StructureEditor({row,busy,onClose,onSubmit}:{row:Base;busy:boolean;onClose:()=>void;onSubmit:(value:Structure)=>Promise<void>}){
  const [value,setValue]=useState<Structure>(()=>row.structure?structuredClone(row.structure):{budget_level:null,groups:[{id:crypto.randomUUID(),name:'',audience:null,language:null,ads:[]}]});
  const [error,setError]=useState('');
@@ -13,9 +13,9 @@ export default function StructureEditor({row,busy,onClose,onSubmit}:{row:Base;bu
  function material(gi:number,ai:number,patch:Partial<Material>){group(gi,{ads:value.groups[gi].ads.map((a,i)=>i===ai?{...a,...patch}:a)})}
  return <Modal title="调整广告组与素材结构" closeLabel="关闭结构编辑" className="policy-modal" busy={busy} error={error} onClose={onClose}>
   <form className="policy-form modal-form" onSubmit={async e=>{e.preventDefault();setError('');try{await onSubmit(value)}catch(error){setError(error instanceof Error?error.message:'保存失败')}}}>
-   <div className="modal-body"><p className="login-description">需求总预算 {row.budget||'待补充'} {row.currency}。保存后先生成待采纳提案，采纳后才能确认完整方案。</p>
+   <div className="modal-body"><p className="login-description">当前预算 {row.budget||'待补充'} {row.currency}{row.budget_constraint&&`；计划总额约束 ${row.budget_constraint} ${row.currency}`}。保存后先生成待采纳提案，采纳后才能确认完整方案。</p>
    <fieldset className="policy-fields" disabled={busy}>
-   <label>预算层级<select aria-label="结构预算层级" value={value.budget_level??''} disabled={busy} onChange={e=>setValue({...value,budget_level:e.target.value as Structure['budget_level'],groups:value.groups.map(g=>({...g,budget:e.target.value==='campaign'?null:{amount:null,allocation_ratio:null}}))})}><option value="" disabled>请选择预算层级</option><option value="campaign">计划预算（广告组共享）</option><option value="adgroup">广告组预算（合计等于需求总额）</option></select></label>
+   <label>预算层级<select aria-label="结构预算层级" value={value.budget_level??''} disabled={busy} onChange={e=>setValue({...value,budget_level:e.target.value as Structure['budget_level'],groups:value.groups.map(g=>({...g,budget:e.target.value==='campaign'?null:{amount:null,allocation_ratio:null}}))})}><option value="" disabled>请选择预算层级</option><option value="campaign">计划预算（广告组共享）</option><option value="adgroup">广告组预算（按组金额汇总）</option></select></label>
    {value.groups.map((g,gi)=><fieldset key={g.id} className="structure-group"><legend>广告组 {gi+1}</legend><div className="policy-grid">
     <label>组名称<input disabled={busy} value={g.name||''} placeholder="留空按计划与组序号命名" onChange={e=>group(gi,{name:e.target.value})}/></label>
     <label>受众<input disabled={busy} value={g.audience??''} placeholder='待补充' onChange={e=>group(gi,{audience:e.target.value||null})}/></label>

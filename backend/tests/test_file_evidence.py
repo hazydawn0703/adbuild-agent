@@ -37,6 +37,8 @@ def test_other_groups_real_cell_cannot_silently_replace_existing_schedule(monkey
     other=SourceRef(file_id='owned',sheet='Sheet',cell='A2',raw_value='untrusted')
     row={'id':'g1','end_at':'2028-01-15T09:00:00Z','sources':{'end_at':old.model_dump()}}
     with pytest.raises(ValueError,match='冲突'):supported_source(state,row,'end_at','2028-01-16T09:00:00Z',other)
+    row.update(end_at=None,issues=[{'field':'end_at','code':'invalid_structure'}])
+    with pytest.raises(ValueError,match='冲突'):supported_source(state,row,'end_at','2028-01-16T09:00:00Z',other)
 
 
 def test_url_derived_post_and_platform_reverify_the_original_cell(monkeypatch,tmp_path):

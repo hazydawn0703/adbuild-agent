@@ -417,7 +417,7 @@ def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
                 try:entity['budget_level']=normalize_value('budget_level',entity['budget_level'])
                 except ValueError as error:
                     entity['budget_level']=None
-                    issues.append(Issue(code='invalid_budget_level',field='structure',message=str(error)))
+                    issues.append(Issue(code='invalid_budget_level',field='budget_level',message=str(error)))
             for field in ('campaign_budget','adgroup_budget'):
                 if entity.get(field) not in (None,''):
                     try:entity[field]=normalize_value('budget',entity[field])

@@ -16,7 +16,7 @@ NOW = datetime(2026, 11, 3, tzinfo=timezone.utc)
 
 def requirement(**changes):
     values = dict(id='demand-17', name='Campaign', account_id='7800000000000000011',
-                  post_id='7800000000000000022', objective='video_views', budget='101.01',
+                  post_id='7800000000000000022', objective='video_views', budget='101.01',budget_constraint='101.01',
                   budget_mode='lifetime', currency='USD', start_at='2027-02-01T09:00:00Z',
                   end_at='2027-02-05T09:00:00Z', timezone='UTC', audience='Confirmed audience',
                   identity_id='7800000000000000033')

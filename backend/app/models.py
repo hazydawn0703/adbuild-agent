@@ -86,6 +86,7 @@ class Requirement(Model):
     platform: str = ''
     objective: Objective | None = None
     budget: Decimal | None = None
+    budget_constraint: Decimal | None = None
     budget_mode: Literal["lifetime", "daily"] | None = None
     currency: str = ""
     start_at: datetime | None = None
@@ -139,6 +140,7 @@ class ProjectPolicy(Model):
 
 InputField = Literal['platform','account_id','business_no','name','post_url','post_id','objective','budget','budget_mode','currency','start_at','end_at','timezone','audience','language','identity_id','cta','landing_url']
 MappingField = Literal['platform','account_id','business_no','name','post_url','post_id','objective','budget','budget_mode','currency','start_at','end_at','timezone','audience','language','identity_id','cta','landing_url','campaign_key','group_key','record_key','budget_level','campaign_budget','adgroup_budget']
+EditField = Literal[InputField,'included','structure','budget_level']
 
 
 class Binding(Model):
@@ -187,7 +189,7 @@ class DraftPatch(Model):
 class ChatEdit(Model):
     requirement_id: str
     target_id: str = ''
-    values: dict[InputField | Literal['included','structure'], Any]
+    values: dict[EditField, Any]
     sources: dict[str, SourceRef] = Field(default_factory=dict)
 
 
@@ -255,7 +257,7 @@ class FieldEvidence(Model):
 
 class Clarification(Model):
     id: str
-    field: InputField | Literal['included','scope','structure']
+    field: Literal[InputField,'included','scope','structure','budget_level']
     scope: Literal['task','requirements'] = 'requirements'
     requirement_ids: list[str] = Field(default_factory=list)
     question: str

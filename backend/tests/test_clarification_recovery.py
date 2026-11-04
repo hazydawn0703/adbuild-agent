@@ -15,7 +15,7 @@ def test_unknown_budget_level_keeps_evidenced_groups_and_materials():
     assert req.structure is not None
     assert req.structure.budget_level is None
     assert [len(g.ads) for g in req.structure.groups]==[2,2]
-    assert any(i.field=='structure' and i.blocking for i in req.issues)
+    assert any(i.field=='budget_level' and i.blocking for i in req.issues)
 
 
 def test_different_material_answers_have_independent_questions():
@@ -84,3 +84,20 @@ def test_explicit_message_budget_conflict_blocks_even_if_model_does_not_ask():
     task.messages.append({'id':'answer','role':'user','content':'本批最终预算100.01'})
     refresh(task,draft)
     assert not any(i.code=='message_conflict' for i in req.issues)
+
+
+def test_explicit_per_group_budget_is_not_misread_as_plan_total():
+    from app.provenance import plan_budget_values
+    assert plan_budget_values('每组预算100美元，总额300美元')==[Decimal('300')]
+
+
+def test_schedule_questions_address_only_the_actual_missing_field():
+    req=parse('campaign',('G1',))[0];group=req.structure.groups[0]
+    group.timezone='';group.start_at=group.start_at.replace(tzinfo=None);group.end_at=group.end_at.replace(tzinfo=None)
+    task=IntakeTask(id='t',project_id='p');draft=BuildDraft(id='d',project_id='p',requirements=[evaluate(req,[])])
+    refresh(task,draft)
+    assert {q.field for q in task.questions if q.field in ('start_at','end_at','timezone')}=={'timezone'}
+    req=edit_entity(req,group.id,{'timezone':'UTC'},'m','u')
+    req.structure.groups[0].end_at=None
+    refresh(task,BuildDraft(id='d',project_id='p',requirements=[evaluate(req,[])]))
+    assert {q.field for q in task.questions if q.field in ('start_at','end_at','timezone')}=={'end_at'}

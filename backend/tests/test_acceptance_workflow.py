@@ -32,3 +32,20 @@ def test_entity_answers_use_actual_target_and_declared_ordinal_only():
     assert declared_answer({'field':'post_id','target_ids':['a3']},state,facts,entities)=='300'
     assert declared_answer({'field':'post_id','target_ids':['a1','a2']},state,facts,entities) is None
     assert declared_answer({'field':'identity_id','target_ids':['a2']},state,facts,entities) is None
+
+
+def test_new_budget_dependency_gets_second_batch_but_same_field_owner_is_never_reanswered():
+    calls=[];summary={};answered=0
+    def state():
+        q={'id':'level','field':'budget_level','target_ids':['p']} if answered==0 else {'id':'budget','field':'budget','target_ids':['g']}
+        return {'task':{'version':answered+1,'questions':[q]},'draft':{'version':answered+1,'requirements':[
+            {'id':'p','structure':{'groups':[{'id':'g','ads':[]}]}}]},'preview':{'can_confirm':False}}
+    async def call(stage,method,path,**kwargs):
+        nonlocal answered
+        calls.append((stage,kwargs.get('json')))
+        if method=='POST' and kwargs['json']['action']=='answer':answered+=1
+        return 200,state()
+    asyncio.run(normal_answers('C',{'normal_answers':{'budget_level':'adgroup'},
+        'entity_answers':[{'field':'budget','value':'100','all_groups':True}]},call,summary,'t','p','f'))
+    assert summary['normal_answer_batches']==2 and summary['normal_answers_submitted']==2
+    assert answered==2

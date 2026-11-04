@@ -14,7 +14,7 @@ def check_edit_owner(req,target_id,fields):
         node=find_entity(req,target_id)
         allowed=GROUP_FIELDS if isinstance(node,GroupSpec) else MATERIAL_FIELDS
     else:
-        allowed={'included','name','account_id','platform','objective','budget','budget_mode','currency','structure'}
+        allowed={'included','name','account_id','platform','objective','budget','budget_mode','currency','structure','budget_level'}
         if not req.structure:return
         if req.structure.budget_level=='adgroup':allowed-={'budget_mode','currency'}
     if set(fields)-allowed:raise ValueError('字段不属于目标实体，请用 target_id 指定实际广告组或素材，不得通过计划字段覆盖子节点')
@@ -28,6 +28,30 @@ def find_entity(req,target_id):
             for material in group.ads:
                 if material.id==target_id:return material
     raise ValueError('目标实体不属于当前计划')
+
+
+def set_budget_level(req,value,message_id,actor_id,source=None):
+    from datetime import datetime,timezone
+    req=req.model_copy(deep=True)
+    if req.structure is None:raise ValueError('尚无已核实的组和素材，请先明确三层关系')
+    level=normalize_value('budget_level',value)
+    changed=level!=req.structure.budget_level
+    req.structure.budget_level=level
+    if level=='campaign':
+        for group in req.structure.groups:group.budget=None
+        if req.budget_constraint is not None:
+            req.budget=req.budget_constraint
+            if req.sources.get('budget_constraint'):req.sources['budget']=req.sources['budget_constraint']
+        req.budget_constraint=None;req.sources.pop('budget_constraint',None)
+        if changed and req.sources.get('budget') and req.sources['budget'].kind=='calculated':
+            req.budget=None;req.sources.pop('budget')
+    else:
+        for group in req.structure.groups:
+            group.budget=group.budget or BudgetSpec(currency=req.currency,mode=req.budget_mode)
+    ref=SourceRef.model_validate(source) if source else SourceRef(kind='confirmed',file_id='',sheet='',cell='',raw_value=level,message_id=message_id)
+    req.sources['budget_level']=ref.model_copy(update={'accepted_by':actor_id,'accepted_at':datetime.now(timezone.utc)})
+    req.issues=[i for i in req.issues if i.field!='budget_level']
+    return req
 
 
 def entity_label(req,target_id):
@@ -48,7 +72,8 @@ def evidence_values(req,target_id):
     if hasattr(node,'budget') and isinstance(node.budget,BudgetSpec):
         data.update(budget=str(node.budget.amount) if node.budget.amount is not None else None,
                     currency=node.budget.currency,budget_mode=node.budget.mode)
-    return {**{'account_id':req.account_id,'objective':req.objective,'timezone':req.timezone},**data}
+    return {**{'account_id':req.account_id,'objective':req.objective,'timezone':req.timezone},**data,
+        'issues':[issue.model_dump(mode='json') for issue in req.issues if issue.target_id==target_id]}
 
 
 def edit_entity(req,target_id,patch,message_id,actor_id,sources=None):

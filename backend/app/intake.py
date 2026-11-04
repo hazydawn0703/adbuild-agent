@@ -41,7 +41,8 @@ def question_observation(question,draft):
             try:data=row.model_dump(mode='json') if target==row.id else evidence_values(row,target)
             except ValueError:continue
             result[target]=sha256(json.dumps({'value':data.get(question.field),
-                'source':data.get('sources',{}).get(question.field)},sort_keys=True,ensure_ascii=False,default=str).encode()).hexdigest()
+                'source':data.get('sources',{}).get(question.field),
+                'constraint':{'value':row.budget_constraint,'source':row.sources.get('budget_constraint').model_dump(mode='json') if row.sources.get('budget_constraint') else None} if question.field=='budget' and target==row.id else None},sort_keys=True,ensure_ascii=False,default=str).encode()).hexdigest()
     return result
 
 
@@ -52,6 +53,8 @@ def reconcile_questions(task,draft):
     for question in task.semantic_questions:
         if question.id in task.answers:continue
         if question.reason_code=='platform_check':continue
+        if draft is not None and draft.requirements and question.scope=='task' and question.field!='scope':
+            if not any(r.included and any(i.blocking and i.field==question.field for i in r.issues) for r in draft.requirements):continue
         if draft is not None and question.scope!='task':
             selected=[r for r in draft.requirements if r.included and r.id in question.requirement_ids]
             if not selected:continue
@@ -81,21 +84,21 @@ def reconcile_questions(task,draft):
 def refresh(task,draft):
     budget_conflicts={}
     if draft is not None:
-        from .provenance import _budget_values,equivalent
+        from .provenance import plan_budget_values,equivalent
         from .models import Issue
         for row in draft.requirements:
             row.issues=[i for i in row.issues if i.code!='message_conflict']
             if not row.included or row.budget is None:continue
             for message in reversed(task.messages):
                 if message.get('role')!='user':continue
-                if message.get('id')==getattr(row.sources.get('budget'),'message_id',None):break
+                if message.get('id') in {getattr(row.sources.get(key),'message_id',None) for key in ('budget','budget_constraint')}:break
                 if 'answers' in message:
                     relevant=[a for a in message['answers'] if a['field']=='budget' and row.id in (a.get('target_ids') or a.get('requirement_ids') or [])]
                     values=[a['answer'] for a in relevant]
                 else:
                     text=str(message.get('content',''))
                     if row.business_no and '业务编号' in text and row.business_no not in text:continue
-                    values=_budget_values(text)
+                    values=plan_budget_values(text)
                 if not values:continue
                 if any(not equivalent('budget',row.budget,value) for value in values):
                     row.issues.append(Issue(code='message_conflict',field='budget',target_id=row.id,message='当前用户预算依据与文件或已存方案存在冲突，请明确本批最终总额'))
@@ -141,13 +144,24 @@ def refresh(task,draft):
     for (field,scope,ids,targets),entry in combined.items():
         reason='conflict' if any(c.startswith('invalid_') or c in ('duplicate','history_review','language_conflict','message_conflict') for c in entry['codes']) else 'missing'
         question=Clarification(id='',field=field,scope=scope,reason_code=reason,
-            requirement_ids=list(ids),target_ids=list(targets),evidence_version=draft.version,question=entry['label']+'：'+'；'.join(entry['messages']))
+            requirement_ids=list(ids),target_ids=list(targets),evidence_version=draft.version,question=entry['label']+'：'+'；'.join(entry['messages']),
+            answer_type='choice' if field=='budget_level' else 'decimal' if field=='budget' else 'text',
+            options=['计划预算','广告组预算'] if field=='budget_level' else [])
         key=json.dumps({'origin':'system','task':task.id,'field':field,'scope':scope,'requirements':ids,
             'targets':targets,'reason':reason,'evidence':question_observation(question,draft),
             'message_evidence':{rid:budget_conflicts[rid] for rid in ids if field=='budget' and rid in budget_conflicts}},sort_keys=True)
         question.id=sha256(key.encode()).hexdigest()[:20]
         task.questions.append(question)
-    task.questions.extend(task.semantic_questions)
+    for semantic in task.semantic_questions:
+        matches=[q for q in task.questions if q.field==semantic.field and
+            (semantic.scope=='task' or set(q.requirement_ids)&set(semantic.requirement_ids)) and
+            (not semantic.target_ids or set(q.target_ids)&set(semantic.target_ids))]
+        if matches:
+            # Semantic wording explains the same business problem; it must not
+            # create another answer control or broadcast across distinct owners.
+            for question in matches:
+                if semantic.question not in question.question:question.question+='；'+semantic.question
+        else:task.questions.append(semantic)
     task.stage='attention' if task.analysis.get('phase')=='attention' else 'clarifying' if task.questions else 'preview'
 
 

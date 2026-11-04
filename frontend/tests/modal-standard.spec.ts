@@ -125,8 +125,9 @@ test('campaign editor does not submit representative group or material values',a
   const dialog=page.getByRole('dialog',{name:'编辑草稿配置',exact:true});
   await expect(dialog.getByLabel('开始时间（北京时间）',{exact:true})).toHaveCount(0);
   await expect(dialog.getByLabel('帖子 ID',{exact:true})).toHaveCount(0);
+  await dialog.getByLabel('广告计划名称',{exact:true}).fill('New plan name');
   await dialog.getByRole('button',{name:'保存配置',exact:true}).click();
-  expect(writes).toEqual([{expected_version:4,edits:[{requirement_id:'r',values:{name:values.name,account_id:values.account_id,objective:values.objective,budget:values.budget,budget_mode:values.budget_mode,currency:values.currency}}]}]);
+  expect(writes).toEqual([{expected_version:4,edits:[{requirement_id:'r',values:{name:'New plan name'}}]}]);
 });
 
 test('short dialogs keep keyboard focus and fit a shrinking visible viewport',async({page})=>{

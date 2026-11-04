@@ -5,7 +5,7 @@ import re
 from .models import SourceRef
 from .excel import normalize_value,objective,date_value
 
-CRITICAL_FIELDS={'platform','name','account_id','post_id','post_url','budget','budget_mode','currency','start_at','end_at',
+CRITICAL_FIELDS={'platform','name','account_id','post_id','post_url','budget','budget_mode','budget_level','currency','start_at','end_at',
                  'timezone','audience','language','identity_id','cta','landing_url'}
 
 
@@ -69,6 +69,15 @@ def allocation_message(state,weights):
     return None
 
 
+def plan_budget_values(text):
+    values=[]
+    for clause in re.split(r'[，,；;\n]',text):
+        owner=re.search(r'计划(?:总额|预算)|总额|合计(?:预算|金额)|campaign\s+budget|total\s+budget',clause,re.I)
+        if owner:values.extend(_budget_values(clause[owner.start():]))
+        elif not re.search(r'每(?:个)?组|各组|组预算|ad[ _-]?group',clause,re.I):values.extend(_budget_values(clause))
+    return values
+
+
 def message_supports(field,value,text,tz=''):
     """Accept explicit, equivalent inputs; unresolved interpretations need a question."""
     if value in (None,''):return False
@@ -79,6 +88,7 @@ def message_supports(field,value,text,tz=''):
     if field=='budget_mode':
         return bool(re.search(r'日预算|每日预算|(?<![A-Za-z0-9_])daily(?![A-Za-z0-9_])',text,re.I)) if target=='daily' else bool(re.search(r'总预算|终身预算|(?<![A-Za-z0-9_])(?:lifetime|total)(?![A-Za-z0-9_])',text,re.I))
     if field=='budget_level':
+        if re.search(r'budget_level["\s]*[:=]\s*["\s]*'+re.escape(str(target))+r'\b',text,re.I):return True
         noun=r'(?:广告组|ad[ _-]?group)' if target=='adgroup' else r'(?:计划|campaign)'
         return bool(re.search(noun+r'\s*(?:层级|层|级)?\s*预算|预算(?:层级|归属|层|级)[^\n，,；;]{0,18}'+noun,text,re.I))
     if field=='language':
@@ -130,6 +140,10 @@ def supported_source(state,row,field,value,offered=None):
             document=next((d for d in state.get('documents',[]) if str(d['id'])==ref.file_id),None)
             if document:
                 verified=verify_excel_source(document,field,value,ref,tz)
+                if field=='budget' and row.get('budget_constraint') is not None and not equivalent(field,value,row['budget_constraint'],tz):
+                    raise ValueError('新文件预算与明确的计划总额约束冲突，请先澄清')
+                if any(i.get('field')==field and i.get('code') in ('invalid_structure','invalid_conflict','invalid_budget_level_conflict') for i in row.get('issues',[])):
+                    raise ValueError(f'{field} 存在尚未解决的明确来源冲突，请引用用户澄清，不能静默选择某个文件值')
                 if previous and row.get(field) not in (None,'') and not equivalent(field,value,row[field],tz):
                     raise ValueError(f'{field} 的新文件证据与当前实体明确值冲突，请先澄清；明确用户修正应引用对应消息')
                 return verified
@@ -193,13 +207,16 @@ def validate_proposal_evidence(state,decision):
         from .entities import check_edit_owner
         from .models import Requirement
         check_edit_owner(Requirement.model_validate(row),edit.target_id,edit.values)
+        if 'budget_level' in edit.values and (len(edit.values)!=1 or not row.get('structure')):
+            raise ValueError('预算层级修改需要已有实体树并单独提交；金额和子节点字段分别修改')
         if edit.target_id and edit.target_id!=edit.requirement_id:
             from .entities import evidence_values
             from .models import Requirement
             row=evidence_values(Requirement.model_validate(row),edit.target_id)
         for field,value in edit.values.items():
             if field in CRITICAL_FIELDS or field=='objective':
-                edit.sources[field]=supported_source(state,row,field,value,edit.sources.get(field))
+                source_row={**row,'budget_level':row['structure']['budget_level']} if field=='budget_level' else row
+                edit.sources[field]=supported_source(state,source_row,field,value,edit.sources.get(field))
             if field=='structure' and value:
                 from .models import StructureSpec
                 structure=StructureSpec.model_validate(value)
@@ -226,7 +243,8 @@ def validate_proposal_evidence(state,decision):
                     old=next((g for g in existing.get('groups',[]) if g['id']==group.id),{})
                     if group.name and group.name!=old.get('name'):
                         group.sources['name']=supported_source(state,old,'name',group.name,group.sources.get('name'))
-                    child={**row,**old,'id':group.id,'sources':old.get('sources',{})}
+                    child={**row,**old,'id':group.id,'sources':old.get('sources',{}),
+                        'issues':[i for i in row.get('issues',[]) if i.get('target_id')==group.id]}
                     if group.budget:
                         for target,new_value in (('budget',group.budget.amount),('budget_mode',group.budget.mode),('currency',group.budget.currency)):
                             if new_value not in (None,''):
@@ -239,7 +257,8 @@ def validate_proposal_evidence(state,decision):
                         if new_value not in (None,''):group.sources[target]=supported_source(state,child,target,new_value,group.sources.get(target))
                     for ad in group.ads:
                         old_ad=next((a for a in old.get('ads',[]) if a['id']==ad.id),{})
-                        material={**row,**old_ad,'id':ad.id,'sources':old_ad.get('sources',{})}
+                        material={**row,**old_ad,'id':ad.id,'sources':old_ad.get('sources',{}),
+                            'issues':[i for i in row.get('issues',[]) if i.get('target_id')==ad.id]}
                         for target in ('post_id','post_url','identity_id','cta','landing_url'):
                             new_value=getattr(ad,target)
                             if new_value:ad.sources[target]=supported_source(state,material,target,new_value,ad.sources.get(target))
