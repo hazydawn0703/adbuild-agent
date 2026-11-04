@@ -4,7 +4,7 @@ from .models import SourceRef
 
 
 def verify_owner(workbook,document,ref,owner,field):
-    from .excel import clean,post_id_from_url,normalize_value
+    from .excel import clean,post_id_from_url,normalize_value,_anchor
     sources=owner.get('sources',{})
     kind=owner.get('_entity_kind') or ('adgroup' if 'group_key' in sources else 'campaign')
     keys=('post_id','post_url','entity_key','group_key','account_id','business_no') if kind=='material' else ('entity_key','group_key','campaign_key','account_id','business_no') if kind=='adgroup' else ('entity_key','name','account_id','business_no')
@@ -15,6 +15,7 @@ def verify_owner(workbook,document,ref,owner,field):
     fields=['group_key'] if field=='name' and kind=='adgroup' else ['budget','adgroup_budget'] if field=='budget' and kind=='adgroup' else ['budget','campaign_budget'] if field=='budget' else [field]
     if field in ('post_id','platform'):fields.append('post_url')
     def value(cell,key):
+        cell=_anchor(workbook[cell.parent.title],cell)
         raw=cell.hyperlink.target if cell.hyperlink and key in ('post_id','post_url') else cell.value
         return (post_id_from_url(raw) or clean(raw)) if key in ('post_id','post_url') else clean(raw)
     def bound(mapping,key,row):
@@ -60,7 +61,11 @@ def verify_owner(workbook,document,ref,owner,field):
         for key in fields:
             binding=mapping.get('bindings',{}).get(key,{})
             if binding.get('kind')=='row':
-                if mapping['sheet']==ref.sheet and binding.get('column')==source.column_letter and mapping['first_row']<=source.row<=mapping['last_row'] and belongs(mapping,source.row):return
+                if mapping['sheet']!=ref.sheet or binding.get('column')!=source.column_letter:continue
+                rows=[source.row]
+                for merged in workbook[ref.sheet].merged_cells.ranges:
+                    if source.coordinate in merged:rows=range(merged.min_row,merged.max_row+1);break
+                if any(mapping['first_row']<=row<=mapping['last_row'] and belongs(mapping,row) for row in rows):return
             elif binding.get('kind')=='cell' and (binding.get('sheet') or mapping['sheet'])==ref.sheet and binding.get('cell')==ref.cell:
                 if any(belongs(mapping,row) for row in range(mapping['first_row'],mapping['last_row']+1)):return
     if not mappings:

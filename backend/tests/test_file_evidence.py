@@ -28,6 +28,14 @@ def test_project_binding_is_independent_from_workbook_evidence():
     with pytest.raises(ValueError):supported_source({'project_account_id':'456'},{},'account_id','123',ref)
 
 
+def test_default_override_requires_an_explicit_user_directive():
+    state={'context':{'version':1,'defaults':{'language':'en'}},'messages':[{'id':'m','role':'user','content':'语言改用项目默认值'}]}
+    row={'language':'zh'}
+    ref=SourceRef(kind='template',context_version=1,file_id='',sheet='',cell='',raw_value='en')
+    with pytest.raises(ValueError,match='不能覆盖'):supported_source(state,row,'language','en',ref)
+    assert supported_source(state,row,'language','en',ref.model_copy(update={'message_id':'m'})).message_id=='m'
+
+
 def test_real_cell_from_other_group_cannot_fill_a_missing_field(monkeypatch,tmp_path):
     w=Workbook();s=w.active;s.append(['group','end']);s.append(['G1',None]);s.append(['G2','2028-01-16T09:00:00Z'])
     out=BytesIO();w.save(out);data=out.getvalue();path=tmp_path/'groups.xlsx';path.write_bytes(data)
@@ -72,6 +80,17 @@ def test_renaming_does_not_break_fixed_campaign_identity_evidence(monkeypatch,tm
     doc={'id':'f','storage_path':'private','sha256':sha256(data).hexdigest(),'mapping':[mapping]}
     ref=SourceRef(file_id='f',sheet='Sheet',cell='C2',raw_value='untrusted')
     assert supported_source({'documents':[doc]},row,'end_at','2028-01-16T09:00:00Z',ref).cell=='C2'
+
+
+def test_merged_identity_cell_applies_to_each_proven_material_row(monkeypatch,tmp_path):
+    w=Workbook();s=w.active;s.append(['Post ID','素材身份']);s.append(['100','999']);s.append(['200',None]);s.merge_cells('B2:B3')
+    out=BytesIO();w.save(out);data=out.getvalue();path=tmp_path/'merged.xlsx';path.write_bytes(data)
+    monkeypatch.setattr('app.storage.target',lambda _:path)
+    mapping={'sheet':'Sheet','first_row':2,'last_row':3,'bindings':{'post_id':{'kind':'row','column':'A'},'identity_id':{'kind':'row','column':'B'}}}
+    doc={'id':'f','storage_path':'private','sha256':sha256(data).hexdigest(),'mapping':[mapping]}
+    row={'id':'a2','_entity_kind':'material','post_id':'200','sources':{'post_id':SourceRef(file_id='f',sheet='Sheet',cell='A3',raw_value='200').model_dump()}}
+    ref=SourceRef(file_id='f',sheet='Sheet',cell='B2',raw_value='999')
+    assert supported_source({'documents':[doc]},row,'identity_id','999',ref).cell=='B2'
 
 
 def test_other_groups_real_cell_cannot_silently_replace_existing_schedule(monkeypatch,tmp_path):

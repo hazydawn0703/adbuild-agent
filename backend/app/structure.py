@@ -83,6 +83,7 @@ def campaign_tree(req: Requirement):
                 problem('structure', str(error))
         elif all(b is not None and b.amount is not None and b.allocation_ratio is None for b in budgets):
             amounts = [b.amount for b in budgets]
+            from .excel import is_cent_amount
             if any(not v.is_finite() or v <= 0 for v in amounts):
                 problem('structure', '每个广告组预算必须为有效正数')
         elif all(b is not None and (b.amount is not None or b.allocation_ratio is not None) for b in budgets):
@@ -94,9 +95,11 @@ def campaign_tree(req: Requirement):
                 problem('structure', '广告组预算类型必须与需求总预算口径一致')
     else:
         problem('budget_level','预算层级尚未明确，请说明计划预算或广告组预算；已识别的组和素材仍保留')
-    total=req.budget if spec.budget_level=='campaign' else sum(amounts,Decimal(0)) if spec.budget_level=='adgroup' and all(a is not None for a in amounts) else None
+    from .excel import is_cent_amount
+    valid_amount=lambda a:a is not None and a.is_finite() and a>0 and is_cent_amount(a)
+    total=req.budget if spec.budget_level=='campaign' else sum(amounts,Decimal(0)) if spec.budget_level=='adgroup' and all(valid_amount(a) for a in amounts) else None
     original_budgets=[g.budget for g in req.structure.groups]
-    constraint_total=sum((b.amount for b in original_budgets),Decimal(0)) if all(b and b.amount is not None for b in original_budgets) else total
+    constraint_total=sum((b.amount for b in original_budgets),Decimal(0)) if all(b and valid_amount(b.amount) for b in original_budgets) else total
     if spec.budget_level=='adgroup' and req.budget_constraint is not None and constraint_total is not None and constraint_total!=req.budget_constraint:
         problem('budget','广告组预算合计与明确的计划总额约束不一致，请核对总额或组预算')
 
@@ -104,6 +107,8 @@ def campaign_tree(req: Requirement):
     material_ids = set()
     for index, group in enumerate(spec.groups):
         target_id=group.id
+        if spec.budget_level=='adgroup' and group.budget and group.budget.amount is not None and group.budget.amount.is_finite() and not is_cent_amount(group.budget.amount):
+            problem('budget','广告组预算金额必须明确到分，不能自动舍入')
         if spec.budget_level=='adgroup' and (not group.budget or group.budget.amount is None and group.budget.allocation_ratio is None):
             problem('budget',f'广告组 {group.name or group.id} 缺少预算金额')
         materials = group.ads

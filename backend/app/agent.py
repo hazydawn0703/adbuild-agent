@@ -121,11 +121,15 @@ async def propose_mapping(inspection,data=None,task=None,on_progress=None):
             try:left,top,right,bottom=range_boundaries(request.range)
             except (ValueError,TypeError):raise ProposalError('补读区域必须为明确单元格矩形') from None
             if any(x is None for x in (left,top,right,bottom)) or top<1 or left<1 or bottom<top or right<left or bottom>50000 or right>300:raise ProposalError('补读区域超出允许范围')
-        for mapping in result.mappings:
+        errors=[]
+        for index,mapping in enumerate(result.mappings):
             if mapping.sheet not in sheets or mapping.last_row>sheets[mapping.sheet]['rows']:raise ProposalError('映射范围超出实际内容')
             if wb is not None:
                 try:validate_sources(mapping,wb)
-                except ValueError as error:raise ProposalError(str(error)) from None
+                except ValueError as error:errors.append(f'mappings[{index}]: {error}')
+                from .excel import mapping_coverage_errors
+                errors.extend(f'mappings[{index}]: {error}' for error in mapping_coverage_errors(mapping,wb))
+        if errors:raise ProposalError('；'.join(errors))
     while True:
         if sum(len(text) for _,text in messages)>140000:
             result=MappingProposal(mappings=completed,explanation='相关证据超过本轮上下文预算，已保留补读证据和游标；请进一步明确需求子集后继续。',complete=False,pending_ranges=pending())

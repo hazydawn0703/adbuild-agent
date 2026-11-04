@@ -164,7 +164,12 @@ def supported_source(state,row,field,value,offered=None):
             if message and _message_supports_row(message,row,field,value,tz):return ref.model_copy(update={'raw_value':str(value)})
         if ref.kind=='confirmed' and ref.file_id:
             raise ValueError(f'{field} 的消息来源必须kind=confirmed、file_id为空、message_id为真实用户消息ID；不要伪造文件ID')
-        if ref.kind=='template' and not ref.file_id and ref.context_version==state.get('context',{}).get('version') and _context_supports(state,row,field,value):return ref.model_copy(update={'raw_value':str(value)})
+        if ref.kind=='template' and not ref.file_id and ref.context_version==state.get('context',{}).get('version') and _context_supports(state,row,field,value):
+            if row.get(field) not in (None,'') and not equivalent(field,value,row[field],tz):
+                message=next((m for m in state.get('messages',[]) if m.get('role')=='user' and m.get('id')==ref.message_id),None)
+                text='\n'.join(str(a['answer']) for a in message['answers']) if message and 'answers' in message else str((message or {}).get('content',''))
+                if not re.search(r'默认|\bdefault\b',text,re.I):raise ValueError(f'{field} 的默认值不能覆盖已有明确值；必须引用用户明确改用默认配置的消息')
+            return ref.model_copy(update={'raw_value':str(value)})
         raise ValueError(f'{field} 的新来源尚未经过服务端核实')
     for message in reversed(state.get('messages',[])):
         if message.get('role')=='user' and _message_supports_row(message,row,field,value,tz):
@@ -178,16 +183,22 @@ def supported_source(state,row,field,value,offered=None):
     raise ValueError(f'{field} 缺少支持该值的用户输入、项目默认或字段证据，请先澄清')
 
 
-def verify_excel_source(document,field,value,ref,tz='',owner=None):
-    """Document metadata must come from the project-scoped server query."""
+def read_verified_workbook(document):
+    """One verified snapshot may serve all fields in the same atomic operation."""
     from hashlib import sha256
     from .storage import target
-    from .excel import read_workbook,sensitive_cells,_anchor,_transform,source_transform,clean
-    from datetime import date
+    from .excel import read_workbook
     data=target(document['storage_path']).read_bytes()
     if sha256(data).hexdigest()!=document['sha256']:raise ValueError('字段来源文件指纹已变化')
+    return read_workbook(data)
+
+
+def verify_excel_source(document,field,value,ref,tz='',owner=None,workbook=None):
+    """Document metadata must come from the project-scoped server query."""
+    from .excel import sensitive_cells,_anchor,_transform,source_transform,clean
+    from datetime import date
     if not re.fullmatch(r'[A-Z]{1,3}[1-9][0-9]*',ref.cell):raise ValueError('字段来源单元格无效')
-    wb=read_workbook(data)
+    wb=workbook if workbook is not None else read_verified_workbook(document)
     if ref.sheet not in wb.sheetnames:raise ValueError('字段来源工作表不存在')
     sheet=wb[ref.sheet];cell=_anchor(sheet,sheet[ref.cell])
     if cell.row>50000 or cell.column>300 or cell.coordinate in sensitive_cells(sheet):raise ValueError('字段来源不可使用')
@@ -206,7 +217,7 @@ def verify_excel_source(document,field,value,ref,tz='',owner=None):
     if not equivalent(field,value,actual,tz):raise ValueError(f'{field} 字段值与原始单元格 {ref.sheet}!{cell.coordinate} 不一致')
     if owner is not None:
         from .evidence_ownership import verify_owner
-        verify_owner(wb,document,ref,owner,field)
+        verify_owner(wb,document,ref.model_copy(update={'cell':cell.coordinate}),owner,field)
     return ref.model_copy(update={'raw_value':clean(raw),'cell':cell.coordinate,'transform':transform})
 
 
@@ -289,7 +300,7 @@ def validate_proposal_evidence(state,decision):
                                 raise ValueError('素材授权码缺少用户提供的依据')
                         verified_fields={'post_id','post_url','identity_id','cta','landing_url'}
                         ad.sources={key:ref for key,ref in ad.sources.items() if key in verified_fields and getattr(ad,key)}
-                        for key in ('included','entity_key','group_key','campaign_key','account_id','business_no'):
+                        for key in ('included','entity_key','group_key','campaign_key','account_id','business_no','unassigned_budget'):
                             if old_ad.get('sources',{}).get(key):ad.sources[key]=SourceRef.model_validate(old_ad['sources'][key])
                     verified_fields={'name','budget','budget_mode','currency','allocation_ratio','audience','language','start_at','end_at','timezone','budget_level'}
                     group.sources={key:ref for key,ref in group.sources.items() if key in verified_fields}

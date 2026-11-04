@@ -435,12 +435,16 @@ def patch_draft(draft_id:str,body:DraftPatch,actor:Actor=Depends(authenticate)):
             task.version+=1;task.proposal=None;task.lease=None
             changed={(e.requirement_id,f) for e in body.edits for f in e.values}
             task.semantic_questions=[q for q in task.semantic_questions if not any((rid,q.field) in changed for rid in q.requirement_ids)]
-            task.messages.append({'id':message_id,'role':'user','content':'人工明确修改草稿：'+json.dumps([e.model_dump() for e in body.edits],ensure_ascii=False)})
-            if any('included' in e.values for e in body.edits):
+            from .manual_structure import form_facts
+            facts=form_facts(draft,message_id,actor.user_id)
+            selection_change=any('included' in e.values or 'structure' in e.values for e in body.edits)
+            if selection_change:
                 from .models import TaskScope,ScopeSelector
                 selected_ids=[r.id for r in draft.requirements if r.included]
+                facts.append({'field':'scope','answer':'当前明确参与的计划：'+'、'.join(selected_ids),'requirement_ids':[],'target_ids':[]})
                 task.scope=TaskScope(action='new',status='resolved',selectors=[ScopeSelector(field='requirement_id',values=selected_ids)],message_ids=[message_id],reason='用户在预览中明确选择本批需求') if selected_ids else TaskScope(reason='用户取消了全部选择')
                 task.semantic_questions=[q for q in task.semantic_questions if q.field!='scope']
+            task.messages.append({'id':message_id,'role':'user','content':'已通过表单明确更新草稿。','answers':facts,'origin':'form'})
             refresh(task,draft);save(c,task)
         return public_business(draft)
 

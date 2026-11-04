@@ -34,7 +34,8 @@ def set_budget_level(req,value,message_id,actor_id,source=None):
     req=req.model_copy(deep=True)
     if req.structure is None:raise ValueError('尚无已核实的组和素材，请先明确三层关系')
     level=normalize_value('budget_level',value)
-    changed=level!=req.structure.budget_level
+    previous_level=req.structure.budget_level
+    changed=level!=previous_level
     req.structure.budget_level=level
     if level=='campaign':
         for group in req.structure.groups:group.budget=None
@@ -45,6 +46,8 @@ def set_budget_level(req,value,message_id,actor_id,source=None):
         if changed and req.sources.get('budget') and req.sources['budget'].kind=='calculated':
             req.budget=None;req.sources.pop('budget')
     else:
+        if previous_level=='campaign' and req.budget is not None and req.sources.get('budget') and req.sources['budget'].kind!='calculated':
+            req.budget_constraint=req.budget;req.sources['budget_constraint']=req.sources['budget'].model_copy(deep=True)
         for group in req.structure.groups:
             group.budget=group.budget or BudgetSpec(currency=req.currency,mode=req.budget_mode)
     ref=SourceRef.model_validate(source) if source else SourceRef(kind='confirmed',file_id='',sheet='',cell='',raw_value=level,message_id=message_id)
@@ -67,17 +70,45 @@ def entity_label(req,target_id):
 
 def recover_group_budgets(req,documents):
     """After ownership is confirmed, re-read mapped amounts instead of asking again."""
-    if not req.structure or req.structure.budget_level!='adgroup':return req
-    from .provenance import verify_excel_source
+    if not req.structure:return req
+    from .provenance import verify_excel_source,read_verified_workbook
     from .models import Issue
+    workbooks={}
+    def amounts(refs):
+        found={};seen=set()
+        for ref in refs:
+            key=(ref.file_id,ref.sheet,ref.cell)
+            if key in seen:continue
+            seen.add(key)
+            document=next((d for d in documents if str(d['id'])==ref.file_id),None)
+            if not document:raise ValueError('预算来源不属于当前任务')
+            if ref.file_id not in workbooks:workbooks[ref.file_id]=read_verified_workbook(document)
+            amount=normalize_value('budget',ref.raw_value)
+            verified=verify_excel_source(document,'budget',amount,ref,workbook=workbooks[ref.file_id])
+            found[amount]=verified
+        return found
+    if req.structure.budget_level=='campaign':
+        refs=[a.sources['unassigned_budget'] for g in req.structure.groups for a in g.ads if a.sources.get('unassigned_budget')]
+        if not refs or req.sources.get('budget') and req.sources['budget'].kind=='confirmed':return req
+        try:
+            found=amounts(refs)
+            if len(found)!=1:raise ValueError('已确认计划预算，但源记录金额冲突；不能采用第一行金额')
+            req.budget,req.sources['budget']=next(iter(found.items()))
+        except (ValueError,OSError) as error:
+            req.budget=None;req.sources.pop('budget',None)
+            req.issues.append(Issue(code='invalid_budget_source',field='budget',target_id=req.id,message=str(error)))
+        return req
     for group in req.structure.groups:
         ref=group.sources.get('budget')
-        if not group.budget or group.budget.amount is not None or not ref or ref.kind!='excel':continue
-        document=next((d for d in documents if str(d['id'])==ref.file_id),None)
+        refs=[a.sources['unassigned_budget'] for a in group.ads if a.sources.get('unassigned_budget')]
+        if not group.budget or group.budget.amount is not None:continue
+        if not refs:
+            if not ref or ref.kind!='excel' or any(i.field=='budget' and i.target_id==group.id and i.code.startswith('invalid_') for i in req.issues):continue
+            refs=[ref]
         try:
-            if not document:raise ValueError('预算来源不属于当前项目')
-            amount=normalize_value('budget',ref.raw_value)
-            verified=verify_excel_source(document,'budget',amount,ref,group.timezone)
+            found=amounts(refs)
+            if len(found)!=1:raise ValueError('同一广告组的源记录预算冲突，不能采用第一行金额')
+            amount,verified=next(iter(found.items()))
             group.budget.amount=amount;group.sources['budget']=verified
         except (ValueError,OSError) as error:
             req.issues.append(Issue(code='invalid_budget_source',field='budget',target_id=group.id,message=str(error)))

@@ -116,6 +116,13 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
             elif field!='included':
                 try: patch[field]=normalize_value(field,value,patch.get('timezone',req.timezone))
                 except (ValueError,TypeError) as error: raise HTTPException(422,str(error))
+        if patch.get('structure') is not None and not verified_structure:
+            from .manual_structure import accept_structure
+            patch['structure'],changed=accept_structure(req,patch['structure'],actor.user_id,edit.get('source_message_id'))
+            req.issues=[i for i in req.issues if i.field not in changed.get(i.target_id,set())]
+            if not req.structure or patch['structure'].budget_level!=req.structure.budget_level:
+                verified_budget_level=SourceRef(kind='confirmed',file_id='',sheet='',cell='',raw_value=str(patch['structure'].budget_level),message_id=edit.get('source_message_id'),accepted_by=actor.user_id,accepted_at=datetime.now(timezone.utc))
+            values['issues']=req.issues
         if 'post_url' in patch and patch['post_url']:
             linked=post_id_from_url(patch['post_url'])
             if not linked:raise HTTPException(422,'请提供含明确帖子 ID 的 TikTok 视频链接')

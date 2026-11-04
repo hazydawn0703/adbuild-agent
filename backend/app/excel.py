@@ -17,6 +17,28 @@ def clean(value):
     return "" if value is None else str(value).strip()
 
 
+IDENTITY_HEADERS={'identityid','adidentityid','advertisingidentityid','素材身份','广告身份','广告身份id'}
+
+
+def is_cent_amount(value):
+    if not value.is_finite():return False
+    digits=value.as_tuple()
+    return digits.exponent>=-2 or not any(digits.digits[digits.exponent+2:])
+
+
+def mapping_coverage_errors(mapping,wb):
+    """Known populated identity columns must not become artificial missing facts."""
+    if mapping.sheet not in wb.sheetnames or mapping.last_row-mapping.first_row>=10000:return []
+    if 'identity_id' in mapping.bindings:return []
+    sheet=wb[mapping.sheet]
+    for cell in sheet[mapping.header_row]:
+        label=re.sub(r'[\W_]+','',clean(cell.value)).casefold()
+        if label not in IDENTITY_HEADERS:continue
+        if any(clean(_anchor(sheet,sheet.cell(row,cell.column)).value) for row in range(mapping.first_row,min(mapping.last_row,sheet.max_row)+1)):
+            return [f'bindings.identity_id 漏掉了已有实际值的广告身份列 {cell.column_letter}（{cell.coordinate}）；素材身份/广告身份/Identity ID 都是 identity_id，不是授权码，请逐行绑定，不要让用户重复提供']
+    return []
+
+
 def sensitive_cells(sheet):
     pattern=re.compile(r'^(?:(?:TikTok|Spark(?:\s*Ads)?|广告|账户|账号|登录|登陆|接口|客户)\s*)?(?:access[_ ]?token|refresh[_ ]?token|api[ _-]?key|password|client[_ ]?secret|authorization[_ ]?code|spark[_ ]?code|tt[_ ]?code|密码|密钥|授权码)\s*[:：]?$',re.I)
     rows={};hidden_rows=set();hidden_columns={}
@@ -278,6 +300,7 @@ def normalize_value(field,value,tz=''):
         try: result=Decimal(text.replace(',',''))
         except InvalidOperation as e: raise ValueError('预算不是有效金额') from e
         if not result.is_finite() or result<=0: raise ValueError('预算必须为有限的正数')
+        if not is_cent_amount(result):raise ValueError('预算金额最多两位小数，请明确到分；不会自动舍入')
         return result
     if field=='budget_mode':
         result={'总预算':'lifetime','total':'lifetime','lifetime':'lifetime','日预算':'daily','daily':'daily'}.get(text.lower())
@@ -288,7 +311,9 @@ def normalize_value(field,value,tz=''):
         if not re.fullmatch(r'[A-Z]{3}',result): raise ValueError('币种必须为三个字母的代码，金额不能作为币种')
         return result
     if field=='language':
-        result={'英语':'en','英文':'en','english':'en','不限':'all','全部':'all'}.get(text.lower(),text.lower())
+        aliases={'英语':'en','英文':'en','english':'en','不限':'all','全部':'all'}
+        parts=[aliases.get(part.strip().lower(),part.strip().lower()) for part in re.split(r'[/／]',text)]
+        result=parts[0] if len(set(parts))==1 else text.lower()
         if result!='all' and not re.fullmatch(r'[a-z]{2,3}(?:[-_][a-z]{2,4})?(?:\s*[,;]\s*[a-z]{2,3}(?:[-_][a-z]{2,4})?)*',result):
             raise ValueError('语言需为明确语言代码或 All，UTM、地区和备注不能作为语言')
         return result
@@ -338,7 +363,18 @@ def validate_mapping(mapping,wb):
             heading=clean(wb[mapping.sheet][f'{binding.column}{mapping.header_row}'].value)
             if re.fullmatch(r'记录(?:键|编号|ID)|素材(?:键|编号|ID)|record[ _-]?(?:key|id)|row[ _-]?id',heading,re.I):
                 raise ValueError('bindings.campaign_key 引用了素材记录标识，请绑定实际计划编号；无独立编号时只绑定计划 name')
-    for binding in mapping.bindings.values():
+    header_labels={
+        'name':{'campaignname','计划名称','计划名','系列名称','广告系列名称'},
+        'campaign_key':{'campaignid','计划编号','计划id','计划标识'},
+        'group_key':{'group','adgroup','adgroupname','广告组','广告组名称','组名称','组别'},
+        'record_key':{'recordid','rowid','记录键','记录编号','记录标识','素材编号'},
+        'audience':{'targeting','受众','受众名称','人群','定向'},
+        'language':{'languages','语言'},'cta':{'calltoaction','行动号召','按钮类型'},
+        'identity_id':IDENTITY_HEADERS,
+        'budget_level':{'预算层级'},'currency':{'币种'},'business_no':{'业务编号'},
+    }
+    label=lambda value:re.sub(r'[\W_]+','',clean(value)).casefold()
+    for field,binding in mapping.bindings.items():
         source_sheet=binding.sheet or mapping.sheet
         if source_sheet not in wb.sheetnames: raise ValueError('绑定来源工作表不存在')
         if binding.kind=='row':
@@ -347,6 +383,8 @@ def validate_mapping(mapping,wb):
             if not re.fullmatch(r'[A-Z]{1,3}[1-9][0-9]*',binding.cell): raise ValueError('固定来源必须提供有效单元格')
             cell=wb[source_sheet][binding.cell]
             if cell.row>50000 or cell.column>300: raise ValueError('绑定来源超出允许范围')
+            if source_sheet==mapping.sheet and cell.row==mapping.header_row and label(cell.value) in {label(field),*header_labels.get(field,set())}:
+                raise ValueError(f'bindings.{field} 引用了表头字段标签 {cell.coordinate}；请用 row.column 读取真实记录，不能把列标题当作字段值')
         else: raise ValueError('来源绑定类型不支持')
     for rule in mapping.filters:
         if not re.fullmatch(r'[A-Z]{1,3}',rule.column) or column_index_from_string(rule.column)>300 or rule.operator not in ('eq','in','nonempty'): raise ValueError('行筛选无效')

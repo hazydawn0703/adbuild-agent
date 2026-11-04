@@ -85,3 +85,25 @@ def test_budget_level_answer_then_group_amounts_completes_existing_tree(database
             assert [g['ads'][0]['post_id'] for g in final['structure']['groups']]==['100','200','300']
             assert not any(q['field'] in ('budget_level','budget') for q in state['task']['questions'])
     asyncio.run(scenario())
+
+
+def test_structure_form_registers_only_actual_owned_business_facts(database):
+    draft=insert_draft(database);req=draft.requirements[0]
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+            task=(await client.post(f'/projects/{database}/tasks',json={'draft_id':draft.id})).json()
+            structure=req.structure.model_dump(mode='json')
+            structure['groups'][0]['budget']={'amount':'25','currency':'USD','mode':'lifetime'}
+            structure['groups'][0]['ads'][0]['identity_id']='888'
+            structure['groups'][0]['ads'][0]['sources']={'identity_id':{'file_id':'foreign','sheet':'Secret','cell':'Z99','raw_value':'FORGED'}}
+            result=await client.post('/drafts/'+draft.id+'/edit',json={'expected_version':1,'edits':[{'requirement_id':req.id,'values':{'structure':structure}}]})
+            assert result.status_code==200,result.text
+            state=(await client.get('/tasks/'+task['id'])).json()
+            message=state['task']['messages'][-1]
+            assert 'FORGED' not in str(message) and 'foreign' not in str(message)
+            amounts=[a for a in message['answers'] if a['field']=='budget']
+            assert len(amounts)==1 and amounts[0]['target_ids']==[req.structure.groups[0].id] and amounts[0]['answer']=='25'
+            source=state['draft']['requirements'][0]['structure']['groups'][0]['ads'][0]['sources']['identity_id']
+            assert source['kind']=='confirmed' and source['file_id']==''
+            assert not any(q['field']=='budget' and q['target_ids']==[req.id] and q.get('reason_code')=='conflicting_evidence' for q in state['task']['questions'])
+    asyncio.run(scenario())

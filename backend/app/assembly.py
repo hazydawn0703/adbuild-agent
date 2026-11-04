@@ -71,6 +71,7 @@ def assemble(rows):
                 material_sources={f:row.sources[f] for f in values if f in row.sources}
                 material_sources.update({f:refs[f] for f in ('group_key','campaign_key') if f in refs})
                 material_sources.update({f:row.sources[f] for f in ('account_id','business_no') if f in row.sources})
+                if level is None and row.sources.get('budget'):material_sources['unassigned_budget']=row.sources['budget']
                 if req.sources.get('entity_key'):material_sources['entity_key']=req.sources['entity_key']
                 ads.append(MaterialSpec(id=material_id, **values,sources=material_sources))
             group_sources={**{f:first.sources[f] for f in ('budget','currency','budget_mode','audience','language','start_at','end_at','timezone') if f in first.sources},**members[0][2]}

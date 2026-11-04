@@ -4,7 +4,7 @@ from hashlib import sha256
 import json
 import re
 from .models import Requirement, Issue, ProjectPolicy, SourceRef
-from .excel import date_value,zone_value
+from .excel import date_value,zone_value,is_cent_amount
 
 
 def normalized_language(value):
@@ -152,6 +152,8 @@ def evaluate(req: Requirement, history: list[dict], now=None):
             req.issues.append(Issue(code="missing",field=field,message=f"缺少 {field}"))
     if req.budget is not None and (not req.budget.is_finite() or req.budget <= 0):
         req.issues.append(Issue(code="budget",field="budget",message="预算必须大于零"))
+    elif req.budget is not None and (not req.structure or req.structure.budget_level=='campaign') and not is_cent_amount(req.budget):
+        req.issues.append(Issue(code='budget',field='budget',message='预算金额必须明确到分，不能自动舍入'))
     if not req.structure:
         for field in ("start_at", "end_at"):
             dt = getattr(req,field)
@@ -182,6 +184,8 @@ def evaluate(req: Requirement, history: list[dict], now=None):
     if req.structure and req.structure.budget_level=='adgroup' and tree['planned_total'] is not None:
         req.budget=Decimal(tree['planned_total'])
         req.sources['budget']=SourceRef(kind='calculated',file_id='',sheet='',cell='',raw_value=str(req.budget),derived_from=[g.id+':budget' for g in req.structure.groups])
+    elif req.structure and req.structure.budget_level=='adgroup' and req.sources.get('budget') and req.sources['budget'].kind=='calculated':
+        req.budget=None;req.sources.pop('budget')
     if req.structure:
         for group in req.structure.groups:
             if not any(a.included for a in group.ads):continue

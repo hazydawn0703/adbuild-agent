@@ -37,6 +37,12 @@ def test_canonical_objectives_are_idempotent(value):
     assert normalize_value('objective',normalize_value('objective',value))==value
 
 
+def test_repeated_language_aliases_mean_one_language_but_different_codes_do_not():
+    assert normalize_value('language','English / 英文')=='en'
+    assert normalize_value('language','en / English')=='en'
+    with pytest.raises(ValueError):normalize_value('language','en / zh')
+
+
 @pytest.mark.parametrize('value',['followers / video views','traffic + video_views','views / engagement'])
 def test_compound_or_underspecified_goal_is_not_first_match(value):
     assert objective(value) is None
