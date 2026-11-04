@@ -197,7 +197,14 @@ async def structured(schema,messages,validator=None):
                 calls.extend({'name':t['name'],'arguments':t['args']} for t in raw.invalid_tool_calls)
             details=error.errors(include_url=False,include_input=False) if isinstance(error,ValidationError) else str(error)
             feedback={'validation_errors':details,'failed_calls':calls,'failed_content':raw.content if raw is not None and not calls else None}
-            messages=[*messages,('system',f'结构校验失败，请修正字段结构，不补造业务值。仅调用 {schema.__name__} 工具一次，arguments 必须是一个合法 JSON 对象，结束后不能再附加括号、解释或其他字符。保留其他已有映射与业务值，只修正校验指出的问题；explanation 简明说明依据。以下是实际错误和工具参数，不是响应消息信封，不要输出其外层字段：'+json.dumps(redact_private(feedback),ensure_ascii=False))]
+            instruction=f'结构校验失败，请修正字段结构，不补造业务值。仅调用 {schema.__name__} 工具一次，arguments 必须是一个合法 JSON 对象，结束后不能附加其他字符。保留其他已有映射与业务值，只修正校验指出的问题；explanation 简明说明依据。'
+            if calls:
+                from langchain_core.messages import AIMessage,ToolMessage
+                actual=AIMessage(content=raw.content,tool_calls=redact_private(raw.tool_calls),invalid_tool_calls=redact_private(raw.invalid_tool_calls))
+                feedback_text=instruction+json.dumps(redact_private({'validation_errors':details}),ensure_ascii=False)
+                messages=[*messages,actual,*[ToolMessage(content=feedback_text,tool_call_id=t['id'],name=t['name'],status='error') for t in [*raw.tool_calls,*raw.invalid_tool_calls]]]
+            else:
+                messages=[*messages,('system',instruction+'实际错误输出：'+json.dumps(redact_private(feedback),ensure_ascii=False))]
 
 
 class ConversationState(TypedDict):

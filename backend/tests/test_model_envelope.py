@@ -37,7 +37,8 @@ def test_repair_uses_actual_arguments_and_error_paths_without_message_envelope(m
             return {'raw':raw,'parsed':{'mappings':[]},'parsing_error':None} if len(calls)==1 else {'raw':AIMessage(content=''),'parsed':{'mappings':[],'explanation':'Need scope'},'parsing_error':None}
     monkeypatch.setattr('app.agent.llm',lambda schema:Model())
     result=asyncio.run(structured(MappingProposal,[]))
-    feedback=calls[1][-1][1]
+    feedback=calls[1][-1].content
     assert result.explanation=='Need scope' and len(calls)==2
-    assert 'explanation' in feedback and '"arguments": {"mappings": []}' in feedback
+    assert 'explanation' in feedback and calls[1][-1].tool_call_id=='bad' and calls[1][-1].status=='error'
+    assert calls[1][-2].tool_calls[0]['args']=={'mappings':[]}
     assert 'response_metadata' not in feedback and 'additional_kwargs' not in feedback
