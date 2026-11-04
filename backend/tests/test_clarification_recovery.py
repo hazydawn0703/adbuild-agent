@@ -76,6 +76,10 @@ def test_explicit_message_budget_conflict_blocks_even_if_model_does_not_ask():
     task=IntakeTask(id='t',project_id='p',messages=[{'id':'m','role':'user','content':'另一份口头记录总额999美元，与表格冲突，请核对'}])
     draft=BuildDraft(id='d',project_id='p',requirements=[req]);refresh(task,draft)
     assert any(q.field=='budget' and q.target_ids==[req.id] for q in task.questions)
+    before={q.id for q in task.questions if q.field=='budget'}
+    task.messages.append({'id':'newer','role':'user','content':'另一份当前预算888美元，需要核对'})
+    refresh(task,draft)
+    assert {q.id for q in task.questions if q.field=='budget'}!=before
     req.sources['budget']=SourceRef(kind='confirmed',file_id='',sheet='',cell='',raw_value='100.01',message_id='answer')
     task.messages.append({'id':'answer','role':'user','content':'本批最终预算100.01'})
     refresh(task,draft)
