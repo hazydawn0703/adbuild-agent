@@ -51,7 +51,7 @@ def llm(schema):
     if not cfg.llm_api_key:
         raise ValueError("尚未配置平台模型 LLM_API_KEY")
     return ChatOpenAI(model=cfg.llm_model,api_key=cfg.llm_api_key,base_url=cfg.llm_base_url,
-                      use_responses_api=False,timeout=60,max_retries=0,extra_body={"thinking":{"type":"disabled"}}).with_structured_output(schema,method="function_calling",include_raw=True)
+                      use_responses_api=False,temperature=0,timeout=60,max_retries=0,extra_body={"thinking":{"type":"disabled"}}).with_structured_output(schema,method="function_calling",include_raw=True)
 
 
 async def propose_mapping(inspection,data=None,task=None,on_progress=None):
@@ -195,7 +195,15 @@ async def structured(schema,messages,validator=None):
             if raw is not None:
                 calls=[{'name':t['name'],'arguments':t['args']} for t in raw.tool_calls]
                 calls.extend({'name':t['name'],'arguments':t['args']} for t in raw.invalid_tool_calls)
-            details=error.errors(include_url=False,include_input=False) if isinstance(error,ValidationError) else str(error)
+            details=error.errors(include_url=False,include_input=False,include_context=False) if isinstance(error,ValidationError) else str(error)
+            syntax=[]
+            if raw is not None:
+                for call in raw.invalid_tool_calls:
+                    if not isinstance(call.get('args'),str):continue
+                    try:json.loads(call['args'])
+                    except json.JSONDecodeError as problem:
+                        syntax.append({'tool':call['name'],'message':problem.msg,'line':problem.lineno,'column':problem.colno,'context':call['args'][max(0,problem.pos-60):problem.pos+60]})
+            if syntax:details={'schema':details,'json_syntax':syntax}
             feedback={'validation_errors':details,'failed_calls':calls,'failed_content':raw.content if raw is not None and not calls else None}
             instruction=f'结构校验失败，请修正字段结构，不补造业务值。仅调用 {schema.__name__} 工具一次，arguments 必须是一个合法 JSON 对象，结束后不能附加其他字符。保留其他已有映射与业务值，只修正校验指出的问题；explanation 简明说明依据。'
             if calls:

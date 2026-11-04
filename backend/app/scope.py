@@ -1,5 +1,6 @@
 """Task selection is a server-checked set, independent of column mappings and edits."""
 import re
+import json
 from urllib.parse import urlsplit
 
 
@@ -9,7 +10,9 @@ def as_dict(value):
 
 def redact_private(value):
     """Only presence of a private material credential may enter model context."""
-    sensitive=re.compile(r'^(?:authorization_code|access_token|refresh_token|api_key|client_secret|password)$',re.I)
+    names=r'authorization_code|access_token|refresh_token|api_key|client_secret|password'
+    sensitive=re.compile(r'^(?:'+names+r')$',re.I)
+    encoded=re.compile(r'"(?:'+names+r')"\s*:\s*"((?:\\.|[^"\\])*)"',re.I)
     secrets=set()
     def collect(item):
         if isinstance(item,dict):
@@ -18,6 +21,11 @@ def redact_private(value):
                 collect(val)
         elif isinstance(item,list):
             for val in item:collect(val)
+        elif isinstance(item,str):
+            for match in encoded.finditer(item):
+                try:secret=json.loads('"'+match[1]+'"')
+                except ValueError:secret=match[1]
+                if secret:secrets.update((secret,match[1]))
     collect(value)
     def sanitize(item):
         if isinstance(item,dict):
