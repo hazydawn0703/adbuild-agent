@@ -25,7 +25,14 @@ async def main():
                 await cleanup(data)
             else:
                 from .executor import execute
-                await execute(data['run_id'],data.get('action','resume'))
+                from .usage import task_context
+                with transaction() as c:
+                    task=c.execute('select i.id,i.project_id from intake_tasks i join runs r on r.draft_id=i.draft_id where r.id=%s',(data['run_id'],)).fetchone()
+                if task:
+                    with task_context(task['id'],task['project_id']):
+                        await execute(data['run_id'],data.get('action','resume'))
+                else:
+                    await execute(data['run_id'],data.get('action','resume'))
         except Exception as e:
             if 'storage_paths' in data:
                 await asyncio.sleep(2)

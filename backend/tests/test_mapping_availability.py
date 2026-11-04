@@ -18,6 +18,7 @@ def test_mapping_timeout_has_safe_retry_metadata_and_keeps_saved_progress(monkey
         def fetchall(self):return self.rows
     class Connection:
         def execute(self,sql,*_):
+            if sql.startswith('select tenant_id from projects'):return Result([{'tenant_id':'tenant'}])
             if 'select * from files' in sql:return Result([row])
             if 'select id from intake_tasks' in sql:return Result([{'id':task.id}])
             return Result([])
@@ -27,6 +28,7 @@ def test_mapping_timeout_has_safe_retry_metadata_and_keeps_saved_progress(monkey
     async def propose(inspection,data,task,on_progress):
         on_progress(MappingProposal(mappings=[],complete=False,explanation='read saved',read_state={'evidence':[{'coverage':{'read_cells':2}}]}))
         raise TimeoutError('private-provider-error-must-not-leak')
+    monkeypatch.setattr('app.usage.transaction',transaction)
     monkeypatch.setattr(main,'transaction',transaction)
     monkeypatch.setattr(main,'project_access',lambda *_a,**_k:{'id':'project'})
     monkeypatch.setattr(intake,'access',lambda *_a,**_k:(task,{'id':'project'}))

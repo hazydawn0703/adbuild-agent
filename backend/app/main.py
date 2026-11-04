@@ -265,7 +265,9 @@ async def mapping_proposal(file_id:str,actor:Actor=Depends(authenticate)):
                                          'template_review_required':template_review_required}
             save(c,current)
     try:
-        proposal=await asyncio.wait_for(propose_mapping(row['inspection'],data,task=task,on_progress=persist_progress),180)
+        from .usage import stage
+        with stage(task.id,task.project_id,'mapping'):
+            proposal=await asyncio.wait_for(propose_mapping(row['inspection'],data,task=task,on_progress=persist_progress),180)
         if template_review_required:
             proposal.explanation='已确认模板无法通过本次来源、变换或唯一性校验，以下为重新提议的映射，请审核。'+proposal.explanation
         persist_progress(proposal)
