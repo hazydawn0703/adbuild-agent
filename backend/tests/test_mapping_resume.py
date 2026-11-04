@@ -115,6 +115,14 @@ def test_repeated_completed_read_does_not_run_without_progress(monkeypatch):
     assert len(result.read_state['evidence'])==1
 
 
+def test_read_beyond_known_workbook_extent_is_proven_empty_without_pagination():
+    from app.excel import read_region_page
+    w=Workbook();w.active.append(['Known']);w.active.append(['record'])
+    result=read_region_page(binary(w),w.active.title,'A3:V200')
+    assert result['complete'] and result['next_cursor'] is None and result['cells']=={}
+    assert result['coverage']['basis']=='outside_used_range' and result['coverage']['known_empty_cells']==4356
+
+
 def test_complete_mapping_with_repeated_satisfied_read_reaches_budget_conflict(monkeypatch):
     w=Workbook();s=w.active;s.append(['Campaign Name','Ad Group Name','Post ID','Budget Level','Campaign Budget','Ad Group Budget'])
     s.append(['Launch','G1','123','campaign','100',None]);s.append(['Launch','G2','456','campaign','101',None]);data=binary(w);calls=[]

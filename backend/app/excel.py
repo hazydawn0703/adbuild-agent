@@ -172,6 +172,10 @@ def read_region_page(data: bytes,sheet: str,cell_range: str,cursor: int=0):
     if not all(isinstance(v,int) for v in (left,top,right,bottom)) or top<1 or left<1 or bottom>50000 or right>300 or bottom<top or right<left:raise ValueError('补读范围无效')
     width=right-left+1;total=width*(bottom-top+1)
     if not isinstance(cursor,int) or isinstance(cursor,bool) or cursor<0 or cursor>=total:raise ValueError('补读游标无效')
+    # The workbook was loaded completely: outside its used rectangle is proven
+    # empty, not an unread page that needs thousands of empty-cell allocations.
+    if top>wb[sheet].max_row or left>wb[sheet].max_column:
+        return {'sheet':sheet,'range':cell_range,'cells':{},'coverage':{'offset':cursor,'read_cells':0,'total_cells':total,'known_empty_cells':total-cursor,'basis':'outside_used_range'},'next_cursor':None,'complete':True}
     stop=min(total,cursor+1000);hidden=sensitive_cells(wb[sheet]);cells={}
     for offset in range(cursor,stop):
         row,col=divmod(offset,width);cell=wb[sheet].cell(top+row,left+col)
