@@ -4,6 +4,7 @@ Reads reference JSON as data. No reference code or document instructions execute
 The model driver never imports this module or reads these reference files.
 """
 import argparse
+import hashlib
 from collections import Counter
 from decimal import Decimal
 import json
@@ -57,10 +58,17 @@ def compare(preview,reference,flexible_rounding=False):
 
 def score(run,references,normal=False):
     run=Path(run);verify_seal(run)
+    references=Path(references)
+    if (references/'REFERENCE_SEAL.json').exists():
+        for name,digest in load(references/'REFERENCE_SEAL.json').items():
+            path=(references/name).resolve()
+            if not path.is_relative_to(references.resolve()) or hashlib.sha256(path.read_bytes()).hexdigest()!=digest:raise ValueError('Reference audit seal mismatch')
     audit=load(run/'run-audit.json');protocol=load(run/'protocol.json')
     if not audit['complete'] or audit['source_mismatches_after'] or audit['input_mismatches_after'] or audit['advertising_calls']:
         raise ValueError('Run is incomplete or changed')
     records=[]
+    reference_hashes={case:hashlib.sha256((references/(case+'.json')).read_bytes()).hexdigest() for case in protocol['cases']}
+    reference_audit=load(references/'REFERENCE_AUDIT.json') if (references/'REFERENCE_AUDIT.json').exists() else None
     aliases={'budget_level':{'budget_level','structure'},'history_batch':{'scope','included','audience'},'post_url':{'post_url','post_id'}}
     for case in protocol['cases']:
         oracle=load(Path(references)/(case+'.json'));expected=oracle['expected'];folder=run/'raw'/case
@@ -90,6 +98,8 @@ def score(run,references,normal=False):
     return {'commit':load(run/'freeze.json')['commit'],'cases':len(records),'expected_classes':dict(Counter(r['expected'] for r in records)),
         'results':dict(Counter(r['result'] for r in records)),'false_ready':sum(r['false_ready'] for r in records),
         'safety_failures':sum(not r['safe'] for r in records),'label':'supplied_pack_normal_interaction_regression' if normal else 'supplied_pack_single_attempt_regression',
+        'reference_set_sha256':hashlib.sha256(json.dumps(reference_hashes,sort_keys=True).encode()).hexdigest(),
+        'reference_audit':{'rule':reference_audit['rule_version'],'changed_fields':len(reference_audit['changes']),'cases':sorted({item['case'] for item in reference_audit['changes']})} if reference_audit else None,
         'limits':['Only predeclared permitted answers supplied.' if normal else 'No normal clarification answers supplied in this lane.','Sources are covered by deterministic verifier tests; semantic comparison alone does not independently certify every source.','Business clock is frozen as recorded; original schedules are not rewritten.'],
         'records':records}
 
