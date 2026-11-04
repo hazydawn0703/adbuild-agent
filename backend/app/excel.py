@@ -17,6 +17,30 @@ def clean(value):
     return "" if value is None else str(value).strip()
 
 
+IDENTITY_HEADERS={'identityid','adidentityid','advertisingidentityid','素材身份','广告身份','广告身份id'}
+GROUP_HEADERS={'group','adgroup','adgroupname','广告组','广告组名称','组名称','组别'}
+
+
+def is_cent_amount(value):
+    if not value.is_finite():return False
+    digits=value.as_tuple()
+    return digits.exponent>=-2 or not any(digits.digits[digits.exponent+2:])
+
+
+def mapping_coverage_errors(mapping,wb):
+    """Explicit populated entity columns cannot become artificial missing facts."""
+    if mapping.sheet not in wb.sheetnames or mapping.last_row-mapping.first_row>=10000:return []
+    sheet=wb[mapping.sheet];errors=[]
+    for cell in sheet[mapping.header_row]:
+        label=re.sub(r'[\W_]+','',clean(cell.value)).casefold()
+        field='identity_id' if label in IDENTITY_HEADERS else 'group_key' if label in GROUP_HEADERS else None
+        if not field or field in mapping.bindings:continue
+        if any(clean(_anchor(sheet,sheet.cell(row,cell.column)).value) for row in range(mapping.first_row,min(mapping.last_row,sheet.max_row)+1)):
+            detail='素材身份/广告身份/Identity ID 都是 identity_id，不是授权码' if field=='identity_id' else 'Ad Group Name/广告组名称是 group_key，不可漏掉或按行虚构广告组'
+            errors.append(f'bindings.{field} 漏掉了已有实际值的实体列 {cell.column_letter}（{cell.coordinate}）；{detail}，请逐行绑定，不要让用户重复提供')
+    return errors
+
+
 def sensitive_cells(sheet):
     pattern=re.compile(r'^(?:(?:TikTok|Spark(?:\s*Ads)?|广告|账户|账号|登录|登陆|接口|客户)\s*)?(?:access[_ ]?token|refresh[_ ]?token|api[ _-]?key|password|client[_ ]?secret|authorization[_ ]?code|spark[_ ]?code|tt[_ ]?code|密码|密钥|授权码)\s*[:：]?$',re.I)
     rows={};hidden_rows=set();hidden_columns={}
@@ -148,6 +172,10 @@ def read_region_page(data: bytes,sheet: str,cell_range: str,cursor: int=0):
     if not all(isinstance(v,int) for v in (left,top,right,bottom)) or top<1 or left<1 or bottom>50000 or right>300 or bottom<top or right<left:raise ValueError('补读范围无效')
     width=right-left+1;total=width*(bottom-top+1)
     if not isinstance(cursor,int) or isinstance(cursor,bool) or cursor<0 or cursor>=total:raise ValueError('补读游标无效')
+    # The workbook was loaded completely: outside its used rectangle is proven
+    # empty, not an unread page that needs thousands of empty-cell allocations.
+    if top>wb[sheet].max_row or left>wb[sheet].max_column:
+        return {'sheet':sheet,'range':cell_range,'cells':{},'coverage':{'offset':cursor,'read_cells':0,'total_cells':total,'known_empty_cells':total-cursor,'basis':'outside_used_range'},'next_cursor':None,'complete':True}
     stop=min(total,cursor+1000);hidden=sensitive_cells(wb[sheet]);cells={}
     for offset in range(cursor,stop):
         row,col=divmod(offset,width);cell=wb[sheet].cell(top+row,left+col)
@@ -259,6 +287,12 @@ def normalize_value(field,value,tz=''):
     if value is None or value=='': return None if field in ('budget','objective','start_at','end_at') else ''
     text=clean(value)
     if field=='platform':return {'tiktok':'TikTok','tt':'TikTok'}.get(text.casefold().replace(' ',''),text)
+    if field=='budget_level':
+        level=re.sub(r'[\s_-]','',text).casefold()
+        result={'campaign':'campaign','campaignbudget':'campaign','计划':'campaign','计划预算':'campaign','计划层':'campaign','计划级':'campaign',
+            'adgroup':'adgroup','adgroupbudget':'adgroup','广告组':'adgroup','广告组预算':'adgroup','广告组层':'adgroup','广告组级':'adgroup'}.get(level)
+        if result is None:raise ValueError('预算层级必须明确为计划或广告组，预算金额本身不能说明层级')
+        return result
     if field in ('account_id','post_id'):
         result=platform_id(value)
         if not re.fullmatch(r'[0-9]{1,30}',result): raise ValueError('平台 ID 必须是数字字符串，姓名、链接和授权码不能作为 ID')
@@ -268,10 +302,12 @@ def normalize_value(field,value,tz=''):
         if result is None: raise ValueError('广告目标不支持或包含多个目标，需要明确目标及各自配置')
         return result
     if field=='budget':
+        if isinstance(value,str) and re.fullmatch(r'[0-9]{1,3}[,.][0-9]{3}',text):raise ValueError('金额分隔符口径不明确，请提供明确的两位小数格式')
         if ',' in text and not re.fullmatch(r'[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?',text): raise ValueError('金额分隔符口径不明确，请提供明确的小数格式')
         try: result=Decimal(text.replace(',',''))
         except InvalidOperation as e: raise ValueError('预算不是有效金额') from e
         if not result.is_finite() or result<=0: raise ValueError('预算必须为有限的正数')
+        if not is_cent_amount(result):raise ValueError('预算金额最多两位小数，请明确到分；不会自动舍入')
         return result
     if field=='budget_mode':
         result={'总预算':'lifetime','total':'lifetime','lifetime':'lifetime','日预算':'daily','daily':'daily'}.get(text.lower())
@@ -282,7 +318,9 @@ def normalize_value(field,value,tz=''):
         if not re.fullmatch(r'[A-Z]{3}',result): raise ValueError('币种必须为三个字母的代码，金额不能作为币种')
         return result
     if field=='language':
-        result={'英语':'en','英文':'en','english':'en','不限':'all','全部':'all'}.get(text.lower(),text.lower())
+        aliases={'英语':'en','英文':'en','english':'en','不限':'all','全部':'all'}
+        parts=[aliases.get(part.strip().lower(),part.strip().lower()) for part in re.split(r'[/／]',text)]
+        result=parts[0] if len(set(parts))==1 else text.lower()
         if result!='all' and not re.fullmatch(r'[a-z]{2,3}(?:[-_][a-z]{2,4})?(?:\s*[,;]\s*[a-z]{2,3}(?:[-_][a-z]{2,4})?)*',result):
             raise ValueError('语言需为明确语言代码或 All，UTM、地区和备注不能作为语言')
         return result
@@ -315,11 +353,35 @@ def _transform(value,kind):
     raise ValueError('映射变换类型不支持')
 
 
-def validate_mapping_layout(mapping,wb):
+def validate_mapping(mapping,wb):
     """Validate the complete mapping before reading rows, including foreign sources."""
+    if 'budget' in mapping.bindings and {'campaign_budget','adgroup_budget'}&set(mapping.bindings):
+        raise ValueError('bindings.budget 与分层金额绑定重复；请只输出 campaign_budget/adgroup_budget，不能再绑定通用 budget')
     if mapping.sheet not in wb.sheetnames or mapping.last_row<mapping.first_row: raise ValueError('工作表或数据范围无效')
     if mapping.last_row>wb[mapping.sheet].max_row or mapping.last_row-mapping.first_row>=10000: raise ValueError('数据范围超出工作表或 10,000 行限制')
-    for binding in mapping.bindings.values():
+    identities={}
+    for field in ('campaign_key','group_key','record_key'):
+        binding=mapping.bindings.get(field)
+        if binding is None:continue
+        key=(binding.kind,binding.sheet or mapping.sheet,binding.column,binding.cell)
+        if key in identities:raise ValueError(f'bindings.{field} 与 {identities[key]} 引用同一身份来源；计划、广告组、素材记录身份不能混用')
+        identities[key]=field
+        if field=='campaign_key' and binding.kind=='row' and re.fullmatch(r'[A-Z]{1,3}',binding.column):
+            heading=clean(wb[mapping.sheet][f'{binding.column}{mapping.header_row}'].value)
+            if re.fullmatch(r'记录(?:键|编号|ID)|素材(?:键|编号|ID)|record[ _-]?(?:key|id)|row[ _-]?id',heading,re.I):
+                raise ValueError('bindings.campaign_key 引用了素材记录标识，请绑定实际计划编号；无独立编号时只绑定计划 name')
+    header_labels={
+        'name':{'campaignname','计划名称','计划名','系列名称','广告系列名称'},
+        'campaign_key':{'campaignid','计划编号','计划id','计划标识'},
+        'group_key':GROUP_HEADERS,
+        'record_key':{'recordid','rowid','记录键','记录编号','记录标识','素材编号'},
+        'audience':{'targeting','受众','受众名称','人群','定向'},
+        'language':{'languages','语言'},'cta':{'calltoaction','行动号召','按钮类型'},
+        'identity_id':IDENTITY_HEADERS,
+        'budget_level':{'预算层级'},'currency':{'币种'},'business_no':{'业务编号'},
+    }
+    label=lambda value:re.sub(r'[\W_]+','',clean(value)).casefold()
+    for field,binding in mapping.bindings.items():
         source_sheet=binding.sheet or mapping.sheet
         if source_sheet not in wb.sheetnames: raise ValueError('绑定来源工作表不存在')
         if binding.kind=='row':
@@ -328,35 +390,21 @@ def validate_mapping_layout(mapping,wb):
             if not re.fullmatch(r'[A-Z]{1,3}[1-9][0-9]*',binding.cell): raise ValueError('固定来源必须提供有效单元格')
             cell=wb[source_sheet][binding.cell]
             if cell.row>50000 or cell.column>300: raise ValueError('绑定来源超出允许范围')
+            if source_sheet==mapping.sheet and cell.row==mapping.header_row and label(cell.value) in {label(field),*header_labels.get(field,set())}:
+                raise ValueError(f'bindings.{field} 引用了表头字段标签 {cell.coordinate}；请用 row.column 读取真实记录，不能把列标题当作字段值')
         else: raise ValueError('来源绑定类型不支持')
     for rule in mapping.filters:
         if not re.fullmatch(r'[A-Z]{1,3}',rule.column) or column_index_from_string(rule.column)>300 or rule.operator not in ('eq','in','nonempty'): raise ValueError('行筛选无效')
         if rule.operator=='eq' and len(rule.values)!=1 or rule.operator=='in' and not rule.values: raise ValueError('行筛选缺少明确候选值')
 
 
-def validate_mapping(mapping,wb):
-    validate_mapping_layout(mapping,wb)
-    for field,binding in mapping.bindings.items():
-        if binding.transform=='value':continue
-        source=wb[binding.sheet or mapping.sheet]
-        if binding.kind in ('cell',):
-            cell=_anchor(source,source[binding.cell])
-            try:
-                if cell.value is None or not clean(cell.value) or cell.data_type=='e':raise ValueError('固定来源为空或为 Excel 错误值')
-                _transform(cell.value,binding.transform)
-            except ValueError as error:
-                raise ValueError(f'{field} 的固定来源 {source.title}!{cell.coordinate} 不支持 {binding.transform}：{error}') from None
-        else:
-            supported=False
-            for index in range(mapping.first_row,mapping.last_row+1):
-                if not _row_selected(source,index,mapping.filters):continue
-                cell=_anchor(source,source.cell(index,column_index_from_string(binding.column)))
-                if cell.value is None or not clean(cell.value) or cell.data_type=='e':continue
-                try:_transform(cell.value,binding.transform)
-                except ValueError:continue
-                supported=True;break
-            if not supported:
-                raise ValueError(f'{field} 的实际选区没有非空来源支持 {binding.transform}，请更正来源或变换')
+def source_transform(field,value):
+    """Select a controlled conversion from field semantics and actual cell shape."""
+    if field in ('start_at','end_at') and not isinstance(value,(date,datetime)):
+        parts=re.split(r'\s+(?:-|–|—|to)\s+|\s*[至~～]\s*',clean(value),flags=re.I)
+        if len(parts)==2:return 'interval_start' if field=='start_at' else 'interval_end'
+    if field=='currency' and not re.fullmatch(r'[A-Za-z]{3}',clean(value)):return 'currency_code'
+    return 'value'
 
 
 def _row_selected(sheet,index,filters):
@@ -372,7 +420,8 @@ def _binding_sources(mapping,wb,index):
     for field,binding in mapping.bindings.items():
         sheet=wb[binding.sheet or mapping.sheet]
         cell=sheet.cell(index,column_index_from_string(binding.column)) if binding.kind=='row' else sheet[binding.cell]
-        yield field,sheet,_anchor(sheet,cell),binding.transform
+        cell=_anchor(sheet,cell)
+        yield field,sheet,cell,source_transform(field,cell.value)
 
 
 def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
@@ -384,7 +433,7 @@ def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
     fields |= entity_fields
     hidden_by_sheet={sheet.title:sensitive_cells(sheet) for sheet in wb}
     for mapping in mappings:
-        validate_mapping_layout(mapping,wb)
+        validate_mapping(mapping,wb)
         if set(mapping.bindings)-fields:
             raise ValueError("存在未知的需求字段")
         sheet = wb[mapping.sheet]
@@ -422,6 +471,11 @@ def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
                 continue
             entity={field:values.pop(field) for field in list(values) if field in entity_fields}
             entity_refs={field:refs.pop(field) for field in list(refs) if field in entity_fields}
+            if entity.get('budget_level') not in (None,''):
+                try:entity['budget_level']=normalize_value('budget_level',entity['budget_level'])
+                except ValueError as error:
+                    entity['budget_level']=None
+                    issues.append(Issue(code='invalid_budget_level',field='budget_level',message=str(error)))
             for field in ('campaign_budget','adgroup_budget'):
                 if entity.get(field) not in (None,''):
                     try:entity[field]=normalize_value('budget',entity[field])
@@ -467,6 +521,10 @@ def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
                     values[field]=None if field in ('budget','objective','start_at','end_at') else ''
                     issues.append(Issue(code='invalid_'+field,field=field,message=str(error)))
             row_id=sha256(f'{file_id}:{sheet.title}:{index}:{mapping.model_dump_json()}'.encode()).hexdigest()[:24]
+            if 'budget' in values and entity.get('budget_level') in ('campaign','adgroup'):
+                owner='campaign_budget' if entity['budget_level']=='campaign' else 'adgroup_budget'
+                entity[owner]=values.pop('budget')
+                if 'budget' in refs:entity_refs[owner]=refs.pop('budget')
             try:
                 result.append((Requirement(id=row_id,**values,sources=refs,issues=issues),entity,entity_refs))
             except ValidationError as error:
@@ -476,4 +534,3 @@ def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
                 result.append((Requirement(id=row_id,**values,sources=refs,issues=issues),entity,entity_refs))
     from .assembly import assemble
     return assemble(result)
-

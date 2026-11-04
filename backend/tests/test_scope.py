@@ -46,7 +46,7 @@ def test_all_records_requires_explicit_scope_and_applies_platform_filter():
     rows=[Requirement(id='a',post_url='https://www.tiktok.com/@a/video/123'),Requirement(id='b',post_url='https://example.org/video/123')]
     assert [r.id for r in select_requirements(rows,scope,messages) if r.included]==['a']
     scope.selectors=[]
-    with pytest.raises(ValueError,match='明确依据'):
+    with pytest.raises(ValueError,match='明确.*依据'):
         select_requirements(rows,scope,[{'id':'m','role':'user','content':'看看文件'}])
 
 
@@ -120,4 +120,3 @@ def test_material_credential_and_its_source_never_enter_model_context():
     ad=payload['draft']['requirements'][0]['structure']['groups'][0]['ads'][0]
     assert ad['authorization_present'] is True
     assert 'authorization_code' not in ad
-

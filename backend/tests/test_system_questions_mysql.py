@@ -8,7 +8,7 @@ from app.models import BuildDraft,Requirement
 from test_task_mysql import database
 
 
-def test_one_structured_answer_updates_whole_exact_record_set_and_questions_stay_retired(database):
+def test_batch_answers_keep_exact_owners_and_questions_stay_retired(database):
     async def scenario():
         draft=BuildDraft(id=str(uuid4()),project_id=database,requirements=[Requirement(id=rid,included=True,post_id='7700000000000000033') for rid in ('row-a','row-b')])
         with db.transaction() as c:
@@ -18,8 +18,8 @@ def test_one_structured_answer_updates_whole_exact_record_set_and_questions_stay
             task=(await client.post(f'/projects/{database}/tasks',json={'draft_id':draft.id})).json()
             state=(await client.get('/tasks/'+task['id'])).json()
             questions=[q for q in state['task']['questions'] if q['field'] in ('audience','identity_id')]
-            assert len(questions)==2
-            assert all(q['requirement_ids']==['row-a','row-b'] for q in questions)
+            assert len(questions)==4
+            assert {tuple(q['requirement_ids']) for q in questions}=={('row-a',),('row-b',)}
             answers={q['id']:'Explicit audience' if q['field']=='audience' else '7700000000000000044' for q in questions}
             body={'task_id':task['id'],'request_id':str(uuid4()),'expected_version':state['task']['version'],
                   'expected_draft_version':state['draft']['version'],'action':'answer','answers':answers}

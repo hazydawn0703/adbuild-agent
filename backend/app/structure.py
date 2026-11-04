@@ -18,12 +18,12 @@ def redact_material_secrets(value):
 def allocate_budget(total: Decimal, ratios: list[Decimal]) -> list[Decimal]:
     """Allocate cents deterministically; do not lose money to independent rounding."""
     total = Decimal(total)
-    ratios = [Decimal(r) for r in ratios]
     if not total.is_finite() or total <= 0 or total != total.quantize(Decimal('.01')):
         raise ValueError('拆分预算必须为正数且最多两位小数')
-    if not ratios or any(not r.is_finite() or r <= 0 for r in ratios):
+    try:weights=[Fraction(r) for r in ratios]
+    except (ValueError,TypeError,OverflowError,ZeroDivisionError):raise ValueError('预算分配权重必须为有限正数') from None
+    if not weights or any(r<=0 for r in weights):
         raise ValueError('预算分配权重必须为有限正数')
-    weights = [Fraction(r) for r in ratios]
     exact = [Fraction(total) * r / sum(weights) for r in weights]
     amounts = [(Decimal((v * 100).__floor__()) / 100).quantize(Decimal('.01')) for v in exact]
     remainder = int((total - sum(amounts)) / Decimal('.01'))
@@ -33,6 +33,22 @@ def allocate_budget(total: Decimal, ratios: list[Decimal]) -> list[Decimal]:
     if any(v <= 0 for v in amounts):
         raise ValueError('拆分后的每组预算必须大于零')
     return amounts
+
+
+def materialize_allocation(req: Requirement):
+    """Persist owned amounts before scope filtering can change the weight set."""
+    spec=req.structure
+    if not spec or spec.budget_level!='adgroup':return req
+    budgets=[g.budget for g in spec.groups]
+    if not all(b and b.allocation_ratio is not None and b.amount is None for b in budgets):return req
+    total=req.budget_constraint if req.budget_constraint is not None else req.budget
+    amounts=allocate_budget(total,[b.allocation_ratio for b in budgets])
+    from .models import SourceRef
+    for group,amount in zip(spec.groups,amounts):
+        group.sources['budget']=SourceRef(kind='calculated',file_id='',sheet='',cell='',raw_value=str(amount),
+            derived_from=[req.id+':budget',*[g.id+':allocation_ratio' for g in spec.groups]])
+        group.budget.amount=amount;group.budget.allocation_ratio=None
+    return req
 
 
 def campaign_tree(req: Requirement):
@@ -49,6 +65,8 @@ def campaign_tree(req: Requirement):
         return {'id':f'{req.id}:campaign','requirement_id':req.id,'name':name,
                 'account_id':req.account_id,'objective':req.objective,'budget_level':None,
                 'budget':None,'planned_total':None,'adgroups':[]}, issues
+    spec=spec.model_copy(update={'groups':[g.model_copy(update={'ads':[a for a in g.ads if a.included]}) for g in spec.groups if any(a.included for a in g.ads)]})
+    if not spec.groups:problem('included','没有选中需要新增的素材')
     group_ids = [g.id for g in spec.groups]
     if len(set(group_ids)) != len(group_ids) or any(not value.strip() for value in group_ids):
         problem('structure', '广告组 ID 必须非空且在计划内唯一')
@@ -56,33 +74,43 @@ def campaign_tree(req: Requirement):
     budgets = [g.budget for g in spec.groups]
     if spec.budget_level == 'campaign':
         if any(b is not None for b in budgets):
-            problem('structure', '计划预算与广告组预算不能同时生效，请明确预算层级')
-    else:
-        if any(b is None for b in budgets):
-            problem('structure', '广告组预算模式下，每组都需要金额或分配比例')
-        elif all(b.allocation_ratio is not None and b.amount is None for b in budgets):
+            problem('budget_level', '计划预算与广告组预算不能同时生效，请明确预算层级')
+    elif spec.budget_level == 'adgroup':
+        if all(b is not None and b.allocation_ratio is not None and b.amount is None for b in budgets):
             try:
-                amounts = allocate_budget(req.budget, [b.allocation_ratio for b in budgets])
+                amounts = allocate_budget(req.budget_constraint if req.budget_constraint is not None else req.budget, [b.allocation_ratio for b in budgets])
             except (ValueError, TypeError, InvalidOperation) as error:
                 problem('structure', str(error))
-        elif all(b.amount is not None and b.allocation_ratio is None for b in budgets):
+        elif all(b is not None and b.amount is not None and b.allocation_ratio is None for b in budgets):
             amounts = [b.amount for b in budgets]
+            from .excel import is_cent_amount
             if any(not v.is_finite() or v <= 0 for v in amounts):
                 problem('structure', '每个广告组预算必须为有效正数')
-            elif req.budget is None or sum(amounts) != req.budget:
-                problem('structure', '广告组预算合计必须等于本需求的总预算')
-        else:
+        elif all(b is not None and (b.amount is not None or b.allocation_ratio is not None) for b in budgets):
             problem('structure', '组预算应全部使用金额或全部使用比例，且每组只选一种')
         for b in budgets:
             if b and b.currency and b.currency != req.currency:
                 problem('structure', '广告组币种必须与需求总预算一致')
             if b and b.mode and b.mode != req.budget_mode:
                 problem('structure', '广告组预算类型必须与需求总预算口径一致')
+    else:
+        problem('budget_level','预算层级尚未明确，请说明计划预算或广告组预算；已识别的组和素材仍保留')
+    from .excel import is_cent_amount
+    valid_amount=lambda a:a is not None and a.is_finite() and a>0 and is_cent_amount(a)
+    total=req.budget if spec.budget_level=='campaign' else sum(amounts,Decimal(0)) if spec.budget_level=='adgroup' and all(valid_amount(a) for a in amounts) else None
+    original_budgets=[g.budget for g in req.structure.groups]
+    constraint_total=sum((b.amount for b in original_budgets),Decimal(0)) if all(b and valid_amount(b.amount) for b in original_budgets) else total
+    if spec.budget_level=='adgroup' and req.budget_constraint is not None and constraint_total is not None and constraint_total!=req.budget_constraint:
+        problem('budget','广告组预算合计与明确的计划总额约束不一致，请核对总额或组预算')
 
     groups = []
     material_ids = set()
     for index, group in enumerate(spec.groups):
         target_id=group.id
+        if spec.budget_level=='adgroup' and group.budget and group.budget.amount is not None and group.budget.amount.is_finite() and not is_cent_amount(group.budget.amount):
+            problem('budget','广告组预算金额必须明确到分，不能自动舍入')
+        if spec.budget_level=='adgroup' and (not group.budget or group.budget.amount is None and group.budget.allocation_ratio is None):
+            problem('budget',f'广告组 {group.name or group.id} 缺少预算金额')
         materials = group.ads
         if not materials:
             problem('structure', '广告组尚无明确素材')
@@ -94,11 +122,13 @@ def campaign_tree(req: Requirement):
         if not language:
             problem('language', f'广告组 {group.name or group.id} 缺少语言')
         delivered=set()
-        if not group.start_at or not group.end_at or not group.timezone:
-            problem('start_at', f'广告组 {group.name or group.id} 缺少明确排期或时区')
-        elif not group.start_at.tzinfo or not group.end_at.tzinfo:
+        for field in ('start_at','end_at'):
+            if getattr(group,field) is None:problem(field,f'广告组 {group.name or group.id} 缺少明确的'+('开始时间' if field=='start_at' else '结束时间'))
+        if not group.timezone:
+            problem('timezone',f'广告组 {group.name or group.id} 缺少明确时区')
+        elif group.start_at and group.end_at and (not group.start_at.tzinfo or not group.end_at.tzinfo):
             problem('timezone', '广告组排期缺少有效时区')
-        elif group.end_at <= group.start_at:
+        elif group.start_at and group.end_at and group.end_at <= group.start_at:
             problem('end_at', '广告组结束时间必须晚于开始时间')
         for material in materials:
             target_id=material.id
@@ -151,9 +181,8 @@ def campaign_tree(req: Requirement):
             'account_id':req.account_id, 'objective':req.objective, 'budget_level':spec.budget_level,
             'budget':{'amount':str(req.budget) if req.budget is not None else None,
                       'currency':req.currency, 'mode':req.budget_mode} if spec.budget_level == 'campaign' else None,
-            'planned_total':str(req.budget) if req.budget is not None else None, 'adgroups':groups}, issues
+            'planned_total':str(total) if total is not None else None, 'adgroups':groups}, issues
 
 
 def validate_structure(req: Requirement):
     return campaign_tree(req)[1]
-

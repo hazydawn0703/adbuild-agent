@@ -15,3 +15,14 @@ def test_question_tracks_the_actual_group_evidence_and_resolves_after_edit():
     reconcile_questions(task,draft.model_copy(update={'requirements':[changed]}))
     assert task.semantic_questions==[]
 
+
+def test_plan_missing_budget_is_not_a_group_budget_question():
+    from app.models import Issue
+    from app.intake import refresh
+    req=campaign();req.structure.budget_level='campaign'
+    req.budget=None;req.issues=[Issue(code='missing',field='budget',message='缺少 budget')]
+    for group in req.structure.groups:group.budget=None
+    task=IntakeTask(id='t',project_id='p',semantic_questions=[Clarification(id='q',scope='requirements',
+        field='budget',requirement_ids=[req.id],target_ids=['g2'],blocking=False,question='组预算是否留空？')])
+    refresh(task,BuildDraft(id='d',project_id='p',requirements=[req]))
+    assert len(task.questions)==1 and task.questions[0].target_ids==[req.id]

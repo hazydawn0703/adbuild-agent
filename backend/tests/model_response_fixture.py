@@ -18,7 +18,7 @@ def campaign_fixture(**values):
     from app.models import Requirement,StructureSpec,GroupSpec,MaterialSpec
     row=Requirement(**{'language':'all',**values})
     if row.structure is None:
-        row.structure=StructureSpec(groups=[GroupSpec(id=row.id+':group',ads=[MaterialSpec(
+        row.structure=StructureSpec(budget_level='campaign',groups=[GroupSpec(id=row.id+':group',ads=[MaterialSpec(
             id=row.id+':ad',post_id=row.post_id,post_url=row.post_url,identity_id=row.identity_id,
             cta=row.cta,landing_url=row.landing_url,sources=dict(row.sources))])])
     for group in row.structure.groups:
@@ -33,4 +33,3 @@ def campaign_fixture(**values):
             for field in ('identity_id','cta','landing_url'):
                 if not getattr(ad,field):setattr(ad,field,getattr(row,field))
     return row
-

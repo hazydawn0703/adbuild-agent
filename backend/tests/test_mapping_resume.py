@@ -35,6 +35,51 @@ def test_removed_parallel_column_mapping_is_rejected():
             'columns':{'account_id':'B'},'bindings':{'account_id':{'kind':'cell','cell':'B2'}}})
 
 
+def test_explicit_group_column_omission_is_repaired_before_assembling(monkeypatch):
+    w=Workbook();s=w.active;s.append(['Campaign Name','Ad Group Name','Post ID'])
+    s.append(['Launch','Segment-1','123']);s.append(['Launch','Segment-1','456']);s.append(['Launch','Segment-2','789'])
+    data=binary(w);calls=[]
+    class Model:
+        async def ainvoke(self,messages):
+            calls.append(messages);bindings=row_bindings({'name':'A','post_id':'C'})
+            if len(calls)>1:bindings.update(row_bindings({'group_key':'B'}))
+            return model_response(MappingProposal(mappings=[SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=4,bindings=bindings)],explanation='Explicit groups'))
+    monkeypatch.setattr('app.agent.llm',lambda _:Model())
+    result=asyncio.run(propose_mapping(inspect_workbook(data),data))
+    assert len(calls)==2 and result.complete and result.mappings[0].bindings['group_key'].column=='B'
+    assert 'bindings.group_key' in calls[1][-1][1]
+
+
+def test_header_cta_binding_is_repaired_to_row_data_without_inventing_cta(monkeypatch):
+    w=Workbook();s=w.active;s.append(['Campaign Name','Ad Group','Post ID','CTA']);s.append(['Launch','G1','123',None])
+    data=binary(w);calls=[]
+    class Model:
+        async def ainvoke(self,messages):
+            calls.append(messages)
+            binding=Binding(kind='cell',cell='D1') if len(calls)==1 else Binding(kind='row',column='D')
+            return model_response(MappingProposal(explanation='map actual values',mappings=[SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,
+                bindings={**row_bindings({'name':'A','group_key':'B','post_id':'C'}),'cta':binding})]))
+    monkeypatch.setattr('app.agent.llm',lambda _:Model())
+    mapped=asyncio.run(propose_mapping(inspect_workbook(data),data))
+    assert len(calls)==2 and 'bindings.cta' in calls[1][-1][1]
+    req=parse_requirements(data,'f',mapped.mappings)[0]
+    assert req.structure.groups[0].ads[0].cta==''
+
+
+def test_present_ad_identity_is_bound_instead_of_becoming_a_user_question(monkeypatch):
+    w=Workbook();s=w.active;s.append(['Campaign Name','Ad Group','Post ID','素材身份']);s.append(['Launch','G1','123','999'])
+    data=binary(w);calls=[]
+    class Model:
+        async def ainvoke(self,messages):
+            calls.append(messages);bindings=row_bindings({'name':'A','group_key':'B','post_id':'C'})
+            if len(calls)>1:bindings.update(row_bindings({'identity_id':'D'}))
+            return model_response(MappingProposal(explanation='map actual data',mappings=[SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=2,bindings=bindings)]))
+    monkeypatch.setattr('app.agent.llm',lambda _:Model())
+    mapped=asyncio.run(propose_mapping(inspect_workbook(data),data))
+    assert len(calls)==2 and 'bindings.identity_id' in calls[1][-1][1]
+    assert parse_requirements(data,'f',mapped.mappings)[0].structure.groups[0].ads[0].identity_id=='999'
+
+
 def test_pending_range_resumes_saved_cursor_and_retains_all_page_evidence(monkeypatch):
     w=Workbook();s=w.active
     for row in range(1,3002):s.cell(row,1,str(row))
@@ -68,6 +113,30 @@ def test_repeated_completed_read_does_not_run_without_progress(monkeypatch):
     result=asyncio.run(propose_mapping(inspect_workbook(data),data))
     assert not result.complete and '没有新的补读进展' in result.explanation and len(calls)==2
     assert len(result.read_state['evidence'])==1
+
+
+def test_read_beyond_known_workbook_extent_is_proven_empty_without_pagination():
+    from app.excel import read_region_page
+    w=Workbook();w.active.append(['Known']);w.active.append(['record'])
+    result=read_region_page(binary(w),w.active.title,'A3:V200')
+    assert result['complete'] and result['next_cursor'] is None and result['cells']=={}
+    assert result['coverage']['basis']=='outside_used_range' and result['coverage']['known_empty_cells']==4356
+
+
+def test_complete_mapping_with_repeated_satisfied_read_reaches_budget_conflict(monkeypatch):
+    w=Workbook();s=w.active;s.append(['Campaign Name','Ad Group Name','Post ID','Budget Level','Campaign Budget','Ad Group Budget'])
+    s.append(['Launch','G1','123','campaign','100',None]);s.append(['Launch','G2','456','campaign','101',None]);data=binary(w);calls=[]
+    class Model:
+        async def ainvoke(self,messages):
+            calls.append(messages)
+            return model_response(MappingProposal(mappings=[SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=3,
+                bindings=row_bindings({'name':'A','group_key':'B','post_id':'C','budget_level':'D','campaign_budget':'E','adgroup_budget':'F'}))],
+                requested_ranges=[RangeRequest(sheet=s.title,range='F2:F3',reason='Check empty group budget')],explanation='Mapping complete',complete=True))
+    monkeypatch.setattr('app.agent.llm',lambda _:Model())
+    mapped=asyncio.run(propose_mapping(inspect_workbook(data),data))
+    assert mapped.complete and not mapped.requested_ranges and not mapped.pending_ranges and len(calls)==2
+    req=parse_requirements(data,'f',mapped.mappings)[0]
+    assert len(req.structure.groups)==2 and any(i.field=='budget' for i in req.issues)
 
 
 def test_server_search_finds_deep_target_and_nearby_headers_without_leaking_codes(monkeypatch):
@@ -116,4 +185,3 @@ def test_completed_read_is_saved_before_later_model_timeout(monkeypatch):
     assert latest['read_state']['pages'][sheet.title+'!A1:A2']['complete']
     assert latest['read_state']['evidence'][0]['coverage']['read_cells']==2
     assert latest['complete'] is False
-

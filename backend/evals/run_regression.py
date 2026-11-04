@@ -132,19 +132,20 @@ async def main(args,after_analysis=None):
     run.write('freeze.json',manifest)
     protocol={'label':'exposed_regression','run_id':args.run_id,'parent_run':args.parent_run,'started_at':now(),
               'commit':args.commit,'cases':cases,'input_files':input_hashes,'model':cfg.llm_model,'business_time':business_time.isoformat(),
-              'attempts_per_case':1,'max_analysis_actions':3 if after_analysis else 1,'max_unchanged_proposal_acceptances':2 if after_analysis else 1,
+              'attempts_per_case':1,'max_analysis_actions':5 if after_analysis else 2,'max_unchanged_proposal_acceptances':4 if after_analysis else 1,
               'mapping_resume_actions':0,'extra_retries':0,'manual_mapping_changes':0,'manual_field_changes':0,
               'extra_answers':0,'final_confirmation':False,'execution_enabled':False,
               'workflow':['source-grounded account setup','upload unchanged export and brief','paste text verbatim before mapping',
                           'propose mapping once','confirm unchanged complete mapping','analyze once after draft exists',
                           'accept at most one unchanged proposal','read final task and preview'],
               'gold_in_model_inputs':False,'scoring':'Separate process only after outputs-seal.json is written',
-              'limits':'No assisted completion is measured; file_error and unresolved scope are not successes',
+              'limits':'Only predeclared normal user facts; no manual correction.' if after_analysis else 'No normal clarification answers supplied; file_error and unresolved scope are not successes',
               'dependency_versions':{p:importlib.metadata.version(p) for p in ('openpyxl','pydantic','fastapi','langgraph','langchain-openai','PyMySQL','aiomysql')}}
-    protocol['normal_answer_batches']=1 if after_analysis else 0
+    protocol['normal_answer_batches']=3 if after_analysis else 0
+    protocol['scope_answer_remap_actions_limit']=1 if after_analysis else 0
     protocol['label']='normal_clarification_acceptance' if after_analysis else 'exposed_regression'
     if after_analysis:
-        protocol['workflow'].append('Submit at most one batch of predeclared user facts; resolve scope and mapping only after new answers')
+        protocol['workflow'].append('Submit at most three batches of predeclared user facts for new field/owner dependencies; never reanswer the same field/owner')
     run.write('protocol.json',protocol)
     from app.auth import password_hash
     from app.db import transaction
@@ -155,7 +156,10 @@ async def main(args,after_analysis=None):
 
     class Recorder(BaseCallbackHandler):
         def on_chat_model_start(self,serialized,messages,*,run_id,**kwargs):
-            run.event('model_start',{'run_id':str(run_id),'messages':[[m.model_dump(mode='json') for m in seq] for seq in messages]})
+            from app.scope import redact_private
+            allowed={'model','model_name','temperature','max_tokens','max_completion_tokens','top_p','stop','seed','stream','n','tools','tool_choice','response_format','extra_body'}
+            parameters={k:v for k,v in kwargs.get('invocation_params',{}).items() if k in allowed}
+            run.event('model_start',{'run_id':str(run_id),'messages':[[m.model_dump(mode='json') for m in seq] for seq in messages],'invocation_parameters':redact_private(parameters)})
         def on_llm_end(self,response,*,run_id,**kwargs):
             from app.scope import redact_private
             payload=response.model_dump(mode='json')
@@ -290,4 +294,3 @@ if __name__=='__main__':
     parser.add_argument('--parent-run',required=True)
     parser.add_argument('--env-file')
     asyncio.run(main(parser.parse_args()))
-

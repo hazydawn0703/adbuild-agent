@@ -26,19 +26,19 @@ def capture(mappings,inspection,data):
         fixed={}
         for field,binding in m.bindings.items():
             source_sheet=workbook[binding.sheet or m.sheet]
-            if binding.kind=='row':fields[field]={'header':header.get(binding.column,''),'transform':binding.transform}
-            elif source_sheet.title==m.sheet and source_sheet[binding.cell].row==m.header_row:fixed[field]={'label':clean(source_sheet[binding.cell].value),'direction':'self','kind':'cell','transform':binding.transform}
-            else:fixed[field]={**_label(source_sheet,source_sheet[binding.cell]),'kind':'cell','transform':binding.transform}
+            if binding.kind=='row':fields[field]={'header':header.get(binding.column,'')}
+            elif source_sheet.title==m.sheet and source_sheet[binding.cell].row==m.header_row:fixed[field]={'label':clean(source_sheet[binding.cell].value),'direction':'self','kind':'cell'}
+            else:fixed[field]={**_label(source_sheet,source_sheet[binding.cell]),'kind':'cell'}
         labels=[entry['header'] for entry in fields.values()]
         if not fields or not all(labels) or any(list(header.values()).count(label)!=1 for label in labels):raise ValueError('表头为空或重名，不能保存可复用模板')
         result.append({'fields':fields,'fixed':fixed})
-    return {'regions':result}
+    return {'version':4,'regions':result}
 
 
 def reuse(template,inspection,data):
     workbook=read_workbook(data);mappings=[];used=set()
     # A changed contract requires a fresh review; no legacy template conversion.
-    if not template.get('regions') or any(not isinstance(value,dict) for entry in template['regions'] for value in entry.get('fields',{}).values()):return None
+    if template.get('version')!=4 or not template.get('regions'):return None
     for entry in template['regions']:
         candidates=[]
         for sheet in inspection['sheets']:
@@ -52,7 +52,7 @@ def reuse(template,inspection,data):
                     for field,source in entry['fields'].items():
                         cols=[c for c,value in header.items() if value==source['header']]
                         if len(cols)!=1:break
-                        bindings[field]=Binding(kind='row',column=cols[0],transform=source['transform'])
+                        bindings[field]=Binding(kind='row',column=cols[0])
                     else:
                         for field,source in entry['fixed'].items():
                             matches=[]
@@ -60,7 +60,7 @@ def reuse(template,inspection,data):
                                 for cell in list(source_sheet._cells.values()):
                                     if clean(cell.value)!=source['label']:continue
                                     target=cell if source['direction']=='self' else source_sheet.cell(cell.row+(source['direction']=='below'),cell.column+(source['direction']=='right'))
-                                    matches.append(Binding(kind=source['kind'],sheet=source_sheet.title,cell=target.coordinate,transform=source['transform']))
+                                    matches.append(Binding(kind=source['kind'],sheet=source_sheet.title,cell=target.coordinate))
                             if len(matches)!=1:break
                             bindings[field]=matches[0]
                         else:
@@ -72,4 +72,3 @@ def reuse(template,inspection,data):
         except ValueError:return None
         used.add(key);mappings.append(candidate)
     return mappings or None
-

@@ -31,10 +31,38 @@ def test_budget_action_preserves_all_nodes_and_exact_cents_with_canonical_source
     validate_proposal_evidence(state,decision)  # Same verifier can run again at acceptance.
 
 
+def test_echoed_budget_level_does_not_mask_independent_edit_validation():
+    state=allocation_state()
+    decision=ChatDecision(answer='',edits=[{'requirement_id':'plan','values':{'budget_level':'adgroup','currency':'USD'}}])
+    validate_proposal_evidence(state,decision)
+    assert decision.edits[0].values=={'currency':'USD'}
+    state['draft']['requirements'][0]['issues']=[{'code':'invalid_budget_level_conflict','field':'budget_level','message':'Conflicting explicit levels'}]
+    decision=ChatDecision(answer='',edits=[{'requirement_id':'plan','values':{'budget_level':'adgroup','currency':'USD'}}])
+    with pytest.raises(ValueError,match='单独'):validate_proposal_evidence(state,decision)
+
+
+def test_existing_missing_fields_do_not_prevent_an_independent_structure_edit():
+    state=allocation_state();row=state['draft']['requirements'][0]
+    row['structure']['groups'][0]['audience']=None
+    structure=__import__('copy').deepcopy(row['structure'])
+    decision=ChatDecision(answer='',edits=[{'requirement_id':'plan','values':{'structure':structure}}])
+    validate_proposal_evidence(state,decision)
+    assert decision.edits[0].values['structure']['groups'][0]['audience'] is None
+
+
 def test_budget_action_rejects_foreign_group_and_unsupported_amount():
     state=allocation_state()
     for weights,total in [({'g1':1,'g2':1,'foreign':1},'100.01'),({'g1':1,'g2':1,'g3':1},'300.03')]:
         with pytest.raises(ValueError):allocation_edits(state,[BudgetAllocation(requirement_id='plan',total=total,group_weights=weights,message_id='m')])
+
+
+@pytest.mark.parametrize('instruction',['三个广告组各占1/3分配','三个广告组按表顺序1/3:1/3:1/3分配','三个广告组平均分配'])
+def test_exact_fraction_and_equal_split_do_not_need_decimal_approximations(instruction):
+    state=allocation_state();state['messages'][0]['content']=state['messages'][0]['content'].replace('三个广告组按表顺序1:1:1分配',instruction)
+    allocation=BudgetAllocation(requirement_id='plan',total='100.01',group_weights={f'g{i}':'1/3' for i in range(1,4)},message_id='m')
+    edits=allocation_edits(state,[allocation]);decision=ChatDecision(answer='',edits=edits);validate_proposal_evidence(state,decision)
+    changed=Requirement.model_validate({**state['draft']['requirements'][0],**edits[0].values})
+    assert [g['budget']['amount'] for g in campaign_tree(changed)[0]['adgroups']]==['33.34','33.34','33.33']
 
 
 def test_message_raw_value_cannot_replace_actual_message_evidence():
@@ -44,9 +72,17 @@ def test_message_raw_value_cannot_replace_actual_message_evidence():
     with pytest.raises(ValueError):supported_source(state,{},'budget',Decimal('300.03'),offered)
 
 
+def test_message_budget_uses_same_amount_rules_without_truncating_numeric_commas():
+    from app.provenance import message_supports
+    for text,values in [('预算1,250美元',['1','1250']),('预算1.250美元',['1.25','1250']),('预算-100美元',['100'])]:
+        for value in values:assert not message_supports('budget',value,text)
+    assert message_supports('budget','1250.00','预算1,250.00美元')
+    assert message_supports('budget','1000','预算1e3美元')
+    assert not message_supports('budget','1','预算1e3美元')
+
+
 def test_truncated_structure_cannot_become_a_pending_validated_proposal():
     state=allocation_state()
     decision=ChatDecision(answer='',edits=[{'requirement_id':'plan','values':{'budget':'100.01','structure':{
         'budget_level':'adgroup','groups':[{'id':f'g{i}','budget':{'allocation_ratio':1}} for i in range(1,4)]}}}])
     with pytest.raises(ValueError,match='完整实体'):validate_proposal_evidence(state,decision)
-

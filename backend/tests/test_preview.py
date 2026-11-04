@@ -44,6 +44,19 @@ def test_unresolved_task_scope_blocks_old_selected_rows_and_invalidates_confirma
     assert not blocked['can_confirm'] and not blocked['approval_valid']
     assert any(issue['field']=='scope' for issue in blocked['issues'])
 
+
+def test_server_detected_message_conflict_cannot_be_bypassed_at_confirmation():
+    from app.service import pending_questions
+    class Connection:
+        def execute(self,*_):return self
+        def fetchone(self):return {'data':{'scope':{'status':'resolved'},'semantic_questions':[],
+            'questions':[{'id':'q','field':'budget','scope':'requirements','requirement_ids':['row'],
+                          'question':'用户预算来源冲突','blocking':True}]}}
+    d=draft()
+    preview=build_preview(d,[],0,NOW,pending_questions=pending_questions(Connection(),d.id))
+    assert not preview['can_confirm']
+    with pytest.raises(HTTPException):approve_preview(d,preview,'operator',1,preview['digest'],True)
+
 @pytest.mark.parametrize('task_state',[{'lease':{'request_id':'running'}},{'analysis':{'resume_available':True}},{'analysis':{'mapping_error':{'resume_available':True}}}])
 def test_inflight_or_failed_analysis_cannot_confirm_previous_preview(task_state):
     from app.service import pending_questions
@@ -107,4 +120,3 @@ def test_valid_numeric_account_still_needs_project_binding_match():
     assert not p['can_confirm'] and any(i['code']=='account_binding' for i in p['issues'])
     d.requirements[0].account_id='7312345678901234567'
     assert build_preview(d,[],0,NOW,expected_account_id='7312345678901234567')['can_confirm']
-

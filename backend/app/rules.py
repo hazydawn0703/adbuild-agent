@@ -3,8 +3,8 @@ from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 import json
 import re
-from .models import Requirement, Issue, ProjectPolicy
-from .excel import date_value,zone_value
+from .models import Requirement, Issue, ProjectPolicy, SourceRef
+from .excel import date_value,zone_value,is_cent_amount
 
 
 def normalized_language(value):
@@ -140,15 +140,20 @@ def business_now():
 def evaluate(req: Requirement, history: list[dict], now=None):
     now = now or business_now()
     req = req.model_copy(deep=True)
-    req.issues = [i for i in req.issues if i.code.startswith("invalid_")]
+    active_targets={req.id}
+    if req.structure:active_targets.update(node.id for group in req.structure.groups if any(a.included for a in group.ads) for node in [group,*[a for a in group.ads if a.included]])
+    req.issues = [i for i in req.issues if i.code.startswith("invalid_") and (not i.target_id or i.target_id in active_targets)]
     req.history = history_candidates(req,history)
     for field in ("name", "account_id", "post_id", "objective", "budget", "budget_mode", "currency", "start_at", "end_at", "timezone", "audience", "identity_id"):
         if req.structure and field in ('post_id','identity_id','audience','start_at','end_at','timezone'):
             continue
+        if req.structure and req.structure.budget_level!='campaign' and field=='budget':continue
         if getattr(req, field) in (None, ""):
             req.issues.append(Issue(code="missing",field=field,message=f"缺少 {field}"))
     if req.budget is not None and (not req.budget.is_finite() or req.budget <= 0):
         req.issues.append(Issue(code="budget",field="budget",message="预算必须大于零"))
+    elif req.budget is not None and (not req.structure or req.structure.budget_level=='campaign') and not is_cent_amount(req.budget):
+        req.issues.append(Issue(code='budget',field='budget',message='预算金额必须明确到分，不能自动舍入'))
     if not req.structure:
         for field in ("start_at", "end_at"):
             dt = getattr(req,field)
@@ -173,10 +178,17 @@ def evaluate(req: Requirement, history: list[dict], now=None):
             req.issues.append(Issue(code="schedule",field="end_at",message="结束时间必须晚于开始时间"))
     if not req.structure and req.objective == "traffic" and (not req.landing_url.startswith("https://") or not req.cta):
         req.issues.append(Issue(code="destination",field="landing_url",message="流量目标需要 HTTPS 落地页和 CTA"))
-    from .structure import validate_structure
-    req.issues.extend(validate_structure(req))
+    from .structure import campaign_tree
+    tree,structure_issues=campaign_tree(req)
+    req.issues.extend(structure_issues)
+    if req.structure and req.structure.budget_level=='adgroup' and tree['planned_total'] is not None:
+        req.budget=Decimal(tree['planned_total'])
+        req.sources['budget']=SourceRef(kind='calculated',file_id='',sheet='',cell='',raw_value=str(req.budget),derived_from=[g.id+':budget' for g in req.structure.groups])
+    elif req.structure and req.structure.budget_level=='adgroup' and req.sources.get('budget') and req.sources['budget'].kind=='calculated':
+        req.budget=None;req.sources.pop('budget')
     if req.structure:
         for group in req.structure.groups:
+            if not any(a.included for a in group.ads):continue
             if group.end_at and group.end_at.tzinfo and group.end_at <= now:
                 req.issues.append(Issue(code='expired',field='end_at',message=f'广告组 {group.name} 排期已经结束，不会自动平移',target_id=group.id))
     exact=[]
@@ -195,6 +207,7 @@ def evaluate(req: Requirement, history: list[dict], now=None):
         states=[];candidates=[]
         for group in req.structure.groups:
             for ad in group.ads:
+                if not ad.included:continue
                 material=req.model_copy(update={'post_id':ad.post_id,'post_url':ad.post_url,
                     'start_at':group.start_at,'end_at':group.end_at,'timezone':group.timezone,
                     'structure':StructureSpec(budget_level=req.structure.budget_level,groups=[group])})
@@ -234,4 +247,3 @@ def check_policy(req: Requirement, policy: ProjectPolicy, now=None):
         if source.kind == "history" and field not in req.confirmed_fields:
             failures.append(f"{field} 的历史推断尚未确认")
     return failures
-

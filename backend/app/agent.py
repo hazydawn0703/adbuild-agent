@@ -8,7 +8,7 @@ from .rules import business_now
 from .settings import settings
 from openai import APIError,APIConnectionError,APITimeoutError,APIStatusError
 
-FLOW_VERSION='entity-graph-3'
+FLOW_VERSION='entity-graph-4'
 
 
 class ModelServiceError(RuntimeError):
@@ -51,7 +51,7 @@ def llm(schema):
     if not cfg.llm_api_key:
         raise ValueError("尚未配置平台模型 LLM_API_KEY")
     return ChatOpenAI(model=cfg.llm_model,api_key=cfg.llm_api_key,base_url=cfg.llm_base_url,
-                      use_responses_api=False,timeout=60,max_retries=0,extra_body={"thinking":{"type":"disabled"}}).with_structured_output(schema,method="function_calling",include_raw=True)
+                      use_responses_api=False,temperature=0,timeout=60,max_retries=0,extra_body={"thinking":{"type":"disabled"}}).with_structured_output(schema,method="function_calling",include_raw=True)
 
 
 async def propose_mapping(inspection,data=None,task=None,on_progress=None):
@@ -121,11 +121,15 @@ async def propose_mapping(inspection,data=None,task=None,on_progress=None):
             try:left,top,right,bottom=range_boundaries(request.range)
             except (ValueError,TypeError):raise ProposalError('补读区域必须为明确单元格矩形') from None
             if any(x is None for x in (left,top,right,bottom)) or top<1 or left<1 or bottom<top or right<left or bottom>50000 or right>300:raise ProposalError('补读区域超出允许范围')
-        for mapping in result.mappings:
+        errors=[]
+        for index,mapping in enumerate(result.mappings):
             if mapping.sheet not in sheets or mapping.last_row>sheets[mapping.sheet]['rows']:raise ProposalError('映射范围超出实际内容')
             if wb is not None:
                 try:validate_sources(mapping,wb)
-                except ValueError as error:raise ProposalError(str(error)) from None
+                except ValueError as error:errors.append(f'mappings[{index}]: {error}')
+                from .excel import mapping_coverage_errors
+                errors.extend(f'mappings[{index}]: {error}' for error in mapping_coverage_errors(mapping,wb))
+        if errors:raise ProposalError('；'.join(errors))
     while True:
         if sum(len(text) for _,text in messages)>140000:
             result=MappingProposal(mappings=completed,explanation='相关证据超过本轮上下文预算，已保留补读证据和游标；请进一步明确需求子集后继续。',complete=False,pending_ranges=pending())
@@ -134,7 +138,10 @@ async def propose_mapping(inspection,data=None,task=None,on_progress=None):
         result=await structured(MappingProposal,messages,validator=validate_mapping)
         if result.mappings:completed=result.mappings
         requests=list({key(r):r for r in [*pending(),*result.requested_ranges,*result.pending_ranges]}.values())
+        if result.complete and result.mappings:
+            requests=[r for r in requests if not read_state['pages'].get(key(r),{}).get('complete')]
         if not requests:
+            result.requested_ranges=[]
             result.pending_ranges=[]
             result.read_state=redact_private(read_state)
             return result
@@ -162,16 +169,17 @@ async def structured(schema,messages,validator=None):
     from langchain_core.exceptions import OutputParserException
     import logging,time
     from .prompts import PROMPT_HASH
+    from .scope import redact_private
     for attempt in range(2):
         started=time.monotonic()
         raw=None
         try:
             record_attempt()
             envelope=await asyncio.wait_for(llm(schema).ainvoke(messages),60)
-            from .scope import redact_private
             raw=envelope['raw']
             record_usage(raw)
             logging.getLogger('adbuild.analysis').info('model_output %s',json.dumps(redact_private({'schema':schema.__name__,'attempt':attempt+1,'raw':raw.model_dump(mode='json'),'parsing_error':str(envelope['parsing_error']) if envelope['parsing_error'] else None}),ensure_ascii=False))
+            if isinstance(envelope.get('parsing_error'),(ValidationError,OutputParserException)):raise envelope['parsing_error']
             result=schema.model_validate(envelope['parsed'])
             if validator: validator(result)
             logging.getLogger('adbuild.analysis').info('model_stage schema=%s prompt=%s duration=%.3f attempt=%d',schema.__name__,PROMPT_HASH,time.monotonic()-started,attempt+1)
@@ -181,8 +189,30 @@ async def structured(schema,messages,validator=None):
             # the schema-repair attempt retrying an unavailable provider implicitly.
             raise ModelServiceError.from_provider(error) from None
         except (ValidationError,OutputParserException,ProposalError) as error:
+            logging.getLogger('adbuild.analysis').warning('model_validation %s',json.dumps(redact_private({'schema':schema.__name__,'attempt':attempt+1,'error':str(error)}),ensure_ascii=False))
             if attempt: raise ModelServiceError('invalid_response',retryable=False) from None
-            messages=[*messages,('system','结构校验失败，请修正字段结构，不补造业务值：'+str(error)+'；错误输出：'+json.dumps(redact_private(raw.model_dump(mode='json') if raw is not None else None),ensure_ascii=False))]
+            calls=[]
+            if raw is not None:
+                calls=[{'name':t['name'],'arguments':t['args']} for t in raw.tool_calls]
+                calls.extend({'name':t['name'],'arguments':t['args']} for t in raw.invalid_tool_calls)
+            details=error.errors(include_url=False,include_input=False,include_context=False) if isinstance(error,ValidationError) else str(error)
+            syntax=[]
+            if raw is not None:
+                for call in raw.invalid_tool_calls:
+                    if not isinstance(call.get('args'),str):continue
+                    try:json.loads(call['args'])
+                    except json.JSONDecodeError as problem:
+                        syntax.append({'tool':call['name'],'message':problem.msg,'line':problem.lineno,'column':problem.colno,'context':call['args'][max(0,problem.pos-60):problem.pos+60]})
+            if syntax:details={'schema':details,'json_syntax':syntax}
+            feedback={'validation_errors':details,'failed_calls':calls,'failed_content':raw.content if raw is not None and not calls else None}
+            instruction=f'结构校验失败，请修正字段结构，不补造业务值。仅调用 {schema.__name__} 工具一次，arguments 必须是一个合法 JSON 对象，结束后不能附加其他字符。保留其他已有映射与业务值，只修正校验指出的问题；explanation 简明说明依据。'
+            if calls:
+                from langchain_core.messages import AIMessage,ToolMessage
+                actual=AIMessage(content=raw.content,tool_calls=redact_private(raw.tool_calls),invalid_tool_calls=redact_private(raw.invalid_tool_calls))
+                feedback_text=instruction+json.dumps(redact_private({'validation_errors':details}),ensure_ascii=False)
+                messages=[*messages,actual,*[ToolMessage(content=feedback_text,tool_call_id=t['id'],name=t['name'],status='error') for t in [*raw.tool_calls,*raw.invalid_tool_calls]]]
+            else:
+                messages=[*messages,('system',instruction+'实际错误输出：'+json.dumps(redact_private(feedback),ensure_ascii=False))]
 
 
 class ConversationState(TypedDict):
@@ -211,7 +241,7 @@ def scope_matches(state,scope):
     selected=[]
     for row in rows:
         req=SimpleNamespace(**row)
-        if (scope.get('all_records') or scope.get('selectors')) and all(matches(req,s) for s in scope.get('selectors',[])) and not any(matches(req,s) for s in scope.get('exclude_selectors',[])):
+        if (scope.get('all_records') or scope.get('selectors')) and all(matches(req,s) for s in scope.get('selectors',[])) and not any(matches(req,s) for s in scope.get('exclude_selectors',[]) if not(row.get('structure') and s['field']=='post_id')):
             selected.append(row['id'])
     return set(selected)
 
@@ -228,7 +258,7 @@ def scope_required(state):
     if current.get('status')=='resolved':
         if latest.get('id') in current.get('message_ids',[]) or message.startswith('本任务回答：'):return False
         query=re.search(r'(?:查|查询|查看|检索|搜索|找).{0,12}(?:历史|以前|上次|投放记录)|(?:历史|投放记录).{0,12}(?:查|查询|查看|检索|搜索)|\b(?:query|search|look\s*up)\b.{0,20}\bhistory\b',message,re.I)
-        selection=re.search(r'重投|重新投放|新增(?:一条|广告|需求|计划|投放)|(?:本次|这次)(?:仅|只)?(?:搭建|投放)|排除|取消(?:投放|搭建|勾选)|\b(?:relaunch|exclude)\b',message,re.I)
+        selection=re.search(r'重投|重新投放|新增(?:一条|广告|需求|计划|投放)|(?:本次|这次)(?:仅|只)?(?:搭建|投放|处理)|排除|取消(?:投放|搭建|勾选)|纳入|选中|勾选|不投|不搭建|\b(?:relaunch|exclude|include|select)\b',message,re.I)
         edit=re.search(r'修改|改为|改成|调整|设置|\b(?:change|update|set)\b',message,re.I)
         return bool(query or selection or current.get('action')=='history' and edit)
     rows=(state.get('draft') or {}).get('requirements',[])
@@ -251,6 +281,10 @@ def validate_selection(state,decision):
         except ValueError as error:raise ProposalError(str(error)) from None
         matched=scope_matches(state,scope)
         desired=matched if scope['action']!='exclude' else {r['id'] for r in rows.values() if r.get('included',True)}-matched
+        if any(r.get('structure') for r in rows.values()):
+            from .scope import select_requirements
+            from .models import Requirement
+            desired={r.id for r in select_requirements([Requirement.model_validate(r) for r in rows.values()],scope,state.get('messages',[])) if r.included}
     kept=[]
     for edit in decision.edits:
         if 'included' in edit.values and edit.requirement_id in rows:
@@ -260,6 +294,10 @@ def validate_selection(state,decision):
                 edit.values.pop('included');edit.sources.pop('included',None)
             else:
                 message=None
+                if desired is not None and value!=(edit.requirement_id in desired):
+                    raise ProposalError('计划参与状态与核实范围不符，不能将部分素材的选择或排除升级为整个计划')
+                if row.get('structure') and desired is None:
+                    raise ProposalError('实体树的参与范围必须先经过范围节点核实，不能用计划代表帖子推断整批选择')
                 if desired is not None and value==(edit.requirement_id in desired):
                     message=next((m for m in reversed(state.get('messages',[])) if m.get('role')=='user' and m.get('id') in scope.get('message_ids',[])),None)
                 if message is None:
@@ -335,6 +373,9 @@ def validate_decision(state,decision):
     restricted=bool(re.search(r'仅|只',message)) and not re.search(r'其余|其他|其它|全部|所有',message)
     if decision.expansions and not re.search(r'同时|分别|各|新增目标|拆|两种|多目标|\bboth\b|\balso\b|\bmultiple\b',instruction_context,re.I):
         raise ProposalError('目标拆分需要用户明确要求，不能自动扩大需求')
+    for base_id in {item.base_requirement_id for item in decision.expansions}:
+        if len({item.objective for item in decision.expansions if item.base_requirement_id==base_id})<2:
+            raise ProposalError('目标拆分必须提交该计划完整的多个目标，不能用一个新目标替换原计划并丢失其他明确目标')
     for expansion in decision.expansions:
         base=next((r for r in rows if r['id']==expansion.base_requirement_id),None)
         if not base: raise ProposalError('目标拆分包含未知需求')
@@ -470,4 +511,3 @@ def conversation_graph(checkpointer):
     builder.add_conditional_edges('resolve_scope',lambda state:'validate' if state.get('scope_question') or state.get('progress',{}).get('phase')=='awaiting_input' else 'understand')
     builder.add_edge('understand','validate');builder.add_edge('validate',END)
     return builder.compile(checkpointer=checkpointer)
-

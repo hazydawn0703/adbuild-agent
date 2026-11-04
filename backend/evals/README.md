@@ -56,3 +56,6 @@ PYTHONPATH=. /opt/adbuild-agent/venv/bin/python evals/run_regression.py \
 
 冻结必须覆盖完整应用、`run_regression.py`及`run_acceptance.py`。参考方案保存在独立目录，仅由封存后的评分进程读取。每个输出目录必须全新；使用与单次回归相同的CLI参数运行`python -m evals.run_acceptance`。模型回调单独序列化原始AI消息，避免基础消息类型投影丢失工具调用参数。
 
+逐组、逐素材的不同答案写入 `entity_answers`：字段、值、明确的组序号及可选素材序号。驱动只匹配实际问题的单一目标；不能将一个答案广播到多个素材。时间答案只有用户明确补充时刻且原始来源已有日期、节点已有时区时才组合。每批集中提交当前可回答问题；仅为回答后新出现的所有者/字段依赖继续，最多三批，相同对象字段不重复回答或人工纠错。预算层级使用实际的 `budget_level` 问题及受控选项；组金额齐全时总额由服务端汇总，不要求另填总额。
+
+`prepare_campaign_answers.py` 是执行前独立准备程序，仅从原案例参考文件提取预声明的 `permitted_answers`，不复制 latent/final 方案。生成的输入先冻结，再交给 `run_acceptance.py`；参考文件保持在执行模型不可读取的独立目录。

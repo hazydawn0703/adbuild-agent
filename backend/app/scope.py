@@ -1,5 +1,6 @@
 """Task selection is a server-checked set, independent of column mappings and edits."""
 import re
+import json
 from urllib.parse import urlsplit
 
 
@@ -9,7 +10,9 @@ def as_dict(value):
 
 def redact_private(value):
     """Only presence of a private material credential may enter model context."""
-    sensitive=re.compile(r'^(?:authorization_code|access_token|refresh_token|api_key|client_secret|password)$',re.I)
+    names=r'authorization_code|access_token|refresh_token|api_key|client_secret|password'
+    sensitive=re.compile(r'^(?:'+names+r')$',re.I)
+    encoded=re.compile(r'"(?:'+names+r')"\s*:\s*"((?:\\.|[^"\\])*)"',re.I)
     secrets=set()
     def collect(item):
         if isinstance(item,dict):
@@ -18,6 +21,11 @@ def redact_private(value):
                 collect(val)
         elif isinstance(item,list):
             for val in item:collect(val)
+        elif isinstance(item,str):
+            for match in encoded.finditer(item):
+                try:secret=json.loads('"'+match[1]+'"')
+                except ValueError:secret=match[1]
+                if secret:secrets.update((secret,match[1]))
     collect(value)
     def sanitize(item):
         if isinstance(item,dict):
@@ -43,12 +51,28 @@ def validate_scope(scope, messages):
     refs = scope.get('message_ids', [])
     if not refs or any(ref not in users for ref in refs):
         raise ValueError('需求范围必须引用当前任务的用户消息')
-    text = '\n'.join(users[ref]['content'] for ref in refs)
+    def facts(message):
+        if 'answers' in message:
+            return '\n'.join(str(a['answer']) for a in message['answers'] if a.get('field') in ('scope','included'))
+        return str(message.get('content',''))
+    text = '\n'.join(facts(users[ref]) for ref in refs)
+    latest=next((m for m in reversed(messages) if m.get('role')=='user'),{})
+    scope_answer=any(a.get('field')=='scope' for a in latest.get('answers',[]))
+    if (scope_answer or re.search(r'(?:本次|这次)(?:仅|只)?(?:搭建|投放|处理)|排除|取消(?:投放|搭建|勾选)|纳入|选中|勾选|\b(?:exclude|include|select)\b',facts(latest),re.I)) and latest.get('id') not in refs:
+        raise ValueError('新的范围操作必须引用当前用户消息，不能沿用已被修改的旧选择')
     selectors = scope.get('selectors', [])
     if not selectors and not scope.get('all_records'):
         raise ValueError('需求范围尚未明确，不能默认纳入全部记录')
-    if scope.get('all_records') and not re.search(r'全部|所有|整[批份张表]|all\s+(?:rows|records|items)', text, re.I):
-        raise ValueError('全部纳入缺少用户明确依据')
+    if scope.get('all_records'):
+        all_pattern=r'全部|所有|整[批份张表]|all\s+(?:rows|records|items)'
+        def affirmative(clause):
+            if not re.search(all_pattern,clause,re.I):return False
+            if re.search(r'(?:不|不要|不是|并非)\s*(?:全部|所有)|(?:全部|所有).{0,12}(?:不投|不做|不搭|不纳入|不要|无需|参考|历史)',clause):return False
+            if re.search(r'其余|剩余|其他|其它',clause) and not scope.get('exclude_selectors'):return False
+            return bool(re.fullmatch(r'\s*(?:'+all_pattern+r')\s*',clause,re.I) or re.search(r'搭建|投放|新增|创建|纳入|选中|勾选|处理|加热|\b(?:build|create|include|select|launch)\b',clause,re.I))
+        authority=facts(latest) if (scope_answer or re.search(r'仅|只|\bonly\b',facts(latest),re.I)) and not scope.get('exclude_selectors') else text
+        if not any(affirmative(c) for c in re.split(r'[，,；;\n。]',authority)):
+            raise ValueError('全部纳入缺少用户明确的肯定依据；否定、参考资料和指代不明的其余不能授权全部记录')
     for group in (selectors, scope.get('exclude_selectors', [])):
         fields = [s['field'] for s in group]
         if len(fields) != len(set(fields)):
@@ -102,21 +126,31 @@ def select_requirements(requirements, scope, messages):
     for original in requirements:
         req = original.model_copy(deep=True)
         if req.structure:
+            from .structure import materialize_allocation
+            try:materialize_allocation(req)
+            except (ValueError,TypeError) as error:
+                from .models import Issue
+                req.issues.append(Issue(code='invalid_allocation',field='budget',target_id=req.id,message=str(error)))
+        if scope.get('status')=='resolved' and scope.get('action')=='exclude':
+            matched=all(matches(req,s) for s in scope.get('selectors',[]))
+            if matched:
+                posts={str(v) for s in scope.get('selectors',[]) if s['field']=='post_id' for v in s['values']}
+                if req.structure and posts:
+                    for group in req.structure.groups:
+                        for ad in group.ads:
+                            if ad.post_id in posts:ad.included=False
+                    req.included=req.included and any(a.included for g in req.structure.groups for a in g.ads)
+                else:req.included=False
+            result.append(req);continue
+        if req.structure:
             included_posts={str(v) for s in scope.get('selectors',[]) if s['field']=='post_id' for v in s['values']}
             excluded_posts={str(v) for s in scope.get('exclude_selectors',[]) if s['field']=='post_id' for v in s['values']}
             for group in req.structure.groups:
-                group.ads=[ad for ad in group.ads if (not included_posts or ad.post_id in included_posts) and ad.post_id not in excluded_posts]
-            req.structure.groups=[g for g in req.structure.groups if g.ads]
-            active={req.id,*[g.id for g in req.structure.groups],*[ad.id for g in req.structure.groups for ad in g.ads]}
-            req.issues=[issue for issue in req.issues if not issue.target_id or issue.target_id in active]
-            if req.structure.budget_level=='adgroup' and req.sources.get('budget') and req.sources['budget'].kind=='calculated' and all(g.budget and g.budget.amount is not None for g in req.structure.groups):
-                from decimal import Decimal
-                req.budget=sum((g.budget.amount for g in req.structure.groups),Decimal(0))
-                req.sources['budget']=req.sources['budget'].model_copy(update={'raw_value':str(req.budget),'derived_from':[g.id+':budget' for g in req.structure.groups]})
+                for ad in group.ads:ad.included=(not included_posts or ad.post_id in included_posts) and ad.post_id not in excluded_posts
         selected = resolved and (scope.get('all_records', False) or bool(scope.get('selectors')))
         selected = selected and all(matches(req, s) for s in scope.get('selectors', []))
-        selected = selected and not any(matches(req, s) for s in scope.get('exclude_selectors', []))
-        if req.structure and not req.structure.groups:selected=False
+        selected = selected and not any(matches(req, s) for s in scope.get('exclude_selectors', []) if not(req.structure and s['field']=='post_id'))
+        if req.structure and not any(a.included for g in req.structure.groups for a in g.ads):selected=False
         req.included = bool(selected)
         result.append(req)
     return result
@@ -173,4 +207,3 @@ def compact_state(state):
         from .history_query import lookup_history
         payload['history_query']=lookup_history(history_records,scope,rows)
     return redact_private(payload)
-

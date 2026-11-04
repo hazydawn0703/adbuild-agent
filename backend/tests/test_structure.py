@@ -16,7 +16,7 @@ NOW = datetime(2026, 11, 3, tzinfo=timezone.utc)
 
 def requirement(**changes):
     values = dict(id='demand-17', name='Campaign', account_id='7800000000000000011',
-                  post_id='7800000000000000022', objective='video_views', budget='101.01',
+                  post_id='7800000000000000022', objective='video_views', budget='101.01',budget_constraint='101.01',
                   budget_mode='lifetime', currency='USD', start_at='2027-02-01T09:00:00Z',
                   end_at='2027-02-05T09:00:00Z', timezone='UTC', audience='Confirmed audience',
                   identity_id='7800000000000000033')
@@ -91,6 +91,7 @@ def test_invalid_structure_blocks_confirmation(structure):
 
 def test_material_authorization_is_separate_and_secret_not_in_preview():
     req = requirement(post_id='', post_url='', identity_id='', audience='', structure={
+        'budget_level':'campaign',
         'groups':[{'id':'group', 'audience':'Explicit group audience', 'ads':[
             {'id':'material','kind':'authorization_code','authorization_code':'private-source-material-code'}]}]})
     tree, issues = campaign_tree(req)
@@ -137,4 +138,3 @@ def test_structured_draft_cannot_reach_flat_executor_even_if_global_switch_chang
         submit_approved_draft(None,draft,{})
     assert error.value.status_code==423
     assert '平台写入验收' in error.value.detail
-

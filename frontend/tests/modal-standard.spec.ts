@@ -3,11 +3,11 @@ import {test,expect,Page} from '@playwright/test';
 const values={post_id:'00123',post_url:'https://www.tiktok.com/@brand/video/00123',name:'测试广告计划',account_id:'0001234567890123456789',objective:'traffic',identity_id:'identity-1',budget:'9007199254740993.25',budget_mode:'lifetime',currency:'USD',timezone:'UTC',start_at:'2030-01-01T10:00:45Z',end_at:'2030-01-04T10:00:45Z',audience:'核心受众',language:'en',cta:'了解更多',landing_url:'https://example.com/product'};
 const policy={version:3,enabled:false,account_ids:Array.from({length:8},(_,i)=>'account-'+i),objectives:['followers','video_views','traffic'],audiences:['核心受众'],identities:['identity-1'],currency:'USD',per_item_limit:'50',batch_limit:'500',cumulative_limit:'1000',valid_until:'2030-01-01T00:00:00Z'};
 
-async function setup(page:Page,{role='admin',reject=false}={}) {
+async function setup(page:Page,{role='admin',reject=false,structured=false}={}) {
   let version=4;
   let current={...values};
   const writes:Record<string,unknown>[]=[];
-  const row=()=>({...current,id:'r',business_no:'101',included:true,sources:{},classification:'new',history:[],issues:[]});
+  const row=()=>({...current,id:'r',business_no:'101',included:true,sources:{},classification:'new',history:[],issues:[],structure:structured?{budget_level:'campaign',groups:[{id:'g',ads:[{id:'ad',kind:'post',post_id:'00123'}]}]}:null});
   const project={id:'p',name:'弹窗标准测试项目',tenant_id:'tenant',tenant_name:'客户空间',role,account_id:'0001234567890123456789',policy,reserved:'0'};
   await page.addInitScript(()=>sessionStorage.setItem('adbuild-token','test-token'));
   await page.route('**/apps/adbuild-agent/api/**',async route=>{
@@ -117,6 +117,17 @@ test('configuration editor fits mobile and the review editor uses the same fixed
 test('viewers cannot edit configuration details',async({page})=>{
   await setup(page,{role:'viewer'});
   await expect(page.locator('.details').getByRole('button',{name:'编辑',exact:true})).toBeDisabled();
+});
+
+test('campaign editor does not submit representative group or material values',async({page})=>{
+  const writes=await setup(page,{structured:true});
+  await page.locator('.details').getByRole('button',{name:'编辑',exact:true}).click();
+  const dialog=page.getByRole('dialog',{name:'编辑草稿配置',exact:true});
+  await expect(dialog.getByLabel('开始时间（北京时间）',{exact:true})).toHaveCount(0);
+  await expect(dialog.getByLabel('帖子 ID',{exact:true})).toHaveCount(0);
+  await dialog.getByLabel('广告计划名称',{exact:true}).fill('New plan name');
+  await dialog.getByRole('button',{name:'保存配置',exact:true}).click();
+  expect(writes).toEqual([{expected_version:4,edits:[{requirement_id:'r',values:{name:'New plan name'}}]}]);
 });
 
 test('short dialogs keep keyboard focus and fit a shrinking visible viewport',async({page})=>{

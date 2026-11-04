@@ -15,7 +15,7 @@ def draft():
         'id':'row','included':True,'account_id':'7800000000000000011','objective':'followers',
         'budget':'20','budget_mode':'lifetime','currency':'USD','start_at':'2027-01-01T09:00:00Z',
         'end_at':'2027-01-04T09:00:00Z','timezone':'UTC','audience':'Verified audience',
-        'structure':{'groups':[{'id':'group','ads':[{'id':'ad','kind':'authorization_code','authorization_code':SECRET}]}]}
+        'structure':{'budget_level':'campaign','groups':[{'id':'group','ads':[{'id':'ad','kind':'authorization_code','authorization_code':SECRET}]}]}
     })])
 
 
@@ -144,4 +144,3 @@ def test_validation_errors_never_echo_private_input():
         assert secret not in json.dumps(detail)
         assert all(set(item)<= {'loc','type','msg'} for item in detail)
     else:raise AssertionError('invalid material accepted')
-

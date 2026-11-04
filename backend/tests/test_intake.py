@@ -45,7 +45,7 @@ def test_questions_group_and_evidence_does_not_copy_values():
     rows=[evaluate(Requirement(id=str(i)),[],datetime(2026,11,3,tzinfo=timezone.utc)) for i in range(2)]
     task=IntakeTask(id='task',project_id='p')
     refresh(task,BuildDraft(id='d',project_id='p',requirements=rows))
-    assert next(q for q in task.questions if q.field=='currency').requirement_ids==['0','1']
+    assert {tuple(q.requirement_ids) for q in task.questions if q.field=='currency'}=={('0',),('1',)}
     assert all(e.state=='missing' for e in task.evidence)
     assert all('value' not in e.model_dump() for e in task.evidence)
 
@@ -103,4 +103,3 @@ def test_credentials_are_excluded_from_model_inspection_and_range_reads():
     assert 'example-secret' not in json.dumps(inspect_workbook(data))
     assert 'another-secret' not in json.dumps(read_region(data,s.title,'D4:D4'))
     assert 'Budget' in json.dumps(inspect_workbook(data))
-

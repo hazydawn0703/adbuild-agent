@@ -20,13 +20,14 @@ def generate(output,commit):
     root=Path(output);root.mkdir(parents=True,exist_ok=False,mode=0o700)
     inputs=root/'inputs';inputs.mkdir();oracle={};contexts={};rng=random.Random(secrets.randbits(128))
     for index in range(90):
-        case=f'N{index+1:03d}';family=index%6 if index<60 else ('scope','conflict','precision')[(index-60)//10]
+        case=f'N{index+1:03d}';family=index%6 if index<60 else (['scope']*8+['conflict']*8+['precision']*7+['money_format']*7)[index-60]
         business='B-'+secrets.token_hex(4);name='Launch-'+secrets.token_hex(3)
         account='71'+str(secrets.randbelow(10**17)).zfill(17);identity='72'+str(secrets.randbelow(10**17)).zfill(17)
-        goal=('followers','video_views','traffic')[index%3];level='campaign' if family in (0,3,4,'scope','conflict','precision') else 'adgroup'
+        goal=('followers','video_views','traffic')[index%3];level='campaign' if family in (0,3,4,'scope','conflict','precision','money_format') else 'adgroup'
         groups=3 if family==5 else 1 if family=='precision' else 2
         posts_per_group=2 if family in (0,1,3,4) else 1
         amount=Decimal('100.01') if family==5 else Decimal(rng.randint(50,300))+Decimal(rng.randint(0,99))/100
+        if family=='money_format':amount=Decimal(rng.randint(1000,9000))
         mode='daily' if family==1 else 'lifetime'
         goals=['followers','traffic'] if family==2 else [goal]
         rows=[];plans=[];normal={};defaults={};clarify=None
@@ -52,6 +53,8 @@ def generate(output,commit):
                         row['campaign_budget']=str(amount+g);normal={'budget':str(amount)};clarify='budget'
                     if family=='precision':
                         row['post_id']=int(post);row['post_url']=None;normal={'post_id':post};clarify='post_id'
+                    if family=='money_format':
+                        row['campaign_budget']=f'{amount:,.0f}';normal={'budget':f'{amount:.2f}'};clarify='budget'
                     rows.append(row)
                 group_amount=(Decimal('33.34') if g<2 else Decimal('33.33')) if family==5 else amount if level=='adgroup' else None
                 expected_groups.append({'name':group,'audience':defaults.get('audience','Audience-'+str(g+1)),
@@ -62,6 +65,7 @@ def generate(output,commit):
         if family==2:message+=' 表内两个目标分别建立计划。'
         if family==5:message+=' 三个广告组按表顺序以1:1:1分配，总额100.01美元，按分计，余数按表顺序分配。'
         if family=='scope':message='其余的照表搭建。';normal={'scope':f'本次仅新增搭建业务编号 {business}'};clarify='scope'
+        if family=='money_format':message+=' 金额来自跨地区文本，尚未提供千位与小数分隔符约定，请先核对。'
         fields=list(HEADERS);rng.shuffle(fields);workbook=Workbook();sheet=workbook.active;sheet.title='Batch-'+secrets.token_hex(2)
         sheet.append(['Campaign requirements'])
         for _ in range(rng.randint(0,6)):sheet.append([])
@@ -88,4 +92,3 @@ def generate(output,commit):
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--output',required=True);parser.add_argument('--commit',required=True)
     args=parser.parse_args();generate(args.output,args.commit)
-

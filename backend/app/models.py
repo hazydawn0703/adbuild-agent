@@ -1,5 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
+from fractions import Fraction
 from enum import StrEnum
 from typing import Any, Literal, Annotated
 from pydantic import BaseModel, Field, ConfigDict, computed_field
@@ -46,6 +47,7 @@ class BudgetSpec(Model):
 
 class MaterialSpec(Model):
     id: str
+    included: bool = Field(default=True,description='服务端范围选择状态；模型不可通过结构修改更改')
     name: str = ''
     kind: Literal['post', 'authorization_code', 'unknown'] = 'post'
     post_id: str = ''
@@ -71,7 +73,7 @@ class GroupSpec(Model):
 
 
 class StructureSpec(Model):
-    budget_level: Literal['campaign', 'adgroup'] = 'campaign'
+    budget_level: Literal['campaign', 'adgroup'] | None = None
     groups: list[GroupSpec] = Field(min_length=1, max_length=50)
 
 
@@ -86,6 +88,7 @@ class Requirement(Model):
     platform: str = ''
     objective: Objective | None = None
     budget: Decimal | None = None
+    budget_constraint: Decimal | None = None
     budget_mode: Literal["lifetime", "daily"] | None = None
     currency: str = ""
     start_at: datetime | None = None
@@ -115,7 +118,7 @@ class BuildApproval(Model):
 class BuildDraft(Model):
     id: str
     project_id: str
-    protocol_version: Literal[3] = 3
+    protocol_version: Literal[4] = 4
     version: int = 1
     status: Literal["mapping", "draft", "approved", "queued", "executing", "complete", "attention"] = "draft"
     approval: BuildApproval | None = None
@@ -139,6 +142,7 @@ class ProjectPolicy(Model):
 
 InputField = Literal['platform','account_id','business_no','name','post_url','post_id','objective','budget','budget_mode','currency','start_at','end_at','timezone','audience','language','identity_id','cta','landing_url']
 MappingField = Literal['platform','account_id','business_no','name','post_url','post_id','objective','budget','budget_mode','currency','start_at','end_at','timezone','audience','language','identity_id','cta','landing_url','campaign_key','group_key','record_key','budget_level','campaign_budget','adgroup_budget']
+EditField = Literal[InputField,'included','structure','budget_level']
 
 
 class Binding(Model):
@@ -146,7 +150,6 @@ class Binding(Model):
     column: str = Field(default='',pattern=r'^(?:[A-Z]{1,3})?$')
     sheet: str = ''
     cell: str = ''
-    transform: Literal['value','interval_start','interval_end','currency_code'] = 'value'
 
 
 class RowFilter(Model):
@@ -188,7 +191,7 @@ class DraftPatch(Model):
 class ChatEdit(Model):
     requirement_id: str
     target_id: str = ''
-    values: dict[InputField | Literal['included','structure'], Any]
+    values: dict[EditField, Any]
     sources: dict[str, SourceRef] = Field(default_factory=dict)
 
 
@@ -256,7 +259,7 @@ class FieldEvidence(Model):
 
 class Clarification(Model):
     id: str
-    field: InputField | Literal['included','scope','structure']
+    field: Literal[InputField,'included','scope','structure','budget_level']
     scope: Literal['task','requirements'] = 'requirements'
     requirement_ids: list[str] = Field(default_factory=list)
     question: str
@@ -282,7 +285,7 @@ class CandidateDecision(Model):
 class BudgetAllocation(Model):
     requirement_id: str
     total: Decimal = Field(gt=0,description='有明确输入依据的该计划总额，由服务端按分分配')
-    group_weights: dict[str,Decimal] = Field(description='当前计划全部真实广告组ID到正权重的映射，如1:1:1填写各组1；不能生成新组')
+    group_weights: dict[str,Fraction] = Field(description='当前计划全部真实广告组ID到正权重的映射；整数或精确分数字符串，如1:1:1各填1，三分之一可填"1/3"，不得用近似小数；不能生成新组')
     message_id: str = Field(description='明确规定分配比例的真实用户消息ID')
 
 
@@ -346,4 +349,3 @@ MappingProposal.model_rebuild()
 
 DraftPatch.model_rebuild()
 ChatDecision.model_rebuild()
-

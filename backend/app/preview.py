@@ -44,9 +44,9 @@ def build_preview(draft: BuildDraft, history: list[dict], policy_version: int, n
                 issues.append({'requirement_id':req.id,'code':'duplicate','field':'included','message':'所选需求中存在相同账户、帖子、目标及排期，请只保留一条','blocking':True})
             seen.add(key)
             issues.extend({'requirement_id':req.id,**i.model_dump()} for i in req.issues if i.blocking)
-            if req.budget is not None and req.budget.is_finite() and req.currency:
+            if tree['planned_total'] is not None and Decimal(tree['planned_total']).is_finite() and req.currency:
                 key=(req.currency,req.budget_mode or 'unknown')
-                totals[key]=totals.get(key,Decimal(0))+req.budget
+                totals[key]=totals.get(key,Decimal(0))+Decimal(tree['planned_total'])
     if not selected:
         issues.append({'requirement_id':'','code':'empty_selection','field':'included','message':'没有选中需要新增的广告需求','blocking':True})
     for question in pending_questions or []:
@@ -80,4 +80,3 @@ def approve_preview(draft,preview,actor_id,expected_version,digest,acknowledged)
                                 approved_at=datetime.now(timezone.utc),snapshot=snapshot)
     draft.status='approved'
     return draft
-
