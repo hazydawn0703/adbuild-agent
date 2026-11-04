@@ -36,6 +36,15 @@ def test_default_override_requires_an_explicit_user_directive():
     assert supported_source(state,row,'language','en',ref.model_copy(update={'message_id':'m'})).message_id=='m'
 
 
+def test_default_cannot_silently_resolve_an_ambiguous_file_amount():
+    state={'context':{'version':1,'defaults':{'budget':'100'}},'messages':[{'id':'m','role':'user','content':'预算改用项目默认值'}]}
+    row={'budget':None,'issues':[{'code':'invalid_budget','field':'budget'}]}
+    ref=SourceRef(kind='template',context_version=1,file_id='',sheet='',cell='',raw_value='100')
+    with pytest.raises(ValueError):supported_source(state,row,'budget','100')
+    with pytest.raises(ValueError,match='不能覆盖'):supported_source(state,row,'budget','100',ref)
+    assert supported_source(state,row,'budget','100',ref.model_copy(update={'message_id':'m'})).message_id=='m'
+
+
 def test_real_cell_from_other_group_cannot_fill_a_missing_field(monkeypatch,tmp_path):
     w=Workbook();s=w.active;s.append(['group','end']);s.append(['G1',None]);s.append(['G2','2028-01-16T09:00:00Z'])
     out=BytesIO();w.save(out);data=out.getvalue();path=tmp_path/'groups.xlsx';path.write_bytes(data)

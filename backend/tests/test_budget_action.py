@@ -77,6 +77,8 @@ def test_message_budget_uses_same_amount_rules_without_truncating_numeric_commas
     for text,values in [('预算1,250美元',['1','1250']),('预算1.250美元',['1.25','1250']),('预算-100美元',['100'])]:
         for value in values:assert not message_supports('budget',value,text)
     assert message_supports('budget','1250.00','预算1,250.00美元')
+    assert message_supports('budget','1000','预算1e3美元')
+    assert not message_supports('budget','1','预算1e3美元')
 
 
 def test_truncated_structure_cannot_become_a_pending_validated_proposal():

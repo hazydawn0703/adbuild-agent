@@ -46,7 +46,7 @@ def _budget_values(text):
         tail=clause[anchor.end():]
         assignment=list(re.finditer(r'改为|改成|设为|设置为|调至|调到|调整为|调整到|统一为|降到|升到|\bto\b|[:：=]',tail,re.I))
         if assignment:tail=tail[assignment[-1].end():]
-        amount=re.search(r'(?<![0-9.,])([-+]?[0-9]+(?:[.,][0-9]+)*)(?![0-9.,])',tail[:35])
+        amount=re.search(r'(?<![0-9.,])([-+]?[0-9]+(?:[.,][0-9]+)*(?:[eE][-+]?[0-9]+)?)(?![0-9.,]|[eE][-+]?[0-9])',tail[:35])
         if amount:
             try:found.append(normalize_value('budget',amount[1]))
             except ValueError:pass
@@ -142,6 +142,7 @@ def supported_source(state,row,field,value,offered=None):
     """Return the verified provenance without converting a suggestion into user fact."""
     tz=row.get('timezone','');previous=row.get('sources',{}).get(field)
     previous=SourceRef.model_validate(previous) if previous else None
+    invalid_existing=any(i.get('field')==field and i.get('code','').startswith('invalid_') for i in row.get('issues',[]))
     if offered:
         ref=SourceRef.model_validate(offered)
         if ref.kind=='project' and field=='account_id' and equivalent(field,value,state.get('project_account_id')):
@@ -167,7 +168,7 @@ def supported_source(state,row,field,value,offered=None):
         if ref.kind=='confirmed' and ref.file_id:
             raise ValueError(f'{field} 的消息来源必须kind=confirmed、file_id为空、message_id为真实用户消息ID；不要伪造文件ID')
         if ref.kind=='template' and not ref.file_id and ref.context_version==state.get('context',{}).get('version') and _context_supports(state,row,field,value):
-            if row.get(field) not in (None,'') and not equivalent(field,value,row[field],tz):
+            if invalid_existing or row.get(field) not in (None,'') and not equivalent(field,value,row[field],tz):
                 message=next((m for m in state.get('messages',[]) if m.get('role')=='user' and m.get('id')==ref.message_id),None)
                 text='\n'.join(str(a['answer']) for a in message['answers']) if message and 'answers' in message else str((message or {}).get('content',''))
                 if not re.search(r'默认|\bdefault\b',text,re.I):raise ValueError(f'{field} 的默认值不能覆盖已有明确值；必须引用用户明确改用默认配置的消息')
@@ -180,7 +181,7 @@ def supported_source(state,row,field,value,offered=None):
             # A newer explicit budget correction supersedes an older amount.
             break
     if previous and equivalent(field,value,row.get(field),tz):return previous
-    if _context_supports(state,row,field,value):
+    if not invalid_existing and _context_supports(state,row,field,value):
         return SourceRef(kind='template',file_id='',sheet='',cell='',raw_value=str(value),context_version=state.get('context',{}).get('version'))
     raise ValueError(f'{field} 缺少支持该值的用户输入、项目默认或字段证据，请先澄清')
 
