@@ -68,9 +68,10 @@ def assemble(rows):
                 seen[material_key] = values
                 ads.append(MaterialSpec(id=material_id, **values,
                     sources={f: row.sources[f] for f in values if f in row.sources}))
-            group_sources={**first.sources, **members[0][2]}
+            group_sources={**{f:first.sources[f] for f in ('budget','currency','budget_mode','audience','language','start_at','end_at','timezone') if f in first.sources},**members[0][2]}
+            if members[0][1].get('group_key') and 'group_key' in members[0][2]:group_sources['name']=members[0][2]['group_key']
             if 'adgroup_budget' in group_sources:group_sources['budget']=group_sources['adgroup_budget']
-            groups.append(GroupSpec(id=group_id, name=str(group_key), **attributes,
+            groups.append(GroupSpec(id=group_id, name=str(members[0][1].get('group_key') or ''), **attributes,
                 budget=BudgetSpec(amount=amount, currency=req.currency, mode=req.budget_mode) if level == 'adgroup' or amount is not None else None,
                 ads=ads, sources=group_sources))
         conflict_target=req.id

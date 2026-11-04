@@ -62,16 +62,18 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
         except ValueError as error:raise HTTPException(422,str(error)) from None
         if 'budget_level' in edit['values']:
             if set(edit['values'])!={'budget_level'}:raise HTTPException(422,'预算层级须单独提交，其他字段分别指定实际目标')
-            from .entities import set_budget_level
+            from .entities import set_budget_level,recover_group_budgets
             try:
+                documents=list(conn.execute('select id,storage_path,sha256 from files where project_id=%s and kind=%s',(project['id'],'requirements')))
                 source=edit.get('sources',{}).get('budget_level')
                 if source:
                     from .provenance import supported_source
                     taskrow=conn.execute('select data from intake_tasks where draft_id=%s',(draft.id,)).fetchone()
                     state=taskrow['data'] if taskrow else {}
-                    state={**state,'documents':list(conn.execute('select id,storage_path,sha256 from files where project_id=%s and kind=%s',(project['id'],'requirements')))}
+                    state={**state,'documents':documents}
                     source=supported_source(state,{**req.model_dump(mode='json'),'budget_level':req.structure.budget_level if req.structure else None},'budget_level',edit['values']['budget_level'],source)
                 updated=set_budget_level(req,edit['values']['budget_level'],edit.get('source_message_id'),actor.user_id,source)
+                updated=recover_group_budgets(updated,documents)
             except ValueError as error:raise HTTPException(422,str(error)) from None
             draft.requirements=[evaluate(updated,history) if r.id==req.id else r for r in draft.requirements]
             continue
@@ -165,6 +167,9 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
             if field not in req.confirmed_fields: req.confirmed_fields.append(field)
         if 'budget' in patch and req.structure and req.structure.budget_level=='adgroup':
             req.sources['budget_constraint']=req.sources['budget'].model_copy(deep=True)
+        from .structure import materialize_allocation
+        try:req=materialize_allocation(req)
+        except (ValueError,TypeError) as error:raise HTTPException(422,str(error)) from None
         req.issues = [i for i in req.issues if i.field not in patch]
         draft.requirements = [evaluate(req,history) if r.id == req.id else r for r in draft.requirements]
     draft.version += 1
@@ -216,7 +221,7 @@ def submit_approved_draft(conn, draft, project):
     return run_id
 
 
-def apply_expansions(conn,draft,actor,expansions,message_id):
+def apply_expansions(conn,draft,actor,expansions,message_id,context,history):
     """Accepted variants replace only their explicitly referenced base requirements."""
     from .models import RequirementExpansion
     variants=[RequirementExpansion.model_validate(x) for x in expansions]
@@ -228,12 +233,9 @@ def apply_expansions(conn,draft,actor,expansions,message_id):
     added=[]
     for item in variants:
         base=bases[item.base_requirement_id]
-        copy=base.model_copy(deep=True)
-        copy.id=str(uuid4());copy.objective=item.objective;copy.budget=item.budget
-        copy.structure=None
-        for field in ('objective','budget'):
-            copy.sources[field]=SourceRef(file_id='',sheet='',cell='',raw_value=str(getattr(copy,field)),kind='confirmed',message_id=message_id,accepted_by=actor.user_id,accepted_at=datetime.now(timezone.utc))
-        added.append(copy)
+        from .entities import objective_variant
+        copy=objective_variant(base,str(uuid4()),item.objective,item.budget,message_id,actor.user_id,context)
+        added.append(evaluate(copy,history))
     replaced={x.base_requirement_id for x in variants}
     draft.requirements=[r for r in draft.requirements if r.id not in replaced]+added
     draft.version+=1;draft.approval=None;draft.status='draft'

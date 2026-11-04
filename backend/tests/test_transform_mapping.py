@@ -140,6 +140,8 @@ def test_old_template_protocol_requests_new_proposal_and_explicit_review(monkeyp
         def fetchall(self):return self.value
     class DB:
         def execute(self,sql,args=()):
+            if sql.startswith('select tenant_id from projects'):return Result({'tenant_id':'tenant'})
+            if sql.startswith('insert into audit'):return Result(None)
             if sql.startswith('select * from files'):return Result({'id':'file','project_id':'project','inspection':inspection,'storage_path':'source.xlsx'})
             if sql.startswith('select id from intake_tasks'):return Result({'id':'task'})
             if sql.startswith('select data from mapping_templates'):return Result([{'data':template}])
@@ -150,6 +152,7 @@ def test_old_template_protocol_requests_new_proposal_and_explicit_review(monkeyp
     async def propose(*args,**kwargs):
         calls.append(1)
         return MappingProposal(mappings=[SheetMapping(sheet='Sheet',header_row=1,first_row=2,last_row=2,bindings=row_bindings({'post_id':'A','start_at':'B','timezone':'C'}))],explanation='new mapping')
+    monkeypatch.setattr('app.usage.transaction',transaction)
     monkeypatch.setattr(main,'transaction',transaction)
     monkeypatch.setattr(main,'project_access',lambda *args,**kwargs:{'id':'project'})
     monkeypatch.setattr('app.intake.access',lambda *args,**kwargs:(task,{'id':'project'}))

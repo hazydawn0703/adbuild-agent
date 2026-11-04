@@ -35,6 +35,22 @@ def allocate_budget(total: Decimal, ratios: list[Decimal]) -> list[Decimal]:
     return amounts
 
 
+def materialize_allocation(req: Requirement):
+    """Persist owned amounts before scope filtering can change the weight set."""
+    spec=req.structure
+    if not spec or spec.budget_level!='adgroup':return req
+    budgets=[g.budget for g in spec.groups]
+    if not all(b and b.allocation_ratio is not None and b.amount is None for b in budgets):return req
+    total=req.budget_constraint if req.budget_constraint is not None else req.budget
+    amounts=allocate_budget(total,[b.allocation_ratio for b in budgets])
+    from .models import SourceRef
+    for group,amount in zip(spec.groups,amounts):
+        group.sources['budget']=SourceRef(kind='calculated',file_id='',sheet='',cell='',raw_value=str(amount),
+            derived_from=[req.id+':budget',*[g.id+':allocation_ratio' for g in spec.groups]])
+        group.budget.amount=amount;group.budget.allocation_ratio=None
+    return req
+
+
 def campaign_tree(req: Requirement):
     """Return materialized review nodes plus local issues. Never creates platform objects."""
     issues = []

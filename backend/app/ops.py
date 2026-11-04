@@ -251,3 +251,14 @@ def reset_password(tenant_id: str, user_id: str, body: ResetPassword, _=Depends(
         c.execute('update users set password_hash=%s where id=%s', (password_hash.hash(body.password), user_id))
         audit(c, tenant_id, 'ops_admin_password_reset', {'user_id': user_id})
     return {'ok': True}
+
+
+@router.get('/usage')
+def task_usage(offset: int = 0, _=Depends(authenticate_platform)):
+    if offset < 0: raise HTTPException(422, '分页位置无效')
+    with transaction() as c:
+        tasks=c.execute('select i.id,i.data,p.name as project_name,t.name as tenant_name from intake_tasks i join projects p on p.id=i.project_id join tenants t on t.id=i.tenant_id order by i.created_at desc,i.id limit 50 offset %s',(offset,)).fetchall()
+        for task in tasks:
+            task['name']=task.pop('data').get('name') or task['id']
+            task['stages']=[row['data'] for row in c.execute("select data from audit where event='task_stage_usage' and JSON_UNQUOTE(JSON_EXTRACT(data,'$.task_id'))=%s order by id",(task['id'],)).fetchall()]
+    return tasks

@@ -53,6 +53,19 @@ def test_weights_allocate_exact_cents():
     assert allocate_budget(Decimal('100.01'),[Decimal(1)]*3)==[Decimal('33.34'),Decimal('33.34'),Decimal('33.33')]
 
 
+def test_scope_subset_does_not_reallocate_full_budget_to_remaining_group():
+    from app.models import BudgetSpec,TaskScope,ScopeSelector
+    from app.scope import select_requirements
+    from app.structure import campaign_tree
+    req=parse('adgroup',('G1','G2'),'100')[0];req.budget=Decimal('100.01')
+    for group in req.structure.groups:group.budget=BudgetSpec(allocation_ratio=1)
+    scope=TaskScope(status='resolved',action='new',selectors=[ScopeSelector(field='post_id',values=['100'])],message_ids=['m'])
+    selected=select_requirements([req],scope,[{'id':'m','role':'user','content':'只搭建帖子100'}])[0]
+    tree,_=campaign_tree(selected)
+    assert tree['adgroups'][0]['budget']['amount']=='50.01'
+    assert tree['planned_total']=='50.01'
+
+
 def test_flat_requirement_cannot_be_confirmed():
     preview=build_preview(BuildDraft(id='d',project_id='p',requirements=[Requirement(id='r')]),[],0)
     assert not preview['can_confirm']

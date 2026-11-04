@@ -102,6 +102,12 @@ def select_requirements(requirements, scope, messages):
     for original in requirements:
         req = original.model_copy(deep=True)
         if req.structure:
+            from .structure import materialize_allocation
+            # An invalid allocation remains a blocking business issue in preview.
+            try:materialize_allocation(req)
+            except (ValueError,TypeError) as error:
+                from .models import Issue
+                req.issues.append(Issue(code='invalid_allocation',field='budget',target_id=req.id,message=str(error)))
             included_posts={str(v) for s in scope.get('selectors',[]) if s['field']=='post_id' for v in s['values']}
             excluded_posts={str(v) for s in scope.get('exclude_selectors',[]) if s['field']=='post_id' for v in s['values']}
             for group in req.structure.groups:
@@ -173,4 +179,3 @@ def compact_state(state):
         from .history_query import lookup_history
         payload['history_query']=lookup_history(history_records,scope,rows)
     return redact_private(payload)
-

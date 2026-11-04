@@ -221,6 +221,10 @@ def validate_proposal_evidence(state,decision):
                 from .models import StructureSpec
                 structure=StructureSpec.model_validate(value)
                 existing=row.get('structure') or {}
+                prior_ads={a['id'] for g in existing.get('groups',[]) for a in g.get('ads',[])}
+                proposed_ads={a.id for g in structure.groups for a in g.ads}
+                if prior_ads and prior_ads!=proposed_ads:
+                    raise ValueError('结构修改必须保留完整实体及已核实的素材集合；排除使用本批范围操作，新增使用新增候选入口')
                 weighted=[g for g in structure.groups if g.budget and g.budget.allocation_ratio is not None]
                 ratio_message=None
                 if weighted:

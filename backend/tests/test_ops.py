@@ -30,7 +30,7 @@ def login(client):
 
 def test_all_platform_endpoints_require_platform_session(client):
     for method, path, body in [
-        ('GET', '/ops/session', None), ('GET', '/ops/tenants', None),
+        ('GET', '/ops/session', None), ('GET', '/ops/usage', None), ('GET', '/ops/tenants', None),
         ('POST', '/ops/tenants', {}), ('POST', '/ops/tenants/t/name', {'name':'new'}), ('POST', '/ops/tenants/t/close', None), ('POST', '/ops/tenants/t/admins', {}),
         ('POST', '/ops/tenants/t/admins/u/status', {'active': False}),
         ('POST', '/ops/tenants/t/admins/u/password', {'password': 'new-password-123456'}),

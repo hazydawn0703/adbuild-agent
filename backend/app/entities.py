@@ -16,7 +16,6 @@ def check_edit_owner(req,target_id,fields):
     else:
         allowed={'included','name','account_id','platform','objective','budget','budget_mode','currency','structure','budget_level'}
         if not req.structure:return
-        if req.structure.budget_level=='adgroup':allowed-={'budget_mode','currency'}
     if set(fields)-allowed:raise ValueError('字段不属于目标实体，请用 target_id 指定实际广告组或素材，不得通过计划字段覆盖子节点')
 
 
@@ -66,6 +65,28 @@ def entity_label(req,target_id):
     raise ValueError('目标实体不属于当前计划')
 
 
+def recover_group_budgets(req,documents):
+    """After ownership is confirmed, re-read mapped amounts instead of asking again."""
+    if not req.structure or req.structure.budget_level!='adgroup':return req
+    from .provenance import verify_excel_source
+    from .models import Issue
+    for group in req.structure.groups:
+        ref=group.sources.get('budget')
+        if not group.budget or group.budget.amount is not None or not ref or ref.kind!='excel':continue
+        document=next((d for d in documents if str(d['id'])==ref.file_id),None)
+        try:
+            if not document:raise ValueError('预算来源不属于当前项目')
+            amount=normalize_value('budget',ref.raw_value)
+            verified=verify_excel_source(document,'budget',amount,ref,group.timezone)
+            group.budget.amount=amount;group.sources['budget']=verified
+        except (ValueError,OSError) as error:
+            req.issues.append(Issue(code='invalid_budget_source',field='budget',target_id=group.id,message=str(error)))
+    if all(g.budget and g.budget.amount is not None for g in req.structure.groups):
+        req.budget=sum((g.budget.amount for g in req.structure.groups),Decimal(0))
+        req.sources['budget']=SourceRef(kind='calculated',file_id='',sheet='',cell='',raw_value=str(req.budget),derived_from=[g.id+':budget' for g in req.structure.groups])
+    return req
+
+
 def evidence_values(req,target_id):
     node=find_entity(req,target_id)
     data=node.model_dump(mode='json')
@@ -106,3 +127,41 @@ def edit_entity(req,target_id,patch,message_id,actor_id,sources=None):
         if not linked or node.post_id and linked!=node.post_id:raise ValueError('素材帖子 ID 与链接不一致')
     req.issues=[issue for issue in req.issues if not (issue.target_id==target_id and issue.field in patch)]
     return Requirement.model_validate(req.model_dump())
+
+
+def objective_variant(base,new_id,objective,total,message_id,actor_id,context):
+    """Clone the evidenced graph for an explicitly accepted objective variant."""
+    from datetime import datetime,timezone
+    from .assembly import identity
+    from .provenance import _context_supports
+    from .models import Objective
+    copy=base.model_copy(deep=True);copy.id=new_id;copy.objective=Objective(objective);copy.budget=total
+    ids={base.id:copy.id}
+    if copy.structure:
+        for group in copy.structure.groups:
+            previous=group.id;group.id=identity(copy.id,previous);ids[previous]=group.id
+            for ad in group.ads:
+                previous=ad.id;ad.id=identity(group.id,previous);ids[previous]=ad.id
+    copy.issues=[issue.model_copy(update={'target_id':ids.get(issue.target_id,issue.target_id)}) for issue in copy.issues
+        if not (issue.target_id in ('',base.id) and issue.field in ('objective','budget'))]
+    for field in ('objective','budget'):
+        copy.sources[field]=SourceRef(kind='confirmed',file_id='',sheet='',cell='',raw_value=str(getattr(copy,field)),
+            message_id=message_id,accepted_by=actor_id,accepted_at=datetime.now(timezone.utc))
+        if field not in copy.confirmed_fields:copy.confirmed_fields.append(field)
+    copy.budget_constraint=total if copy.structure and copy.structure.budget_level=='adgroup' else None
+    if copy.budget_constraint is not None:copy.sources['budget_constraint']=copy.sources['budget'].model_copy(deep=True)
+    else:copy.sources.pop('budget_constraint',None)
+    nodes=[copy,*[node for group in copy.structure.groups for node in [group,*group.ads]]] if copy.structure else [copy]
+    for node in nodes:
+        values=copy.model_dump(mode='json') if node is copy else evidence_values(copy,node.id)
+        for field,ref in list(node.sources.items()):
+            if ref.kind!='template' or field not in values:continue
+            if _context_supports({'context':context},values,field,values[field]):continue
+            if hasattr(node,'budget') and isinstance(node.budget,BudgetSpec) and field in ('budget','budget_mode','currency'):
+                setattr(node.budget,{'budget':'amount','budget_mode':'mode','currency':'currency'}[field],'' if field=='currency' else None)
+            elif hasattr(node,field):setattr(node,field,None if field in ('budget','objective','budget_mode','start_at','end_at') else '')
+            node.sources.pop(field)
+            if node is copy and field in copy.confirmed_fields:copy.confirmed_fields.remove(field)
+    if copy.structure:
+        copy.sources['structure']=SourceRef(kind='calculated',file_id='',sheet='',cell='',raw_value='沿用已核实的三层结构并建立新目标节点',derived_from=[base.id+':structure',message_id+':objective'])
+    return copy

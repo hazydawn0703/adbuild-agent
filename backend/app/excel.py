@@ -323,6 +323,8 @@ def _transform(value,kind):
 
 def validate_mapping(mapping,wb):
     """Validate the complete mapping before reading rows, including foreign sources."""
+    if 'budget' in mapping.bindings and {'campaign_budget','adgroup_budget'}&set(mapping.bindings):
+        raise ValueError('bindings.budget 与分层金额绑定重复；请只输出 campaign_budget/adgroup_budget，不能再绑定通用 budget')
     if mapping.sheet not in wb.sheetnames or mapping.last_row<mapping.first_row: raise ValueError('工作表或数据范围无效')
     if mapping.last_row>wb[mapping.sheet].max_row or mapping.last_row-mapping.first_row>=10000: raise ValueError('数据范围超出工作表或 10,000 行限制')
     for binding in mapping.bindings.values():
@@ -463,6 +465,10 @@ def parse_requirements(data: bytes, file_id: str, mappings: list[SheetMapping]):
                     values[field]=None if field in ('budget','objective','start_at','end_at') else ''
                     issues.append(Issue(code='invalid_'+field,field=field,message=str(error)))
             row_id=sha256(f'{file_id}:{sheet.title}:{index}:{mapping.model_dump_json()}'.encode()).hexdigest()[:24]
+            if 'budget' in values and entity.get('budget_level') in ('campaign','adgroup'):
+                owner='campaign_budget' if entity['budget_level']=='campaign' else 'adgroup_budget'
+                entity[owner]=values.pop('budget')
+                if 'budget' in refs:entity_refs[owner]=refs.pop('budget')
             try:
                 result.append((Requirement(id=row_id,**values,sources=refs,issues=issues),entity,entity_refs))
             except ValidationError as error:
