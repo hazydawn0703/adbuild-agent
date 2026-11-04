@@ -436,14 +436,16 @@ async def act(project_id,body,actor):
             current.semantic_questions=list(existing.values())
             for question in decision.questions:
                 current.analysis.setdefault('question_basis',{}).setdefault(question.id,question_observation(question,draft))
+            previous_scope=current.scope.model_dump(exclude={'reason'})
             current.scope=resolved_scope
             if current.scope.status=='resolved':
-                if draft and current.scope.action in ('new','repost'):
+                if draft and current.scope.action in ('new','repost','exclude') and previous_scope!=current.scope.model_dump(exclude={'reason'}):
                     from .scope import select_requirements
                     scoped=select_requirements(draft.requirements,current.scope,current.messages)
-                    selection_edits=[{'requirement_id':r.id,'values':{'included':r.included},'source_message_id':current.scope.message_ids[-1]} for r,old in zip(scoped,draft.requirements) if r.included!=old.included]
-                    if selection_edits:
-                        draft=edit_draft(c,draft.id,actor,draft.version,selection_edits)
+                    if any(r.included!=old.included or r.structure!=old.structure for r,old in zip(scoped,draft.requirements)):
+                        draft.requirements=[evaluate(r,history) for r in scoped]
+                        draft.version+=1;draft.approval=None;draft.status='draft'
+                        c.execute('update drafts set version=%s,data=%s where id=%s',(draft.version,json_value(draft),draft.id))
                         current.proposal=None
                 if not draft:
                     current.semantic_questions=[q for q in current.semantic_questions if not (q.scope=='task' and q.field=='scope')]

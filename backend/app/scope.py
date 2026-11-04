@@ -103,26 +103,30 @@ def select_requirements(requirements, scope, messages):
         req = original.model_copy(deep=True)
         if req.structure:
             from .structure import materialize_allocation
-            # An invalid allocation remains a blocking business issue in preview.
             try:materialize_allocation(req)
             except (ValueError,TypeError) as error:
                 from .models import Issue
                 req.issues.append(Issue(code='invalid_allocation',field='budget',target_id=req.id,message=str(error)))
+        if scope.get('status')=='resolved' and scope.get('action')=='exclude':
+            matched=all(matches(req,s) for s in scope.get('selectors',[]))
+            if matched:
+                posts={str(v) for s in scope.get('selectors',[]) if s['field']=='post_id' for v in s['values']}
+                if req.structure and posts:
+                    for group in req.structure.groups:
+                        for ad in group.ads:
+                            if ad.post_id in posts:ad.included=False
+                    req.included=req.included and any(a.included for g in req.structure.groups for a in g.ads)
+                else:req.included=False
+            result.append(req);continue
+        if req.structure:
             included_posts={str(v) for s in scope.get('selectors',[]) if s['field']=='post_id' for v in s['values']}
             excluded_posts={str(v) for s in scope.get('exclude_selectors',[]) if s['field']=='post_id' for v in s['values']}
             for group in req.structure.groups:
-                group.ads=[ad for ad in group.ads if (not included_posts or ad.post_id in included_posts) and ad.post_id not in excluded_posts]
-            req.structure.groups=[g for g in req.structure.groups if g.ads]
-            active={req.id,*[g.id for g in req.structure.groups],*[ad.id for g in req.structure.groups for ad in g.ads]}
-            req.issues=[issue for issue in req.issues if not issue.target_id or issue.target_id in active]
-            if req.structure.budget_level=='adgroup' and req.sources.get('budget') and req.sources['budget'].kind=='calculated' and all(g.budget and g.budget.amount is not None for g in req.structure.groups):
-                from decimal import Decimal
-                req.budget=sum((g.budget.amount for g in req.structure.groups),Decimal(0))
-                req.sources['budget']=req.sources['budget'].model_copy(update={'raw_value':str(req.budget),'derived_from':[g.id+':budget' for g in req.structure.groups]})
+                for ad in group.ads:ad.included=(not included_posts or ad.post_id in included_posts) and ad.post_id not in excluded_posts
         selected = resolved and (scope.get('all_records', False) or bool(scope.get('selectors')))
         selected = selected and all(matches(req, s) for s in scope.get('selectors', []))
-        selected = selected and not any(matches(req, s) for s in scope.get('exclude_selectors', []))
-        if req.structure and not req.structure.groups:selected=False
+        selected = selected and not any(matches(req, s) for s in scope.get('exclude_selectors', []) if not(req.structure and s['field']=='post_id'))
+        if req.structure and not any(a.included for g in req.structure.groups for a in g.ads):selected=False
         req.included = bool(selected)
         result.append(req)
     return result

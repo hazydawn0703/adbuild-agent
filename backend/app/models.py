@@ -46,6 +46,7 @@ class BudgetSpec(Model):
 
 class MaterialSpec(Model):
     id: str
+    included: bool = Field(default=True,description='服务端范围选择状态；模型不可通过结构修改更改')
     name: str = ''
     kind: Literal['post', 'authorization_code', 'unknown'] = 'post'
     post_id: str = ''

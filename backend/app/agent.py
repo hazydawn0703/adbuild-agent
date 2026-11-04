@@ -211,7 +211,7 @@ def scope_matches(state,scope):
     selected=[]
     for row in rows:
         req=SimpleNamespace(**row)
-        if (scope.get('all_records') or scope.get('selectors')) and all(matches(req,s) for s in scope.get('selectors',[])) and not any(matches(req,s) for s in scope.get('exclude_selectors',[])):
+        if (scope.get('all_records') or scope.get('selectors')) and all(matches(req,s) for s in scope.get('selectors',[])) and not any(matches(req,s) for s in scope.get('exclude_selectors',[]) if not(row.get('structure') and s['field']=='post_id')):
             selected.append(row['id'])
     return set(selected)
 
@@ -251,6 +251,10 @@ def validate_selection(state,decision):
         except ValueError as error:raise ProposalError(str(error)) from None
         matched=scope_matches(state,scope)
         desired=matched if scope['action']!='exclude' else {r['id'] for r in rows.values() if r.get('included',True)}-matched
+        if any(r.get('structure') for r in rows.values()):
+            from .scope import select_requirements
+            from .models import Requirement
+            desired={r.id for r in select_requirements([Requirement.model_validate(r) for r in rows.values()],scope,state.get('messages',[])) if r.included}
     kept=[]
     for edit in decision.edits:
         if 'included' in edit.values and edit.requirement_id in rows:

@@ -225,6 +225,9 @@ def validate_proposal_evidence(state,decision):
                 proposed_ads={a.id for g in structure.groups for a in g.ads}
                 if prior_ads and prior_ads!=proposed_ads:
                     raise ValueError('结构修改必须保留完整实体及已核实的素材集合；排除使用本批范围操作，新增使用新增候选入口')
+                prior_inclusion={a['id']:a.get('included',True) for g in existing.get('groups',[]) for a in g.get('ads',[])}
+                if any(a.included!=prior_inclusion.get(a.id,True) for g in structure.groups for a in g.ads):
+                    raise ValueError('结构修改不能改变本批素材范围，请先提交明确范围操作')
                 weighted=[g for g in structure.groups if g.budget and g.budget.allocation_ratio is not None]
                 ratio_message=None
                 if weighted:

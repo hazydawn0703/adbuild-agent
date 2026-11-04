@@ -1,5 +1,5 @@
 type Budget={amount?:string|null;allocation_ratio?:string|null;currency?:string;mode?:'daily'|'lifetime'|null};
-type Material={id:string;name?:string;kind:'post'|'authorization_code'|'unknown';post_id?:string;post_url?:string;identity_id?:string;authorization_code?:string;cta?:string;landing_url?:string};
+type Material={id:string;included?:boolean;name?:string;kind:'post'|'authorization_code'|'unknown';post_id?:string;post_url?:string;identity_id?:string;authorization_code?:string;cta?:string;landing_url?:string};
 export type StructureGroup={id:string;name?:string;audience?:string|null;language?:string|null;start_at?:string|null;end_at?:string|null;timezone?:string;budget?:Budget|null;ads:Material[]};
 export type Structure={budget_level:'campaign'|'adgroup'|null;groups:StructureGroup[]};
 export type Ref={message_id?:string|null;context_version?:number|null;file_id:string;sheet:string;cell:string;raw_value:string;kind:string};

@@ -111,4 +111,20 @@ def test_selecting_a_material_does_not_include_its_siblings():
     scope=TaskScope(status='resolved',action='new',selectors=[ScopeSelector(field='post_id',values=['101'])],message_ids=['m'])
     selected=select_requirements(reqs,scope,[{'id':'m','role':'user','content':'只搭建帖子101'}])
     assert selected[0].included
-    assert [a.post_id for g in selected[0].structure.groups for a in g.ads]==['101']
+    assert [a.post_id for g in selected[0].structure.groups for a in g.ads if a.included]==['101']
+    assert len(selected[0].structure.groups)==2
+    expanded=scope.model_copy(update={'selectors':[ScopeSelector(field='post_id',values=['100','101','102'])]})
+    restored=select_requirements(selected,expanded,[{'id':'m','role':'user','content':'搭建帖子100、101、102'}])
+    assert [a.post_id for g in restored[0].structure.groups for a in g.ads if a.included]==['100','101','102']
+
+
+def test_excluding_one_post_retains_its_siblings_and_owned_group_budget():
+    from app.scope import select_requirements
+    from app.models import TaskScope,ScopeSelector
+    from app.structure import campaign_tree
+    reqs=parse('adgroup',('G1','G1','G2'),'300')
+    scope=TaskScope(status='resolved',action='exclude',selectors=[ScopeSelector(field='post_id',values=['101'])],message_ids=['m'])
+    actual=select_requirements(reqs,scope,[{'id':'m','role':'user','content':'排除帖子101'}])[0]
+    tree,_=campaign_tree(actual)
+    assert actual.included and tree['planned_total']=='600'
+    assert [a['post_id'] for g in tree['adgroups'] for a in g['ads']]==['100','102']

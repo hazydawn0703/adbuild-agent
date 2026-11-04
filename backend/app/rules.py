@@ -141,7 +141,7 @@ def evaluate(req: Requirement, history: list[dict], now=None):
     now = now or business_now()
     req = req.model_copy(deep=True)
     active_targets={req.id}
-    if req.structure:active_targets.update(node.id for group in req.structure.groups for node in [group,*group.ads])
+    if req.structure:active_targets.update(node.id for group in req.structure.groups if any(a.included for a in group.ads) for node in [group,*[a for a in group.ads if a.included]])
     req.issues = [i for i in req.issues if i.code.startswith("invalid_") and (not i.target_id or i.target_id in active_targets)]
     req.history = history_candidates(req,history)
     for field in ("name", "account_id", "post_id", "objective", "budget", "budget_mode", "currency", "start_at", "end_at", "timezone", "audience", "identity_id"):
@@ -184,6 +184,7 @@ def evaluate(req: Requirement, history: list[dict], now=None):
         req.sources['budget']=SourceRef(kind='calculated',file_id='',sheet='',cell='',raw_value=str(req.budget),derived_from=[g.id+':budget' for g in req.structure.groups])
     if req.structure:
         for group in req.structure.groups:
+            if not any(a.included for a in group.ads):continue
             if group.end_at and group.end_at.tzinfo and group.end_at <= now:
                 req.issues.append(Issue(code='expired',field='end_at',message=f'广告组 {group.name} 排期已经结束，不会自动平移',target_id=group.id))
     exact=[]
@@ -202,6 +203,7 @@ def evaluate(req: Requirement, history: list[dict], now=None):
         states=[];candidates=[]
         for group in req.structure.groups:
             for ad in group.ads:
+                if not ad.included:continue
                 material=req.model_copy(update={'post_id':ad.post_id,'post_url':ad.post_url,
                     'start_at':group.start_at,'end_at':group.end_at,'timezone':group.timezone,
                     'structure':StructureSpec(budget_level=req.structure.budget_level,groups=[group])})

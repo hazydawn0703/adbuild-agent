@@ -11,7 +11,10 @@ from test_task_mysql import database
 def test_new_user_message_invalidates_old_pending_proposal(database,monkeypatch):
     class Model:
         async def ainvoke(self,messages):return model_response(ChatDecision(answer='新条件已记录'))
-    monkeypatch.setattr('app.agent.llm',lambda _:Model())
+    from app.models import TaskScope
+    class ScopeModel:
+        async def ainvoke(self,messages):return model_response(TaskScope(reason='范围仍待明确'))
+    monkeypatch.setattr('app.agent.llm',lambda schema:ScopeModel() if schema is TaskScope else Model())
     async def scenario():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
             draft=BuildDraft(id=str(uuid4()),project_id=database,requirements=[Requirement(id='r',budget=50)])

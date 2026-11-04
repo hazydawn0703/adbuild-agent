@@ -65,6 +65,8 @@ def campaign_tree(req: Requirement):
         return {'id':f'{req.id}:campaign','requirement_id':req.id,'name':name,
                 'account_id':req.account_id,'objective':req.objective,'budget_level':None,
                 'budget':None,'planned_total':None,'adgroups':[]}, issues
+    spec=spec.model_copy(update={'groups':[g.model_copy(update={'ads':[a for a in g.ads if a.included]}) for g in spec.groups if any(a.included for a in g.ads)]})
+    if not spec.groups:problem('included','没有选中需要新增的素材')
     group_ids = [g.id for g in spec.groups]
     if len(set(group_ids)) != len(group_ids) or any(not value.strip() for value in group_ids):
         problem('structure', '广告组 ID 必须非空且在计划内唯一')
@@ -93,7 +95,9 @@ def campaign_tree(req: Requirement):
     else:
         problem('budget_level','预算层级尚未明确，请说明计划预算或广告组预算；已识别的组和素材仍保留')
     total=req.budget if spec.budget_level=='campaign' else sum(amounts,Decimal(0)) if spec.budget_level=='adgroup' and all(a is not None for a in amounts) else None
-    if spec.budget_level=='adgroup' and req.budget_constraint is not None and total is not None and total!=req.budget_constraint:
+    original_budgets=[g.budget for g in req.structure.groups]
+    constraint_total=sum((b.amount for b in original_budgets),Decimal(0)) if all(b and b.amount is not None for b in original_budgets) else total
+    if spec.budget_level=='adgroup' and req.budget_constraint is not None and constraint_total is not None and constraint_total!=req.budget_constraint:
         problem('budget','广告组预算合计与明确的计划总额约束不一致，请核对总额或组预算')
 
     groups = []
