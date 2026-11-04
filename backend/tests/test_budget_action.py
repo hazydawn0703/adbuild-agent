@@ -72,6 +72,13 @@ def test_message_raw_value_cannot_replace_actual_message_evidence():
     with pytest.raises(ValueError):supported_source(state,{},'budget',Decimal('300.03'),offered)
 
 
+def test_message_budget_uses_same_amount_rules_without_truncating_numeric_commas():
+    from app.provenance import message_supports
+    for text,values in [('预算1,250美元',['1','1250']),('预算1.250美元',['1.25','1250']),('预算-100美元',['100'])]:
+        for value in values:assert not message_supports('budget',value,text)
+    assert message_supports('budget','1250.00','预算1,250.00美元')
+
+
 def test_truncated_structure_cannot_become_a_pending_validated_proposal():
     state=allocation_state()
     decision=ChatDecision(answer='',edits=[{'requirement_id':'plan','values':{'budget':'100.01','structure':{

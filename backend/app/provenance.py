@@ -40,14 +40,16 @@ def match_history_reference(ref,field,value,history,tz=''):
 
 def _budget_values(text):
     found=[]
-    for clause in re.split(r'[，,；;\n]',text):
+    for clause in re.split(r'[，；;\n]|(?<!\d),|,(?!\d)',text):
         anchor=re.search(r'预算|总额|合计(?:预算|金额)|\bbudget\b',clause,re.I)
         if not anchor:continue
         tail=clause[anchor.end():]
         assignment=list(re.finditer(r'改为|改成|设为|设置为|调至|调到|调整为|调整到|统一为|降到|升到|\bto\b|[:：=]',tail,re.I))
         if assignment:tail=tail[assignment[-1].end():]
-        amount=re.search(r'(?<![0-9])([0-9]+(?:\.[0-9]+)?)(?![0-9])',tail[:35])
-        if amount:found.append(Decimal(amount[1]))
+        amount=re.search(r'(?<![0-9.,])([-+]?[0-9]+(?:[.,][0-9]+)*)(?![0-9.,])',tail[:35])
+        if amount:
+            try:found.append(normalize_value('budget',amount[1]))
+            except ValueError:pass
     return found
 
 
