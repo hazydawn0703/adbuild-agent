@@ -29,8 +29,8 @@ def extract(value,path):
 
 
 async def call(s,bindings,tools,op,context):
-    binding=bindings[op]
-    return await call_binding(s,binding,tools,context)
+    from .usage import measured
+    return await measured(op,call_binding)(s,bindings[op],tools,context)
 
 
 async def call_binding(s,binding,tools,context):
@@ -131,7 +131,8 @@ async def _execute(run_id,action):
                 if check_policy(evaluate(req,[]),policy): raise ValueError("执行前需求或规则校验未通过")
             validate_bindings(bindings,tools)
             for probe in bindings['preflight']:
-                assertions(await call_binding(s,probe,tools,context),probe,context)
+                from .usage import measured
+                assertions(await measured('preflight',call_binding)(s,probe,tools,context),probe,context)
             existing=await call(s,bindings,tools,'find_existing',context)
             if extract(existing,bindings['find_existing']['result_path']):
                 with transaction() as c:
