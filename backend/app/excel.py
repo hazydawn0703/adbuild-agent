@@ -18,6 +18,7 @@ def clean(value):
 
 
 IDENTITY_HEADERS={'identityid','adidentityid','advertisingidentityid','素材身份','广告身份','广告身份id'}
+GROUP_HEADERS={'group','adgroup','adgroupname','广告组','广告组名称','组名称','组别'}
 
 
 def is_cent_amount(value):
@@ -27,16 +28,17 @@ def is_cent_amount(value):
 
 
 def mapping_coverage_errors(mapping,wb):
-    """Known populated identity columns must not become artificial missing facts."""
+    """Explicit populated entity columns cannot become artificial missing facts."""
     if mapping.sheet not in wb.sheetnames or mapping.last_row-mapping.first_row>=10000:return []
-    if 'identity_id' in mapping.bindings:return []
-    sheet=wb[mapping.sheet]
+    sheet=wb[mapping.sheet];errors=[]
     for cell in sheet[mapping.header_row]:
         label=re.sub(r'[\W_]+','',clean(cell.value)).casefold()
-        if label not in IDENTITY_HEADERS:continue
+        field='identity_id' if label in IDENTITY_HEADERS else 'group_key' if label in GROUP_HEADERS else None
+        if not field or field in mapping.bindings:continue
         if any(clean(_anchor(sheet,sheet.cell(row,cell.column)).value) for row in range(mapping.first_row,min(mapping.last_row,sheet.max_row)+1)):
-            return [f'bindings.identity_id 漏掉了已有实际值的广告身份列 {cell.column_letter}（{cell.coordinate}）；素材身份/广告身份/Identity ID 都是 identity_id，不是授权码，请逐行绑定，不要让用户重复提供']
-    return []
+            detail='素材身份/广告身份/Identity ID 都是 identity_id，不是授权码' if field=='identity_id' else 'Ad Group Name/广告组名称是 group_key，不可漏掉或按行虚构广告组'
+            errors.append(f'bindings.{field} 漏掉了已有实际值的实体列 {cell.column_letter}（{cell.coordinate}）；{detail}，请逐行绑定，不要让用户重复提供')
+    return errors
 
 
 def sensitive_cells(sheet):
@@ -366,7 +368,7 @@ def validate_mapping(mapping,wb):
     header_labels={
         'name':{'campaignname','计划名称','计划名','系列名称','广告系列名称'},
         'campaign_key':{'campaignid','计划编号','计划id','计划标识'},
-        'group_key':{'group','adgroup','adgroupname','广告组','广告组名称','组名称','组别'},
+        'group_key':GROUP_HEADERS,
         'record_key':{'recordid','rowid','记录键','记录编号','记录标识','素材编号'},
         'audience':{'targeting','受众','受众名称','人群','定向'},
         'language':{'languages','语言'},'cta':{'calltoaction','行动号召','按钮类型'},

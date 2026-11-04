@@ -35,6 +35,21 @@ def test_removed_parallel_column_mapping_is_rejected():
             'columns':{'account_id':'B'},'bindings':{'account_id':{'kind':'cell','cell':'B2'}}})
 
 
+def test_explicit_group_column_omission_is_repaired_before_assembling(monkeypatch):
+    w=Workbook();s=w.active;s.append(['Campaign Name','Ad Group Name','Post ID'])
+    s.append(['Launch','Segment-1','123']);s.append(['Launch','Segment-1','456']);s.append(['Launch','Segment-2','789'])
+    data=binary(w);calls=[]
+    class Model:
+        async def ainvoke(self,messages):
+            calls.append(messages);bindings=row_bindings({'name':'A','post_id':'C'})
+            if len(calls)>1:bindings.update(row_bindings({'group_key':'B'}))
+            return model_response(MappingProposal(mappings=[SheetMapping(sheet=s.title,header_row=1,first_row=2,last_row=4,bindings=bindings)],explanation='Explicit groups'))
+    monkeypatch.setattr('app.agent.llm',lambda _:Model())
+    result=asyncio.run(propose_mapping(inspect_workbook(data),data))
+    assert len(calls)==2 and result.complete and result.mappings[0].bindings['group_key'].column=='B'
+    assert 'bindings.group_key' in calls[1][-1][1]
+
+
 def test_header_cta_binding_is_repaired_to_row_data_without_inventing_cta(monkeypatch):
     w=Workbook();s=w.active;s.append(['Campaign Name','Ad Group','Post ID','CTA']);s.append(['Launch','G1','123',None])
     data=binary(w);calls=[]

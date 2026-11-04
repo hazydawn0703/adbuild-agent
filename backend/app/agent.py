@@ -166,13 +166,13 @@ async def structured(schema,messages,validator=None):
     from langchain_core.exceptions import OutputParserException
     import logging,time
     from .prompts import PROMPT_HASH
+    from .scope import redact_private
     for attempt in range(2):
         started=time.monotonic()
         raw=None
         try:
             record_attempt()
             envelope=await asyncio.wait_for(llm(schema).ainvoke(messages),60)
-            from .scope import redact_private
             raw=envelope['raw']
             record_usage(raw)
             logging.getLogger('adbuild.analysis').info('model_output %s',json.dumps(redact_private({'schema':schema.__name__,'attempt':attempt+1,'raw':raw.model_dump(mode='json'),'parsing_error':str(envelope['parsing_error']) if envelope['parsing_error'] else None}),ensure_ascii=False))
