@@ -327,6 +327,17 @@ def validate_mapping(mapping,wb):
         raise ValueError('bindings.budget 与分层金额绑定重复；请只输出 campaign_budget/adgroup_budget，不能再绑定通用 budget')
     if mapping.sheet not in wb.sheetnames or mapping.last_row<mapping.first_row: raise ValueError('工作表或数据范围无效')
     if mapping.last_row>wb[mapping.sheet].max_row or mapping.last_row-mapping.first_row>=10000: raise ValueError('数据范围超出工作表或 10,000 行限制')
+    identities={}
+    for field in ('campaign_key','group_key','record_key'):
+        binding=mapping.bindings.get(field)
+        if binding is None:continue
+        key=(binding.kind,binding.sheet or mapping.sheet,binding.column,binding.cell)
+        if key in identities:raise ValueError(f'bindings.{field} 与 {identities[key]} 引用同一身份来源；计划、广告组、素材记录身份不能混用')
+        identities[key]=field
+        if field=='campaign_key' and binding.kind=='row' and re.fullmatch(r'[A-Z]{1,3}',binding.column):
+            heading=clean(wb[mapping.sheet][f'{binding.column}{mapping.header_row}'].value)
+            if re.fullmatch(r'记录(?:键|编号|ID)|素材(?:键|编号|ID)|record[ _-]?(?:key|id)|row[ _-]?id',heading,re.I):
+                raise ValueError('bindings.campaign_key 引用了素材记录标识，请绑定实际计划编号；无独立编号时只绑定计划 name')
     for binding in mapping.bindings.values():
         source_sheet=binding.sheet or mapping.sheet
         if source_sheet not in wb.sheetnames: raise ValueError('绑定来源工作表不存在')

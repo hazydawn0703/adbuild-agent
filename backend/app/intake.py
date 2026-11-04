@@ -443,6 +443,13 @@ async def act(project_id,body,actor):
                     from .scope import select_requirements
                     scoped=select_requirements(draft.requirements,current.scope,current.messages)
                     if any(r.included!=old.included or r.structure!=old.structure for r,old in zip(scoped,draft.requirements)):
+                        from .models import SourceRef
+                        for row in scoped:
+                            row.sources['included']=SourceRef(kind='confirmed',file_id='',sheet='',cell='',raw_value=str(row.included),message_id=current.scope.message_ids[-1])
+                            if row.structure:
+                                for group in row.structure.groups:
+                                    for ad in group.ads:
+                                        ad.sources['included']=SourceRef(kind='confirmed',file_id='',sheet='',cell='',raw_value=str(ad.included),message_id=current.scope.message_ids[-1])
                         draft.requirements=[evaluate(r,history) for r in scoped]
                         draft.version+=1;draft.approval=None;draft.status='draft'
                         c.execute('update drafts set version=%s,data=%s where id=%s',(draft.version,json_value(draft),draft.id))

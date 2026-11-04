@@ -25,6 +25,16 @@ def test_duplicate_flat_and_owned_budget_mapping_is_diagnosable():
     with pytest.raises(ValueError,match='bindings.budget'):validate_mapping(mapping,workbook)
 
 
+def test_material_record_key_cannot_be_used_to_split_campaigns():
+    workbook=Workbook();sheet=workbook.active
+    sheet.append(['记录键','计划名称','广告组']);sheet.append(['R1','Launch','G1']);sheet.append(['R2','Launch','G2'])
+    mapping=SheetMapping(sheet=sheet.title,header_row=1,first_row=2,last_row=3,
+        bindings=row_bindings({'campaign_key':'A','name':'B','group_key':'C'}))
+    with pytest.raises(ValueError,match='campaign_key'):validate_mapping(mapping,workbook)
+    mapping.bindings['record_key']=mapping.bindings['campaign_key']
+    with pytest.raises(ValueError,match='campaign_key'):validate_mapping(mapping,workbook)
+
+
 def test_answered_owner_recovers_amounts_only_from_unchanged_owned_file(tmp_path,monkeypatch):
     from hashlib import sha256
     from app.entities import set_budget_level,recover_group_budgets

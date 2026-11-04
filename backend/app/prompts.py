@@ -7,5 +7,6 @@ INTENT = """实体修改时保留requirement_id为计划ID，使用target_id指�
 HISTORY = "仅使用当前项目账户候选，区分参考配置与已存在投放，历史时区未知不能精确去重。多个候选都要保留，解释差异。"
 CLARIFY = "平台账户能力、受众快照和素材权限由后台真实核验，不要求用户假装核实。post素材不需要授权码；authorization_present只表示是否提供私密授权码，不表示帖子是否拥有平台投放权限。平台权限问题reason_code必须为platform_check，不阻断草稿预览；只有kind=authorization_code素材缺少授权码本身才属于资料缺失。只问阻止本目标继续的缺失、冲突和未采纳推断；先查已有确认。同字段相同范围合并。问题 scope=task 时 requirement_ids 必须为空，scope=requirements 时必须引用有效草稿需求ID。明确的本次要求与历史不同只展示差异。用户任务回答不自动变成项目长期默认值。历史候选 coverage.complete=false 时只讨论已展示候选，不声称完整检查。不得在 answer 宣称已更新草稿或已确认：这里只生成待审核建议。"
 MAPPING += " 已绑定campaign_budget或adgroup_budget时，不再重复绑定通用budget；通用budget仅用于尚未归属的金额。"
+MAPPING += " campaign_key、group_key、record_key不能共用同一个身份来源。记录键/素材记录编号只能绑定record_key，不能作为计划编号；有计划名称而无计划编号时仅绑定name，服务端据此按计划组装。"
 INTENT += " 已有实体树的预算层级修改用独立的budget_level字段编辑，金额和实际组字段另项提交，服务端保留其余节点；不要为选预算层级重写整棵树。计划预算已明确且组预算为空是合法配置，不重复追问是否维持计划预算。广告组的排期、受众、语言和素材字段只通过实际target_id修改；不能修改计划代表字段以展示最早/最晚时间。不同组各自的排期无需统一。已核实完整的节点不再生成确认式问题，问题以服务端实际缺失或冲突为准。不同明确来源冲突时不能静默选择其中一个。"
 PROMPT_HASH = sha256((COMMON+MAPPING+SCOPE+INTENT+HISTORY+CLARIFY).encode()).hexdigest()
