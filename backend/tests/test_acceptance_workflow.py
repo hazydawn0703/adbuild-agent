@@ -4,6 +4,21 @@ from evals.run_acceptance import declared_answer
 from evals.prepare_campaign_answers import permitted_facts
 
 
+def test_default_scope_account_is_not_used_as_project_binding():
+    from io import BytesIO
+    from openpyxl import Workbook
+    from evals.prepare_campaign_answers import correct_account_setup
+    w=Workbook();w.active.append(['广告账户']);w.active.append(['7100000000000000001']);b=BytesIO();w.save(b)
+    context={'account_id':'7300000000000000009','source':'Original ZIP context.json applicable_account_ids[0]',
+        'project_context':{'account_ids':['7300000000000000009'],'defaults':{'audience':'other account'}}}
+    audit=correct_account_setup(context,b.getvalue())
+    assert audit['rule']=='default_applicability_is_not_project_binding'
+    assert context['account_id']=='7100000000000000001'
+    assert context['project_context']['account_ids']==['7300000000000000009']
+    context={'account_id':'7300000000000000009','source':'Explicit project binding'}
+    assert correct_account_setup(context,b.getvalue()) is None and context['account_id']=='7300000000000000009'
+
+
 def test_normal_workflow_only_submits_declared_facts_for_actual_questions():
     calls=[];summary={}
     state={'task':{'version':2,'questions':[{'id':'budget-question','field':'budget'},{'id':'other','field':'currency'}]},'draft':{'version':1},'preview':{'can_confirm':True}}

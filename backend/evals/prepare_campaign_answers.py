@@ -7,6 +7,28 @@ import argparse
 import json
 from pathlib import Path
 import shutil
+import re
+
+
+def correct_account_setup(context,workbook_data):
+    """A default's applicability list is not the test project's advertiser binding."""
+    if not context.get('source','').endswith('applicable_account_ids[0]'):return None
+    from app.excel import read_workbook,clean
+    headers={'accountid','advertiserid','广告账户','广告账户id','广告账号','广告账号id'}
+    accounts=set();refs=[]
+    for sheet in read_workbook(workbook_data):
+        for cell in list(sheet._cells.values()):
+            if re.sub(r'[\W_]+','',clean(cell.value)).casefold() not in headers:continue
+            for row in range(cell.row+1,sheet.max_row+1):
+                item=sheet.cell(row,cell.column)
+                if isinstance(item.value,str) and re.fullmatch(r'\d{8,30}',item.value.strip()):
+                    accounts.add(item.value.strip());refs.append(f'{sheet.title}!{item.coordinate}')
+    if len(accounts)!=1:return None
+    account=next(iter(accounts))
+    if context.get('account_id')==account:return None
+    previous={'account_id':context.get('account_id'),'source':context['source']}
+    context.update(account_id=account,source='Test project setup from the single explicit advertiser in requirement cells: '+', '.join(refs))
+    return {'previous':previous,'account_id':account,'cells':refs,'rule':'default_applicability_is_not_project_binding'}
 
 
 def permitted_facts(answers):
@@ -39,11 +61,15 @@ def permitted_facts(answers):
 def prepare(inputs,references,output):
     output=Path(output);shutil.copytree(inputs,output)
     setup=json.loads((output/'setup-context.json').read_text(encoding='utf-8-sig'))
+    account_changes={}
     for case,context in setup.items():
+        change=correct_account_setup(context,(output/case/'brief.xlsx').read_bytes())
+        if change:account_changes[case]=change
         # Only the predeclared answer object is allowed across this boundary.
         permitted=json.loads((Path(references)/(case+'.json')).read_text(encoding='utf-8-sig'))['expected']['permitted_answers']
         context['normal_answers'],context['entity_answers']=permitted_facts(permitted)
     (output/'setup-context.json').write_text(json.dumps(setup,ensure_ascii=False,indent=2),encoding='utf-8')
+    with output.with_name(output.name+'-account-setup-audit.json').open('x',encoding='utf-8') as stream:json.dump(account_changes,stream,ensure_ascii=False,indent=2)
 
 
 if __name__=='__main__':
