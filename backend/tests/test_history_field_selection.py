@@ -45,3 +45,29 @@ def test_adopting_audience_does_not_authorize_overwriting_the_current_budget():
     with pytest.raises(ValueError,match='不能覆盖'):supported_source(state,row,'budget','200',source)
     state['messages'].append({'id':'new','role':'user','content':'预算改用历史Batch 2，采纳预算200'})
     assert supported_source(state,row,'budget','200',source).kind=='history'
+
+
+def test_explicit_batch_has_independent_group_values_without_reconfirmation():
+    from app.history_fields import history_suggestions
+    req,first=historical_group();second=req.structure.groups[1];second.audience=None
+    req.history += [{**h,'target_id':second.ads[0].id,'post_id':second.ads[0].post_id,'audience':'Other '+h['audience'],'source_row':h['source_row']+10} for h in list(req.history)]
+    state={'draft':{'requirements':[req.model_dump(mode='json')]},'messages':[{'id':'m','role':'user','content':'所有广告组的受众仅沿用历史批次「Batch 2」，其他字段以本次表为准，不沿用历史预算或排期。'}]}
+    suggestions=history_suggestions(state)
+    assert [(s['target_id'],s['value']) for s in suggestions]==[(first.id,'Audience 2'),(second.id,'Other Audience 2')]
+    for suggestion in suggestions:
+        assert supported_source(state,evidence_values(req,suggestion['target_id']),'audience',suggestion['value'],suggestion['source']).kind=='history'
+    state['messages'].append({'id':'later','role':'user','content':'受众不要沿用历史Batch 2。'})
+    assert not history_suggestions(state)
+
+
+def test_explicit_batch_cannot_cross_group_business_or_missing_material():
+    from app.history_fields import history_suggestions
+    req,group=historical_group();state={'draft':{'requirements':[req.model_dump(mode='json')]},'messages':[{'id':'m','role':'user','content':'其他业务编号 OTHER 的受众沿用历史Batch 2'}]}
+    assert not history_suggestions(state)
+    state['messages'][0]['content']=f'{group.name}的受众沿用历史Batch 2'
+    assert len(history_suggestions(state))==1
+    req.structure.groups[0].ads.append(req.structure.groups[1].ads[0])
+    state['draft']['requirements']=[req.model_dump(mode='json')]
+    assert not history_suggestions(state)
+    value,ref=select(*historical_group(),'audience',PREFIX+'Batch 2')
+    with pytest.raises(ValueError,match='完整覆盖'):supported_source(state,evidence_values(req,group.id),'audience',value,ref)

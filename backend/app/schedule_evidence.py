@@ -27,7 +27,7 @@ def applicable_messages(state,row):
         businesses={r.get('business_no') for r in plans if r.get('business_no')}
         mentioned_businesses={b for b in businesses if re.search(r'(?<![A-Za-z0-9_])'+re.escape(b)+r'(?![A-Za-z0-9_])',text)}
         if mentioned_businesses and row.get('business_no') not in mentioned_businesses:continue
-        if re.search(r'业务编号|business\s*(?:no|number)',text,re.I) and row.get('business_no') and row['business_no'] not in text:continue
+        if re.search(r'业务编号|business\s*(?:no|number)',text,re.I) and (not row.get('business_no') or row['business_no'] not in text):continue
         mentioned=[name for name in names if name and re.search(r'(?<![A-Za-z0-9_])'+re.escape(name)+r'(?![A-Za-z0-9_])',text)]
         if mentioned and mentioned!=[row.get('name')]:continue
         yield message

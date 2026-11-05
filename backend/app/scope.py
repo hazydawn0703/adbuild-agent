@@ -208,6 +208,8 @@ def compact_state(state):
     payload['calculated_schedule']=schedule_suggestions(calculation_state)
     from .objective_spelling import correction_suggestions
     payload['objective_corrections']=correction_suggestions(calculation_state)
+    from .history_fields import history_suggestions
+    payload['historical_field_selections']=history_suggestions(calculation_state)
     if scope.get('action')=='history':
         from .history_query import lookup_history
         payload['history_query']=lookup_history(history_records,scope,rows)

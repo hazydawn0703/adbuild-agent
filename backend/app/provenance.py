@@ -177,21 +177,17 @@ def supported_source(state,row,field,value,offered=None):
                     from .history_fields import overwrite_requested
                     if not overwrite_requested(state,row,field,value,matched.get('name','')):raise ValueError('历史字段不能覆盖本次明确配置；请引用当前用户对该字段的采纳或修正依据')
                 if field=='audience':
-                    from .history_fields import PREFIX
-                    selection=None
-                    for message in reversed(state.get('messages',[])):
-                        if message.get('role')!='user':continue
-                        answers=[a for a in message.get('answers',[]) if a.get('field')==field and row.get('id') in (a.get('target_ids') or a.get('requirement_ids') or [])]
-                        named=[a['answer'][len(PREFIX):].strip() for a in answers if a.get('answer','').startswith(PREFIX)]
-                        if named:selection=set(named);break
-                        text=str(message.get('content','')) if 'answers' not in message else ''
-                        if re.search(r'沿用|采纳|使用',text):
-                            named={h['name'] for h in history if h.get('name') and h['name'] in text}
-                            if named:selection=named;break
+                    from .history_fields import selected_batch
+                    selection=selected_batch(state,row,field)
                     if selection is not None:
-                        if selection!={matched.get('name')}:raise ValueError('历史字段来源不属于用户选定的唯一批次')
+                        if selection!=matched.get('name'):raise ValueError('历史字段来源不属于用户选定的唯一批次')
                     elif len({h.get(field) for h in history if h.get(field) not in (None,'')})>1:
                         raise ValueError('历史受众存在不同批次配置，请先集中询问选择哪个批次，不能默认采用某一行')
+                if field=='audience' and row.get('_entity_kind')=='adgroup':
+                    posts={a['post_id'] for a in row.get('ads',[]) if a.get('included',True)}
+                    batch=[h for h in history if h.get('name')==matched.get('name') and h.get('post_id') in posts]
+                    if not posts or {h['post_id'] for h in batch}!=posts or any(not equivalent(field,value,h.get(field),tz) for h in batch):
+                        raise ValueError('历史批次未完整覆盖当前广告组或含字段冲突，请先澄清')
                 return ref
             raise ValueError(f'{field} 的历史来源或值不支持本提案')
         if previous and _same_reference(ref,previous) and equivalent(field,value,row.get(field),tz):return previous
@@ -299,41 +295,7 @@ def validate_proposal_evidence(state,decision):
                     ratio_message=allocation_message(state,[by_id[key].budget.allocation_ratio for key in prior_order])
                     if ratio_message is None:raise ValueError('广告组预算比例缺少明确用户依据')
                 level_source=None
-                if structure.budget_level!=existing.get('budget_level'):
-                    if ratio_message and structure.budget_level=='adgroup':
-                        level_source=SourceRef(kind='calculated',file_id='',sheet='',cell='',raw_value='adgroup',derived_from=[ratio_message['id']+':group_allocation'])
-                    else:
-                        try:level_source=supported_source(state,{**row,'budget_level':existing.get('budget_level')},'budget_level',structure.budget_level,edit.sources.get('budget_level'))
-                        except ValueError as error:raise ValueError('预算层级修改缺少明确依据；请用sources.budget_level引用真实单元格或明确的用户回答：'+str(error)) from None
-                    edit.sources['budget_level']=level_source
-                for group in structure.groups:
-                    if level_source:group.sources['budget_level']=level_source
-                    old=next((g for g in existing.get('groups',[]) if g['id']==group.id),{})
-                    child={**row,**old,'id':group.id,'sources':old.get('sources',{}),
-                        '_entity_kind':'adgroup','name':group.name,'_campaign_name':row.get('name'),
-                        'issues':[i for i in row.get('issues',[]) if i.get('target_id')==group.id]}
-                    if group.name and group.name!=old.get('name'):
-                        group.sources['name']=supported_source(state,{**child,'name':old.get('name')},'name',group.name,group.sources.get('name'))
-                    elif old.get('sources',{}).get('name'):group.sources['name']=SourceRef.model_validate(old['sources']['name'])
-                    else:group.sources.pop('name',None)
-                    if group.budget:
-                        for target,new_value in (('budget',group.budget.amount),('budget_mode',group.budget.mode),('currency',group.budget.currency)):
-                            if new_value not in (None,''):
-                                child[target]=(old.get('budget') or {}).get({'budget':'amount','budget_mode':'mode','currency':'currency'}[target])
-                                group.sources[target]=supported_source(state,child,target,new_value,group.sources.get(target))
-                        if group.budget.allocation_ratio is not None:
-                            group.sources['allocation_ratio']=SourceRef(kind='confirmed',file_id='',sheet='',cell='',raw_value=str(group.budget.allocation_ratio),message_id=ratio_message['id'])
-                    for target in ('audience','language','start_at','end_at','timezone'):
-                        new_value=getattr(group,target)
-                        if new_value not in (None,''):group.sources[target]=supported_source(state,child,target,new_value,group.sources.get(target))
-                    for ad in group.ads:
-                        old_ad=next((a for a in old.get('ads',[]) if a['id']==ad.id),{})
-                        material={**row,**old_ad,'id':ad.id,'sources':old_ad.get('sources',{}),
-                            '_entity_kind':'material','_campaign_name':row.get('name'),'_group_name':group.name,
-                            'issues':[i for i in row.get('issues',[]) if i.get('target_id')==ad.id]}
-                        for target in ('post_id','post_url','identity_id','cta','landing_url'):
-                            new_value=getattr(ad,target)
-                            if new_value:ad.sources[target]=supported_source(state,material,target,new_value,ad.sources.get(target))
+                …861 tokens truncated…ources[target]=supported_source(state,material,target,new_value,ad.sources.get(target))
                         if ad.authorization_code:
                             if not any(ad.authorization_code in str(m.get('content','')) for m in state.get('messages',[]) if m.get('role')=='user'):
                                 raise ValueError('素材授权码缺少用户提供的依据')

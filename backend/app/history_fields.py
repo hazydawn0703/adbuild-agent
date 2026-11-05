@@ -5,6 +5,45 @@ import re
 PREFIX='沿用历史批次：'
 
 
+def selected_batch(state,row,field):
+    """Resolve an explicit field/batch choice in this entity's message scope."""
+    from .schedule_evidence import applicable_messages
+    applicable={m.get('id') for m in applicable_messages(state,row)}
+    label={'audience':r'受众|audience'}.get(field,re.escape(field))
+    for message in reversed(state.get('messages',[])):
+        if message.get('role')!='user':continue
+        for answer in message.get('answers',[]):
+            if answer.get('field')==field and row.get('id') in (answer.get('target_ids') or answer.get('requirement_ids') or []):
+                text=answer.get('answer','')
+                return text[len(PREFIX):].strip() if text.startswith(PREFIX) else None
+        if 'answers' in message or message.get('id') not in applicable:continue
+        for clause in reversed(re.split(r'[，,；;。\n]',str(message.get('content','')))):
+            if not re.search(label,clause,re.I):continue
+            if not re.search(r'沿用|采纳|使用|reuse|adopt',clause,re.I) or re.search(r'不沿用|不使用|不采纳|不要|禁止|不得|not\b',clause,re.I):return None
+            names={h['name'] for h in row.get('history',[]) if h.get('name') and re.search(r'(?<![A-Za-z0-9_])'+re.escape(h['name'])+r'(?![A-Za-z0-9_])',clause)}
+            return next(iter(names)) if len(names)==1 else None
+    return None
+
+
+def history_suggestions(state):
+    """A named batch may have different, unambiguous values in different groups."""
+    from .models import Requirement
+    from .entities import evidence_values
+    result=[]
+    for raw in (state.get('draft') or {}).get('requirements',[]):
+        if not raw.get('included',True) or not raw.get('history') or not raw.get('structure'):continue
+        if any(not g.get('id') or any(not a.get('id') or not a.get('post_id') for a in g.get('ads',[])) for g in raw['structure'].get('groups',[])):continue
+        req=Requirement.model_validate(raw)
+        for group in req.structure.groups:
+            if group.audience:continue
+            row=evidence_values(req,group.id);batch=selected_batch(state,row,'audience')
+            if not batch:continue
+            try:value,source=select(req,group,'audience',PREFIX+batch)
+            except ValueError:continue
+            result.append({'requirement_id':req.id,'target_id':group.id,'field':'audience','value':value,'source':source.model_dump(mode='json'),'batch':batch})
+    return result
+
+
 def overwrite_requested(state,row,field,value,batch):
     from .provenance import message_supports
     from .schedule_evidence import applicable_messages
