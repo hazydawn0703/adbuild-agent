@@ -3,7 +3,9 @@ import argparse
 import json
 import random
 import secrets
-from datetime import datetime,timezone
+from datetime import datetime,timezone,timedelta
+from zoneinfo import ZoneInfo
+from collections import Counter
 from decimal import Decimal
 from pathlib import Path
 from openpyxl import Workbook
@@ -16,25 +18,32 @@ HEADERS={'record_key':'Record Key','platform':'Platform','account_id':'Account I
  'audience':'Audience','language':'Languages','identity':'Identity ID','cta':'CTA','url':'Landing URL'}
 
 
-def generate(output,commit):
+def generate(output,commit,business_time):
     root=Path(output);root.mkdir(parents=True,exist_ok=False,mode=0o700)
     inputs=root/'inputs';inputs.mkdir();oracle={};contexts={};rng=random.Random(secrets.randbits(128))
+    clock=datetime.fromisoformat(business_time.replace('Z','+00:00'));assert clock.tzinfo is not None
     for index in range(90):
-        case=f'N{index+1:03d}';family=index%6 if index<60 else (['scope']*8+['conflict']*8+['precision']*7+['money_format']*7)[index-60]
+        case=f'N{index+1:03d}'
+        family=index%6 if index<36 else (['duration']*6+['relative_time']*6+['spelling']*6+['history_choice']*6)[index-36] if index<60 else (['scope']*5+['conflict']*5+['precision']*5+['money_format']*5+['history_ambiguity']*5+['unknown_goal']*5)[index-60]
         business='B-'+secrets.token_hex(4);name='Launch-'+secrets.token_hex(3)
         account='71'+str(secrets.randbelow(10**17)).zfill(17);identity='72'+str(secrets.randbelow(10**17)).zfill(17)
-        goal=('followers','video_views','traffic')[index%3];level='campaign' if family in (0,3,4,'scope','conflict','precision','money_format') else 'adgroup'
+        goal=('followers','video_views','traffic')[(index//6+index)%3];level='campaign' if family in (0,3,4,'scope','conflict','precision','money_format') or isinstance(family,str) and index%2==0 else 'adgroup'
         groups=3 if family==5 else 1 if family=='precision' else 2
-        posts_per_group=2 if family in (0,1,3,4) else 1
+        posts_per_group=2 if family in (0,1,3,4,'duration','relative_time','spelling','history_choice','history_ambiguity') else 1
         amount=Decimal('100.01') if family==5 else Decimal(rng.randint(50,300))+Decimal(rng.randint(0,99))/100
         if family=='money_format':amount=Decimal(rng.randint(1000,9000))
         mode='daily' if family==1 else 'lifetime'
         goals=['followers','traffic'] if family==2 else [goal]
-        rows=[];plans=[];normal={};defaults={};clarify=None
+        rows=[];plans=[];normal={};defaults={};clarify=None;history_rows=[]
+        batch_names=['Snapshot-'+secrets.token_hex(3)+'-'+str(i) for i in (1,2)]
+        duration_days=2+index%4;relative_days=1+index%2;relative_hour=8+index%3
+        relative_start=(clock.astimezone(ZoneInfo('Asia/Shanghai'))+timedelta(days=relative_days)).replace(hour=relative_hour+12,minute=0,second=0,microsecond=0).astimezone(timezone.utc)
         for objective in goals:
             expected_groups=[]
             for g in range(groups):
                 group='Segment-'+str(g+1);start=f'2028-01-{10+g if family==1 else 10:02d}T09:00:00+00:00';end=f'2028-01-{15+g if family==1 else 15:02d}T09:00:00+00:00'
+                if family=='duration':end=(datetime.fromisoformat(start)+timedelta(days=duration_days)).isoformat()
+                if family=='relative_time':start=relative_start.isoformat();end=(relative_start+timedelta(days=duration_days)).isoformat()
                 materials=[]
                 for a in range(posts_per_group):
                     post='73'+str(secrets.randbelow(10**17)).zfill(17)
@@ -55,9 +64,22 @@ def generate(output,commit):
                         row['post_id']=int(post);row['post_url']=None;normal={'post_id':post};clarify='post_id'
                     if family=='money_format':
                         row['campaign_budget']=f'{amount:,.0f}';normal={'budget':f'{amount:.2f}'};clarify='budget'
+                    if family=='duration':row['end']=None
+                    if family=='relative_time':row['start']=None;row['end']=None
+                    if family=='spelling':
+                        label={'followers':'followers','video_views':'video views','traffic':'traffic'}[objective]
+                        removable=[i for i,c in enumerate(label) if c in 'aeiou' or i>0 and label[i-1]==c]
+                        pos=rng.choice(removable);row['objective']=label[:pos]+label[pos+1:]
+                        if objective=='followers' and index%2:row['objective']='涨纷'
+                    if family=='unknown_goal':
+                        row['objective']=rng.choice(['reach','sales','installs','conversion','nottraffic']);normal={'objective':objective};clarify='objective'
+                    if family in ('history_choice','history_ambiguity'):
+                        row['audience']=None
+                        for batch in range(2):history_rows.append([str(secrets.randbelow(10**17)),str(secrets.randbelow(10**17)),str(secrets.randbelow(10**17)),post,account,batch_names[batch],group,objective,'2026-01-01T09:00:00Z','2026-01-04T09:00:00Z','UTC','en',f'Past audience {batch+1}-{g+1}',str(amount+51),'daily'])
+                        if family=='history_ambiguity':normal={'audience':'沿用历史批次：'+batch_names[1]};clarify='audience'
                     rows.append(row)
                 group_amount=(Decimal('33.34') if g<2 else Decimal('33.33')) if family==5 else amount if level=='adgroup' else None
-                expected_groups.append({'name':group,'audience':defaults.get('audience','Audience-'+str(g+1)),
+                expected_groups.append({'name':group,'audience':f'Past audience 2-{g+1}' if family in ('history_choice','history_ambiguity') else defaults.get('audience','Audience-'+str(g+1)),
                     'language':'en','start_at':start,'end_at':end,'timezone':'UTC','amount':str(group_amount) if group_amount is not None else None,'ads':materials})
             plans.append({'name':name,'account_id':account,'business_no':business,'objective':objective,'budget_level':level,
                 'currency':'USD','mode':mode,'total':str(amount if level=='campaign' or family==5 else amount*groups),'groups':expected_groups})
@@ -66,6 +88,10 @@ def generate(output,commit):
         if family==5:message+=' 三个广告组按表顺序以1:1:1分配，总额100.01美元，按分计，余数按表顺序分配。'
         if family=='scope':message='其余的照表搭建。';normal={'scope':f'本次仅新增搭建业务编号 {business}'};clarify='scope'
         if family=='money_format':message+=' 金额来自跨地区文本，尚未提供千位与小数分隔符约定，请先核对。'
+        if family=='duration':message+=f' 本批所有广告组'+(f'持续{duration_days*24}小时。' if index%2 else f'跑{duration_days}天。')
+        if family=='relative_time':message+=f' 以我的上海时区理解：'+('明晚' if relative_days==1 else '后晚')+f'{relative_hour}点开始，跑{duration_days}天；广告账户展示仍用UTC。'
+        if family=='history_choice':message+=f' 所有广告组的受众仅沿用历史批次「{batch_names[1]}」，其他字段以本次表为准，不沿用历史预算或排期。'
+        if family=='history_ambiguity':message+=' 受众沿用上次，历史有两批；其他字段以本次表为准。'
         fields=list(HEADERS);rng.shuffle(fields);workbook=Workbook();sheet=workbook.active;sheet.title='Batch-'+secrets.token_hex(2)
         sheet.append(['Campaign requirements'])
         for _ in range(rng.randint(0,6)):sheet.append([])
@@ -77,7 +103,9 @@ def generate(output,commit):
         decoy=dict(rows[0],business_no='OTHER-'+secrets.token_hex(3),name='Unselected-'+secrets.token_hex(3))
         sheet.append([decoy[f] for f in fields])
         directory=inputs/case;directory.mkdir();workbook.save(directory/'brief.xlsx')
-        history=Workbook();history.active.title='Ads';history.active.append(['Campaign ID','Ad Group ID','Ad ID','Post ID','Account ID','Timezone']);history.save(directory/'export.xlsx')
+        history=Workbook();history.active.title='Ads';history.active.append(['Campaign ID','Ad Group ID','Ad ID','Post ID','Account ID','Campaign Name','Ad Group Name','Advertising Objective','Start Time','End Time','Timezone','Languages','Audience','Campaign Budget Amount','Campaign Budget Type'])
+        for record in history_rows:history.active.append(record)
+        history.save(directory/'export.xlsx')
         (directory/'paste.txt').write_text(message,encoding='utf-8')
         contexts[case]={'account_id':account,'source':'Generated explicit account metadata',
             'project_context':{'version':0,'defaults':defaults,'account_ids':[account],'objectives':goals,'confirmed_by':'fixture-admin'},'normal_answers':normal}
@@ -86,9 +114,9 @@ def generate(output,commit):
     (inputs/'protocol.json').write_text(json.dumps({'cases':cases}),encoding='utf-8')
     (inputs/'setup-context.json').write_text(json.dumps(contexts,ensure_ascii=False),encoding='utf-8')
     (root/'oracle.json').write_text(json.dumps(oracle,ensure_ascii=False,indent=2),encoding='utf-8')
-    (root/'dataset.json').write_text(json.dumps({'created_at':datetime.now(timezone.utc).isoformat(),'frozen_commit':commit,'complete_cases':60,'clarification_cases':30,'label':'new_synthetic_generalization_not_independent_user_blind_test'}),encoding='utf-8')
+    (root/'dataset.json').write_text(json.dumps({'created_at':datetime.now(timezone.utc).isoformat(),'frozen_commit':commit,'business_time':business_time,'families':dict(Counter(str(v['family']) for v in oracle.values())),'complete_cases':60,'clarification_cases':30,'label':'new_synthetic_generalization_not_independent_user_blind_test'}),encoding='utf-8')
 
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--output',required=True);parser.add_argument('--commit',required=True)
-    args=parser.parse_args();generate(args.output,args.commit)
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--output',required=True);parser.add_argument('--commit',required=True);parser.add_argument('--business-time',required=True)
+    args=parser.parse_args();generate(args.output,args.commit,args.business_time)

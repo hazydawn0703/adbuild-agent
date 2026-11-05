@@ -77,10 +77,10 @@ def objective(value):
         targets=[objective(part) for part in parts if part.strip()]
         return targets[0] if targets and all(t is not None and t==targets[0] for t in targets) else None
     found = set()
-    for target,aliases in ((Objective.FOLLOWERS,('follow','followers','page like','买粉','涨粉','community interaction')),
-                           (Objective.VIDEO_VIEWS,('video view','视频观看','视频播放','6 second')),
-                           (Objective.TRAFFIC,('traffic','click','流量','点击'))):
-        if any(bool(re.search(r'(?<![a-z0-9])'+re.escape(alias)+r's?(?![a-z0-9])',canonical)) if alias.isascii() else alias in canonical for alias in aliases):found.add(target)
+    for target,aliases in ((Objective.FOLLOWERS,('follow','followers','page like','page likes','买粉','涨粉','community interaction')),
+                           (Objective.VIDEO_VIEWS,('video view','video views','视频观看','视频播放','6 second','6 seconds')),
+                           (Objective.TRAFFIC,('traffic','click','clicks','流量','点击'))):
+        if any(bool(re.search(r'(?<![a-z0-9])'+re.escape(alias)+r'(?![a-z0-9])',canonical)) if alias.isascii() else alias in canonical for alias in aliases):found.add(target)
     # A compound objective needs a structural proposal, never first-match-wins.
     return next(iter(found)) if len(found)==1 else None
 

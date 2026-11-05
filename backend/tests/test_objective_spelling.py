@@ -8,7 +8,7 @@ from openpyxl import Workbook
 from hashlib import sha256
 
 
-@pytest.mark.parametrize('raw,target',[('trafic','traffic'),('trraffic','traffic'),('trffic','traffic'),('video vews','video_views'),('folowers','followers'),('涨份','followers'),('张粉','followers')])
+@pytest.mark.parametrize('raw,target',[('trafic','traffic'),('trraffic','traffic'),('trffic','traffic'),('video vews','video_views'),('folowers','followers'),('followerss','followers'),('涨份','followers'),('张粉','followers')])
 def test_unique_bounded_spelling_is_only_a_proposal(raw,target):
     assert spelling_candidate(raw)==target
     from app.excel import objective
@@ -43,3 +43,16 @@ def test_correction_rereads_owned_cell_and_keeps_interpretation_separate(tmp_pat
     assert correction_source(state,row,'followers',source) is None
     path.write_bytes(b'changed')
     with pytest.raises(ValueError,match='指纹'):correction_source(state,row,'traffic')
+
+
+def test_all_owned_goal_rows_must_support_the_same_spelling_interpretation(tmp_path,monkeypatch):
+    w=Workbook();s=w.active;s.title='Brief';s.append(['Plan','Goal']);s.append(['P','trafic']);s.append(['P','sales'])
+    path=tmp_path/'input.xlsx';monkeypatch.setattr('app.storage.target',lambda _:path)
+    name=SourceRef(file_id='f',sheet='Brief',cell='A2',raw_value='P');goal=SourceRef(file_id='f',sheet='Brief',cell='B2',raw_value='trafic')
+    row=Requirement(id='p',name='P',sources={'name':name,'entity_key':name,'objective':goal}).model_dump(mode='json')
+    doc={'id':'f','storage_path':'f','sha256':'','mapping':[{'sheet':'Brief','first_row':2,'last_row':3,'bindings':{'name':{'kind':'row','column':'A'},'objective':{'kind':'row','column':'B'}}}]}
+    def save():
+        b=BytesIO();w.save(b);path.write_bytes(b.getvalue());doc['sha256']=sha256(b.getvalue()).hexdigest()
+    save();assert correction_source({'documents':[doc]},row,'traffic') is None
+    s['B3']='trffic';save();source=correction_source({'documents':[doc]},row,'traffic')
+    assert source and {'excel:f:Brief!B2','excel:f:Brief!B3'}<=set(source.derived_from)

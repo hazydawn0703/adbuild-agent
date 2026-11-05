@@ -35,13 +35,14 @@ def test_relative_time_uses_received_business_clock_and_interpretation_zone_not_
     values=schedule_sources(state,evidence_values(req,group.id))
     assert values['start_at'][0].astimezone(timezone.utc).isoformat()=='2026-11-04T12:00:00+00:00'
     assert values['end_at'][0].astimezone(timezone.utc).isoformat()=='2026-11-07T12:00:00+00:00'
+    assert str(values['start_at'][0].tzinfo)=='UTC'
     assert group.timezone=='UTC'
     assert any(s['field']=='end_at' for s in schedule_suggestions(state))
     state['messages'][0].pop('business_time')
     assert not schedule_sources(state,evidence_values(req,group.id))
 
 
-@pytest.mark.parametrize('text',['大约跑三天','跑三天或跑五天','跑三个自然日','跑三天，结束时间另行确定'])
+@pytest.mark.parametrize('text',['大约跑三天','跑三天或跑五天','跑三个自然日','跑三天，结束时间另行确定','再跑三天'])
 def test_uncertain_duration_is_not_resolved(text):
     state,req,group=state_and_group();state['messages'][0]['content']=text
     assert 'end_at' not in schedule_sources(state,evidence_values(req,group.id))
@@ -59,3 +60,16 @@ def test_fabricated_calculation_and_wrong_message_do_not_pass():
     state,req,group=state_and_group();row=evidence_values(req,group.id)
     for value,message in [('2040-01-01T09:00:00Z','duration'),('2028-01-04T09:00:00Z','foreign')]:
         with pytest.raises(ValueError):supported_source(state,row,'end_at',value,{'kind':'calculated','file_id':'','sheet':'','cell':'','raw_value':value,'message_id':message})
+
+
+def test_business_scope_is_not_tied_to_any_fixture_identifier_prefix():
+    state,req,group=state_and_group();req.business_no='launch-789';state['draft']['requirements']=[req.model_dump(mode='json')]
+    state['messages'][0]['content']='仅业务编号 launch-other，跑三天'
+    assert not schedule_sources(state,evidence_values(req,group.id))
+
+
+def test_invalid_display_zone_keeps_relative_schedule_unresolved():
+    state,req,group=state_and_group();group.start_at=None;group.sources.pop('start_at',None);group.timezone='not-a-zone'
+    state['messages'][0]['content']='上海时区，明晚8点开始，跑三天'
+    state['draft']['requirements']=[req.model_dump(mode='json')]
+    assert not schedule_sources(state,evidence_values(req,group.id))

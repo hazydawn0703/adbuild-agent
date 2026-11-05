@@ -34,3 +34,14 @@ def test_missing_sibling_foreign_account_and_conflicting_snapshot_are_not_choice
 def test_declared_history_answer_is_a_field_source_choice_not_candidate_scope():
     facts,entities=permitted_facts({'batch_name':'Batch 2','adopt_fields':['audience']})
     assert facts=={'audience':PREFIX+'Batch 2'} and not entities
+
+
+def test_adopting_audience_does_not_authorize_overwriting_the_current_budget():
+    req,group=historical_group();row=evidence_values(req,group.id);row['budget']='100'
+    h={**req.history[1],'budget':'200'};row['history']=[h]
+    from app.provenance import history_reference
+    source=history_reference(h,'budget')
+    state={'messages':[{'id':'m','role':'user','content':'受众沿用历史Batch 2，其他字段以本次表为准，不沿用历史预算或排期。'}]}
+    with pytest.raises(ValueError,match='不能覆盖'):supported_source(state,row,'budget','200',source)
+    state['messages'].append({'id':'new','role':'user','content':'预算改用历史Batch 2，采纳预算200'})
+    assert supported_source(state,row,'budget','200',source).kind=='history'

@@ -1,7 +1,30 @@
 """Choose a field snapshot within the actual group, never an arbitrary history row."""
 from .provenance import history_reference,equivalent
+import re
 
 PREFIX='沿用历史批次：'
+
+
+def overwrite_requested(state,row,field,value,batch):
+    from .provenance import message_supports
+    from .schedule_evidence import applicable_messages
+    applicable={m.get('id') for m in applicable_messages(state,row)}
+    labels={'budget':r'预算|budget','budget_mode':r'预算类型|预算口径|budget','audience':r'受众|audience',
+            'start_at':r'排期|开始|start','end_at':r'排期|结束|end','language':r'语言|language','objective':r'目标|objective'}
+    label=labels.get(field,re.escape(field))
+    for message in reversed(state.get('messages',[])):
+        if message.get('role')!='user':continue
+        for answer in message.get('answers',[]):
+            owners=answer.get('target_ids') or answer.get('requirement_ids') or []
+            if answer.get('field')!=field or row.get('id') not in owners:continue
+            return answer['answer']==PREFIX+batch or equivalent(field,value,answer['answer'],row.get('timezone',''))
+        if 'answers' in message or message.get('id') not in applicable:continue
+        for clause in reversed(re.split(r'[，,；;。\n]',str(message.get('content','')))):
+            all_fields=bool(re.search(r'全部配置|所有配置|all settings',clause,re.I))
+            if not all_fields and not re.search(label,clause,re.I):continue
+            if message_supports(field,value,clause,row.get('timezone','')):return True
+            return bool(re.search(r'历史|上次|上批|history',clause,re.I) and re.search(r'沿用|采纳|使用|reuse|adopt',clause,re.I) and not re.search(r'不沿用|不使用|不采纳|不要|禁止|不得|not\b',clause,re.I))
+    return False
 
 
 def candidates(req,group,field):

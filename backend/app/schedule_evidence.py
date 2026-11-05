@@ -24,8 +24,10 @@ def applicable_messages(state,row):
     for message in state.get('messages',[]):
         if message.get('role')!='user' or 'answers' in message:continue
         text=str(message.get('content',''))
-        businesses=re.findall(r'(?<![A-Za-z0-9_])BR-[A-Za-z0-9_-]+',text)
-        if businesses and row.get('business_no') not in businesses:continue
+        businesses={r.get('business_no') for r in plans if r.get('business_no')}
+        mentioned_businesses={b for b in businesses if re.search(r'(?<![A-Za-z0-9_])'+re.escape(b)+r'(?![A-Za-z0-9_])',text)}
+        if mentioned_businesses and row.get('business_no') not in mentioned_businesses:continue
+        if re.search(r'业务编号|business\s*(?:no|number)',text,re.I) and row.get('business_no') and row['business_no'] not in text:continue
         mentioned=[name for name in names if name and re.search(r'(?<![A-Za-z0-9_])'+re.escape(name)+r'(?![A-Za-z0-9_])',text)]
         if mentioned and mentioned!=[row.get('name')]:continue
         yield message
@@ -38,7 +40,7 @@ def schedule_sources(state,row):
     number=r'[0-9一二两三四五六七八九十]+'
     for message in messages:
         text=message['content']
-        if re.search(r'大约|左右|至少|最多|自然日|含开始|含当天|工作日',text):continue
+        if re.search(r'大约|左右|至少|最多|自然日|含开始|含当天|工作日|再跑|再投放|继续跑|延长',text):continue
         spans=re.findall(r'(?:跑|投放|持续|运行|为期)\s*('+number+r')\s*(天|小时)',text)
         amounts={(integer(n),unit) for n,unit in spans}
         if len(amounts)==1:
@@ -73,7 +75,11 @@ def schedule_sources(state,row):
         if source.get('message_id'):basis.append('message:'+source['message_id'])
     elif relative and not row.get('sources',{}).get('start_at'):
         start,message=relative
-        basis=['message:'+message['id'],'business_clock:'+message['business_time'],'interpretation_timezone:'+str(start.tzinfo)]
+        interpretation=str(start.tzinfo)
+        if row.get('timezone'):
+            try:start=start.astimezone(zone_value(row['timezone']))
+            except (ValueError,KeyError):return {}
+        basis=['message:'+message['id'],'business_clock:'+message['business_time'],'interpretation_timezone:'+interpretation]
         results['start_at']=(start,SourceRef(kind='calculated',file_id='',sheet='',cell='',raw_value=start.isoformat(),message_id=message['id'],derived_from=basis))
     if not start or not start.tzinfo or duration is None:return results
     # Explicit end instructions outrank duration completion; never replace an existing endpoint.

@@ -173,6 +173,9 @@ def supported_source(state,row,field,value,offered=None):
             history=row.get('history',[])
             matched=match_history_reference(ref,field,value,history,tz)
             if matched:
+                if row.get(field) not in (None,'') and not equivalent(field,value,row[field],tz):
+                    from .history_fields import overwrite_requested
+                    if not overwrite_requested(state,row,field,value,matched.get('name','')):raise ValueError('历史字段不能覆盖本次明确配置；请引用当前用户对该字段的采纳或修正依据')
                 if field=='audience':
                     from .history_fields import PREFIX
                     selection=None

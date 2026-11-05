@@ -46,14 +46,31 @@ def correction_source(state,row,value,offered=None):
     raw=clean(cell.value);candidate=spelling_candidate(raw)
     if candidate is None or objective(value)!=candidate:return None
     verify_owner(workbook,document,original,row,'objective')
+    origins={f'excel:{original.file_id}:{original.sheet}!{cell.coordinate}',f'objective_spelling:{raw}->{candidate}'}
+    mappings=document.get('mapping') or []
+    if isinstance(mappings,dict):mappings=mappings.get('mappings',[])
+    for mapping in mappings:
+        binding=mapping.get('bindings',{}).get('objective')
+        if not binding:continue
+        bound_sheet=workbook[binding.get('sheet') or mapping['sheet']]
+        positions=[binding['cell']] if binding['kind']=='cell' else [binding['column']+str(i) for i in range(mapping['first_row'],mapping['last_row']+1)]
+        for position in positions:
+            item=_anchor(bound_sheet,bound_sheet[position]);text=clean(item.value)
+            if not text:continue
+            ref=original.model_copy(update={'sheet':bound_sheet.title,'cell':item.coordinate})
+            try:verify_owner(workbook,document,ref,row,'objective')
+            except ValueError:continue
+            if (objective(text) or spelling_candidate(text))!=candidate:return None
+            origins.add(f'excel:{original.file_id}:{bound_sheet.title}!{item.coordinate}')
+            if objective(text) is None:origins.add(f'objective_spelling:{text}->{candidate}')
     source=SourceRef(kind='calculated',file_id='',sheet='',cell='',raw_value=candidate,
-        derived_from=[f'excel:{original.file_id}:{original.sheet}!{cell.coordinate}',f'objective_spelling:{raw}->{candidate}'])
+        derived_from=sorted(origins))
     if offered:
         ref=SourceRef.model_validate(offered)
         if ref.kind=='excel':
             if (ref.file_id,ref.sheet,ref.cell)!=(original.file_id,original.sheet,cell.coordinate):return None
         elif ref.kind=='calculated':
-            if ref.file_id or ref.derived_from!=source.derived_from:return None
+            if ref.file_id or set(ref.derived_from)!=set(source.derived_from):return None
         else:return None
     return source
 
