@@ -44,6 +44,10 @@ def _budget_values(text):
         anchor=re.search(r'预算|总额|合计(?:预算|金额)|\bbudget\b',clause,re.I)
         if not anchor:continue
         tail=clause[anchor.end():]
+        if re.search(r'或|还是|大约|左右|至少|最多|不超过|不少于|不低于|不高于|上限|下限|以内|以上|以下|[≤≥<>]|\b(?:or|about|approximately|between|under|over|at\s+(?:most|least)|up\s+to)\b',tail[:60],re.I):continue
+        if re.search(r'\d\s*(?:到|至|[~～–—-])\s*\d',tail[:60]):continue
+        if re.search(r'\d\s+to\s+\d',tail[:60],re.I) and not re.search(r'\b(?:change|set|reduce|increase)\b',clause,re.I):continue
+        if re.match(r'\s*(?:不是|非|not\b|no\b)',tail,re.I):continue
         assignment=list(re.finditer(r'改为|改成|设为|设置为|调至|调到|调整为|调整到|统一为|降到|升到|\bto\b|[:：=]',tail,re.I))
         if assignment:tail=tail[assignment[-1].end():]
         amount=re.search(r'(?<![0-9.,])([-+]?[0-9]+(?:[.,][0-9]+)*(?:[eE][-+]?[0-9]+)?)(?![0-9.,]|[eE][-+]?[0-9])',tail[:35])

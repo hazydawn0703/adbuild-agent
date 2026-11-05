@@ -31,6 +31,14 @@ def audit(inputs,references,output):
         message=inputs/case/'paste.txt';input_hashes[case+'/paste.txt']=hashlib.sha256(message.read_bytes()).hexdigest()
         supplied.extend([message.read_text(encoding='utf-8-sig'),json.dumps(answers,ensure_ascii=False)])
         final=data['expected']['final_result_for_grading']
+        from .audit_question_dependencies import budget_owner_question
+        dependency=budget_owner_question(inputs/case,data['expected'])
+        if dependency:
+            old=data['expected']['required_initial_questions']
+            new=list(dict.fromkeys('budget_level' if field=='budget' else field for field in old))
+            changes.append({'case':case,'path':'expected.required_initial_questions','old':old,'new':new,'basis':dependency,
+                            'reason':'Question label audit: amount already explicit; unknown ownership is the currently answerable dependency. Final plan and declared answers are unchanged.'})
+            data['expected']['required_initial_questions']=new
         if final:
             for pi,plan in enumerate(final['campaigns']):
                 for gi,group in enumerate(plan['groups']):
@@ -41,7 +49,7 @@ def audit(inputs,references,output):
                             'old':url,'new':'','reason':'Exact ID is a declared answer; no source or declared answer supplies this URL. URL is optional for an identified post.'})
                         ad['post_url']=''
         (output/path.name).write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
-    ledger={'rule_version':'optional-post-url-source-audit-1','original_reference_hashes':original_hashes,
+    ledger={'rule_version':'source-and-question-dependency-audit-2','original_reference_hashes':original_hashes,
         'input_hashes':input_hashes,'changes':changes,'limitation':'Only reference inconsistency is corrected; no observed system output is read or used.'}
     (output/'REFERENCE_AUDIT.json').write_text(json.dumps(ledger,ensure_ascii=False,indent=2),encoding='utf-8')
     seal={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in output.iterdir() if p.is_file()}

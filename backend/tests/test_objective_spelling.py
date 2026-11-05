@@ -20,6 +20,12 @@ def test_unknown_or_compound_goals_are_never_spelling_candidates(raw):
     assert spelling_candidate(raw) is None
 
 
+@pytest.mark.parametrize('raw',['nottraffic','not traffic','unfollow','trafficking','涨份和流量','unknown/video_views'])
+def test_unknown_negated_and_partly_unknown_compounds_are_not_valid_objectives(raw):
+    from app.excel import objective
+    assert objective(raw) is None
+
+
 def test_correction_rereads_owned_cell_and_keeps_interpretation_separate(tmp_path,monkeypatch):
     wb=Workbook();sheet=wb.active;sheet.title='Brief';sheet.append(['Plan','Goal']);sheet.append(['P','trafic']);sheet.append(['Other','video vews'])
     output=BytesIO();wb.save(output);data=output.getvalue();path=tmp_path/'brief.xlsx';path.write_bytes(data)

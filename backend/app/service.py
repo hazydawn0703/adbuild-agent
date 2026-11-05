@@ -60,6 +60,7 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
     if draft.version != expected_version or draft.status not in ("draft","attention","approved"):
         raise HTTPException(409,"草稿版本已变化或已经冻结，请刷新")
     history = history_for(conn, project)
+    draft.requirements=[evaluate(req,history) for req in draft.requirements]
     taskrow=conn.execute('select data from intake_tasks where draft_id=%s',(draft.id,)).fetchone()
     state=task_evidence(conn,project,taskrow['data'] if taskrow else {})
     for edit in edits:
