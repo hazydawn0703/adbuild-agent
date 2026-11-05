@@ -203,6 +203,11 @@ def compact_state(state):
                             'provided_records': len(relevant), 'excluded_records': len(rows) - len(relevant)}}
     history_records=state.get('history_records',[])
     payload['history_available']=len(history_records)
+    from .schedule_evidence import schedule_suggestions
+    calculation_state={**state,'draft':{'requirements':[r for r in rows if r['id'] in wanted]}}
+    payload['calculated_schedule']=schedule_suggestions(calculation_state)
+    from .objective_spelling import correction_suggestions
+    payload['objective_corrections']=correction_suggestions(calculation_state)
     if scope.get('action')=='history':
         from .history_query import lookup_history
         payload['history_query']=lookup_history(history_records,scope,rows)

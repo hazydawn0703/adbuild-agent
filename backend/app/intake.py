@@ -151,6 +151,14 @@ def refresh(task,draft):
             'targets':targets,'reason':reason,'evidence':question_observation(question,draft),
             'message_evidence':{rid:budget_conflicts[rid] for rid in ids if field=='budget' and rid in budget_conflicts}},sort_keys=True)
         question.id=sha256(key.encode()).hexdigest()[:20]
+        if field=='audience' and len(ids)==1 and len(targets)==1:
+            from .history_fields import choices
+            from .entities import find_entity
+            req=next(r for r in draft.requirements if r.id==ids[0]);node=find_entity(req,targets[0])
+            options=choices(req,node,field) if hasattr(node,'ads') else []
+            if options:
+                question.answer_type='choice';question.options=options
+                question.question+='；如需沿用历史，请选择具体批次；也可直接填写新的受众配置'
         task.questions.append(question)
     for semantic in task.semantic_questions:
         matches=[q for q in task.questions if q.field==semantic.field and
@@ -352,14 +360,20 @@ async def act(project_id,body,actor):
                                 except ValueError:continue
                                 owner=candidate;break
                             if owner is None:raise HTTPException(409,'问题目标已变化，请刷新')
-                            edits.append({'requirement_id':owner.id,'target_id':target,'values':{q.field:value},'source_message_id':message_id})
+                            from .history_fields import PREFIX,select
+                            if q.field=='audience' and value.startswith(PREFIX):
+                                try:actual,source=select(owner,find_entity(owner,target),q.field,value)
+                                except ValueError as error:raise HTTPException(422,str(error)) from None
+                                edits.append({'requirement_id':owner.id,'target_id':target,'values':{q.field:actual},'sources':{q.field:source},'source_message_id':message_id})
+                            else:edits.append({'requirement_id':owner.id,'target_id':target,'values':{q.field:value},'source_message_id':message_id})
                     else:
                         edits.extend({'requirement_id':rid,'values':{q.field:value},'source_message_id':message_id} for rid in q.requirement_ids)
                 answered.append({'question':q.question,'field':q.field,'answer':value,'requirement_ids':q.requirement_ids,'target_ids':q.target_ids})
             if not answered: raise HTTPException(422,'请填写答案')
+            task.messages.append({'id':message_id,'role':'user','content':'本任务回答：'+json.dumps(answered,ensure_ascii=False),'answers':answered,'created_at':now.isoformat()})
+            save(c,task)
             if edits: draft=edit_draft(c,draft.id,actor,draft.version,edits)
             elif scope_answered and draft: draft=edit_draft(c,draft.id,actor,draft.version,[])
-            task.messages.append({'id':message_id,'role':'user','content':'本任务回答：'+json.dumps(answered,ensure_ascii=False),'answers':answered,'created_at':now.isoformat()})
             task.proposal=None
             task.semantic_questions=[q for q in task.semantic_questions if q.id not in body.answers]
         elif body.action in ('message','analyze','resume'):
@@ -379,7 +393,8 @@ async def act(project_id,body,actor):
                 base_task_version=saved['base_task_version']
                 base_draft_version=saved['base_draft_version']
             if body.message and not any(m.get('request_id')==body.request_id for m in task.messages):
-                task.messages.append({'id':str(uuid4()),'request_id':body.request_id,'role':'user','content':body.message,'created_at':now.isoformat()})
+                from .rules import business_now
+                task.messages.append({'id':str(uuid4()),'request_id':body.request_id,'role':'user','content':body.message,'created_at':now.isoformat(),'business_time':business_now().isoformat()})
                 task.proposal=None
             task.requests[body.request_id]={'digest':digest,'status':'processing','flow_version':FLOW_VERSION,'prompt_hash':PROMPT_HASH}
             task.lease={'request_id':body.request_id,'until':(now+timedelta(seconds=210)).isoformat()}

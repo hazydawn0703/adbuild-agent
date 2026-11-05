@@ -1,7 +1,7 @@
 """Read-only lookup over project-isolated imported TikTok exports, never live state."""
 import re
 
-FIELDS=('campaign_id','adgroup_id','ad_id','post_id','business_no','name','objective','budget','budget_mode',
+FIELDS=('campaign_id','adgroup_id','ad_id','post_id','business_no','name','adgroup_name','objective','audience','budget','budget_mode',
         'adgroup_budget','adgroup_budget_mode','start_at','end_at','language','source_file','source_sheet','source_row','imported_at')
 
 

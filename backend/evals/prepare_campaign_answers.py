@@ -39,8 +39,9 @@ def permitted_facts(answers):
         if field in answers:facts['budget']=str(answers[field])
     if 'business_nos' in answers:facts['scope']='本次仅处理业务编号 '+ '、'.join(answers['business_nos'])
     if 'batch_name' in answers:
-        facts['included']='仅采纳历史批次 '+answers['batch_name']+' 的字段 '+ '、'.join(answers.get('adopt_fields',[]))
-        facts['scope']=facts['included']
+        from app.history_fields import PREFIX
+        for field in answers.get('adopt_fields',[]):
+            facts[field]=PREFIX+answers['batch_name']
     for field in ('start_time','end_time'):
         if field in answers:facts[{'start_time':'start_at_time','end_time':'end_at_time'}[field]]=answers[field]
     if 'level' in answers:

@@ -143,6 +143,13 @@ def supported_source(state,row,field,value,offered=None):
     tz=row.get('timezone','');previous=row.get('sources',{}).get(field)
     previous=SourceRef.model_validate(previous) if previous else None
     invalid_existing=any(i.get('field')==field and i.get('code','').startswith('invalid_') for i in row.get('issues',[]))
+    from .schedule_evidence import verified_schedule_source
+    calculation=verified_schedule_source(state,row,field,value,offered)
+    if calculation:return calculation
+    if field=='objective':
+        from .objective_spelling import correction_source
+        correction=correction_source(state,row,value,offered)
+        if correction:return correction
     if offered:
         ref=SourceRef.model_validate(offered)
         if ref.kind=='project' and field=='account_id' and equivalent(field,value,state.get('project_account_id')):
@@ -159,7 +166,26 @@ def supported_source(state,row,field,value,offered=None):
                     raise ValueError(f'{field} 的新文件证据与当前实体明确值冲突，请先澄清；明确用户修正应引用对应消息')
                 return verified
         if ref.kind=='history':
-            if match_history_reference(ref,field,value,row.get('history',[]),tz):return ref
+            history=row.get('history',[])
+            matched=match_history_reference(ref,field,value,history,tz)
+            if matched:
+                if field=='audience':
+                    from .history_fields import PREFIX
+                    selection=None
+                    for message in reversed(state.get('messages',[])):
+                        if message.get('role')!='user':continue
+                        answers=[a for a in message.get('answers',[]) if a.get('field')==field and row.get('id') in (a.get('target_ids') or a.get('requirement_ids') or [])]
+                        named=[a['answer'][len(PREFIX):].strip() for a in answers if a.get('answer','').startswith(PREFIX)]
+                        if named:selection=set(named);break
+                        text=str(message.get('content','')) if 'answers' not in message else ''
+                        if re.search(r'沿用|采纳|使用',text):
+                            named={h['name'] for h in history if h.get('name') and h['name'] in text}
+                            if named:selection=named;break
+                    if selection is not None:
+                        if selection!={matched.get('name')}:raise ValueError('历史字段来源不属于用户选定的唯一批次')
+                    elif len({h.get(field) for h in history if h.get(field) not in (None,'')})>1:
+                        raise ValueError('历史受众存在不同批次配置，请先集中询问选择哪个批次，不能默认采用某一行')
+                return ref
             raise ValueError(f'{field} 的历史来源或值不支持本提案')
         if previous and _same_reference(ref,previous) and equivalent(field,value,row.get(field),tz):return previous
         if ref.kind=='confirmed' and not ref.file_id and ref.message_id:

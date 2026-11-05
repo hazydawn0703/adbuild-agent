@@ -241,6 +241,7 @@ def parse_export(data: bytes):
                 "objective": objective(d.get("Advertising Objective")),
                 "start_at": clean(d.get("Start Time")), "end_at": clean(d.get("End Time")),
                 "language": clean(d.get("Languages")), "budget": clean(d.get("Campaign Budget Amount")),
+                "audience":clean(d.get('Audience')),"adgroup_name":clean(d.get('Ad Group Name')),
                 "budget_mode": clean(d.get("Campaign Budget Type")).lower(),
                 "campaign_budget":clean(d.get("Campaign Budget Amount")),
                 "campaign_budget_mode":clean(d.get("Campaign Budget Type")).lower(),
