@@ -71,11 +71,16 @@ def objective(value):
     if text in Objective._value2member_map_:
         return Objective(text)
     canonical = re.sub(r'[_\s-]+', ' ', text)
+    if re.match(r'\s*(?:not\b|no\b|不要|不做|非)',canonical):return None
+    parts=re.split(r'[+/&，,；;]|和|以及|及|\band\b',canonical)
+    if len(parts)>1:
+        targets=[objective(part) for part in parts if part.strip()]
+        return targets[0] if targets and all(t is not None and t==targets[0] for t in targets) else None
     found = set()
-    for target,aliases in ((Objective.FOLLOWERS,('follow','page like','买粉','涨粉','community interaction')),
-                           (Objective.VIDEO_VIEWS,('video view','视频观看','6 second')),
-                           (Objective.TRAFFIC,('traffic','click','流量'))):
-        if any(alias in canonical for alias in aliases): found.add(target)
+    for target,aliases in ((Objective.FOLLOWERS,('follow','followers','page like','page likes','买粉','涨粉','community interaction')),
+                           (Objective.VIDEO_VIEWS,('video view','video views','视频观看','视频播放','6 second','6 seconds')),
+                           (Objective.TRAFFIC,('traffic','click','clicks','流量','点击'))):
+        if any(bool(re.search(r'(?<![a-z0-9])'+re.escape(alias)+r'(?![a-z0-9])',canonical)) if alias.isascii() else alias in canonical for alias in aliases):found.add(target)
     # A compound objective needs a structural proposal, never first-match-wins.
     return next(iter(found)) if len(found)==1 else None
 
@@ -241,6 +246,7 @@ def parse_export(data: bytes):
                 "objective": objective(d.get("Advertising Objective")),
                 "start_at": clean(d.get("Start Time")), "end_at": clean(d.get("End Time")),
                 "language": clean(d.get("Languages")), "budget": clean(d.get("Campaign Budget Amount")),
+                "audience":clean(d.get('Audience')),"adgroup_name":clean(d.get('Ad Group Name')),
                 "budget_mode": clean(d.get("Campaign Budget Type")).lower(),
                 "campaign_budget":clean(d.get("Campaign Budget Amount")),
                 "campaign_budget_mode":clean(d.get("Campaign Budget Type")).lower(),

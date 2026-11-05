@@ -60,6 +60,7 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
     if draft.version != expected_version or draft.status not in ("draft","attention","approved"):
         raise HTTPException(409,"草稿版本已变化或已经冻结，请刷新")
     history = history_for(conn, project)
+    draft.requirements=[evaluate(req,history) for req in draft.requirements]
     taskrow=conn.execute('select data from intake_tasks where draft_id=%s',(draft.id,)).fetchone()
     state=task_evidence(conn,project,taskrow['data'] if taskrow else {})
     for edit in edits:
@@ -88,9 +89,13 @@ def edit_draft(conn, draft_id, actor, expected_version, edits):
             try:
                 sources={}
                 if edit.get('sources'):
-                    from .provenance import supported_source
+                    from .provenance import supported_source,verified_history_file
                     original=evidence_values(req,edit['target_id'])
-                    sources={field:supported_source(state,original,field,value,edit['sources'][field]) for field,value in edit['values'].items() if field in edit['sources']}
+                    for field,value in edit['values'].items():
+                        if field not in edit['sources']:continue
+                        offered=SourceRef.model_validate(edit['sources'][field])
+                        if offered.kind=='history':offered=verified_history_file(conn,project['id'],offered,field,value,original.get('timezone',''))
+                        sources[field]=supported_source(state,original,field,value,offered)
                 updated=edit_entity(req,edit['target_id'],edit['values'],edit.get('source_message_id'),actor.user_id,sources)
             except ValueError as error:raise HTTPException(422,str(error)) from None
             draft.requirements=[evaluate(updated,history) if r.id==req.id else r for r in draft.requirements]

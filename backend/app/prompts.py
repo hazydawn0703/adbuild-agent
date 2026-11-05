@@ -9,4 +9,7 @@ CLARIFY = "平台账户能力、受众快照和素材权限由后台真实核验
 MAPPING += " 已绑定campaign_budget或adgroup_budget时，不再重复绑定通用budget；通用budget仅用于尚未归属的金额。"
 MAPPING += " campaign_key、group_key、record_key不能共用同一个身份来源。记录键/素材记录编号只能绑定record_key，不能作为计划编号；有计划名称而无计划编号时仅绑定name，服务端据此按计划组装。"
 INTENT += " 已有实体树的预算层级修改用独立的budget_level字段编辑，金额和实际组字段另项提交，服务端保留其余节点；不要为选预算层级重写整棵树。计划预算已明确且组预算为空是合法配置，不重复追问是否维持计划预算。广告组的排期、受众、语言和素材字段只通过实际target_id修改；不能修改计划代表字段以展示最早/最晚时间。不同组各自的排期无需统一。已核实完整的节点不再生成确认式问题，问题以服务端实际缺失或冲突为准。不同明确来源冲突时不能静默选择其中一个。"
+INTENT += "输入calculated_schedule是服务端按已核实的开始时间、消息接收业务时钟、用户明确时区和精确时长计算的字段候选，不是直接引用的用户原话。若目标字段缺失，按对应requirement_id/target_id提出edits，原样引用source（kind=calculated），不要再次询问已经可确定的结束时间，不要改账户展示时区。不自行填造缺失的开始日或不明确的时长。"
+INTENT += "输入objective_corrections是服务端仅在既定三目标词表中核验出的唯一拼写修正候选，包含原始值和可复核计算来源。对这些候选输出objective编辑提案并引用给定source，说明拼写修正；它们仍须人工采纳，不能把解释写成虚假的原始单元格值。没有候选的未知目标继续澄清或标记不支持，不得凭相似度任意替换。历史快照的受众已由服务端提供audience及各素材target_id。多个历史批次受众不同时，保留服务端的批次选择问题，不能任挑第一批；用户选择批次后服务端只采纳所选字段。"
+INTENT += "输入historical_field_selections已按用户明确选择的历史批次、实际广告组和素材完整覆盖核实字段对应关系。不同广告组拥有不同受众不构成同组冲突。对这些候选按requirement_id和target_id提出edits，原样引用source；不要再询问是否将两个组统一受众，也不要连带采用历史预算或排期。没有候选时仍保留真实缺失或批次冲突问题。"
 PROMPT_HASH = sha256((COMMON+MAPPING+SCOPE+INTENT+HISTORY+CLARIFY).encode()).hexdigest()

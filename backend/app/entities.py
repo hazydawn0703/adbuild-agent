@@ -124,7 +124,9 @@ def evidence_values(req,target_id):
     if hasattr(node,'budget') and isinstance(node.budget,BudgetSpec):
         data.update(budget=str(node.budget.amount) if node.budget.amount is not None else None,
                     currency=node.budget.currency,budget_mode=node.budget.mode)
+    owned={node.id} if not hasattr(node,'ads') else {a.id for a in node.ads}
     return {**{'account_id':req.account_id,'business_no':req.business_no,'objective':req.objective,'timezone':req.timezone},**data,
+        'history':[h for h in req.history if h.get('target_id') in owned],
         '_entity_kind':'campaign' if node is req else 'adgroup' if hasattr(node,'ads') else 'material','_campaign_name':req.name,
         '_group_name':next((g.name for g in req.structure.groups if any(a.id==target_id for a in g.ads)),'') if req.structure else '',
         'issues':[issue.model_dump(mode='json') for issue in req.issues if issue.target_id==target_id]}

@@ -44,6 +44,10 @@ def _budget_values(text):
         anchor=re.search(r'预算|总额|合计(?:预算|金额)|\bbudget\b',clause,re.I)
         if not anchor:continue
         tail=clause[anchor.end():]
+        if re.search(r'或|还是|大约|左右|至少|最多|不超过|不少于|不低于|不高于|上限|下限|以内|以上|以下|[≤≥<>]|\b(?:or|about|approximately|between|under|over|at\s+(?:most|least)|up\s+to)\b',tail[:60],re.I):continue
+        if re.search(r'\d\s*(?:到|至|[~～–—-])\s*\d',tail[:60]):continue
+        if re.search(r'\d\s+to\s+\d',tail[:60],re.I) and not re.search(r'\b(?:change|set|reduce|increase)\b',clause,re.I):continue
+        if re.match(r'\s*(?:不是|非|not\b|no\b)',tail,re.I):continue
         assignment=list(re.finditer(r'改为|改成|设为|设置为|调至|调到|调整为|调整到|统一为|降到|升到|\bto\b|[:：=]',tail,re.I))
         if assignment:tail=tail[assignment[-1].end():]
         amount=re.search(r'(?<![0-9.,])([-+]?[0-9]+(?:[.,][0-9]+)*(?:[eE][-+]?[0-9]+)?)(?![0-9.,]|[eE][-+]?[0-9])',tail[:35])
@@ -143,6 +147,13 @@ def supported_source(state,row,field,value,offered=None):
     tz=row.get('timezone','');previous=row.get('sources',{}).get(field)
     previous=SourceRef.model_validate(previous) if previous else None
     invalid_existing=any(i.get('field')==field and i.get('code','').startswith('invalid_') for i in row.get('issues',[]))
+    from .schedule_evidence import verified_schedule_source
+    calculation=verified_schedule_source(state,row,field,value,offered)
+    if calculation:return calculation
+    if field=='objective':
+        from .objective_spelling import correction_source
+        correction=correction_source(state,row,value,offered)
+        if correction:return correction
     if offered:
         ref=SourceRef.model_validate(offered)
         if ref.kind=='project' and field=='account_id' and equivalent(field,value,state.get('project_account_id')):
@@ -159,7 +170,25 @@ def supported_source(state,row,field,value,offered=None):
                     raise ValueError(f'{field} 的新文件证据与当前实体明确值冲突，请先澄清；明确用户修正应引用对应消息')
                 return verified
         if ref.kind=='history':
-            if match_history_reference(ref,field,value,row.get('history',[]),tz):return ref
+            history=row.get('history',[])
+            matched=match_history_reference(ref,field,value,history,tz)
+            if matched:
+                if row.get(field) not in (None,'') and not equivalent(field,value,row[field],tz):
+                    from .history_fields import overwrite_requested
+                    if not overwrite_requested(state,row,field,value,matched.get('name','')):raise ValueError('历史字段不能覆盖本次明确配置；请引用当前用户对该字段的采纳或修正依据')
+                if field=='audience':
+                    from .history_fields import selected_batch
+                    selection=selected_batch(state,row,field)
+                    if selection is not None:
+                        if selection!=matched.get('name'):raise ValueError('历史字段来源不属于用户选定的唯一批次')
+                    elif len({h.get(field) for h in history if h.get(field) not in (None,'')})>1:
+                        raise ValueError('历史受众存在不同批次配置，请先集中询问选择哪个批次，不能默认采用某一行')
+                if field=='audience' and row.get('_entity_kind')=='adgroup':
+                    posts={a['post_id'] for a in row.get('ads',[]) if a.get('included',True)}
+                    batch=[h for h in history if h.get('name')==matched.get('name') and h.get('post_id') in posts]
+                    if not posts or {h['post_id'] for h in batch}!=posts or any(not equivalent(field,value,h.get(field),tz) for h in batch):
+                        raise ValueError('历史批次未完整覆盖当前广告组或含字段冲突，请先澄清')
+                return ref
             raise ValueError(f'{field} 的历史来源或值不支持本提案')
         if previous and _same_reference(ref,previous) and equivalent(field,value,row.get(field),tz):return previous
         if ref.kind=='confirmed' and not ref.file_id and ref.message_id:

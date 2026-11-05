@@ -8,7 +8,7 @@ from .rules import business_now
 from .settings import settings
 from openai import APIError,APIConnectionError,APITimeoutError,APIStatusError
 
-FLOW_VERSION='entity-graph-4'
+FLOW_VERSION='entity-graph-5'
 
 
 class ModelServiceError(RuntimeError):
